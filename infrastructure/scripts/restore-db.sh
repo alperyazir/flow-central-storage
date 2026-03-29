@@ -7,7 +7,7 @@ set -euo pipefail
 BACKUP_FILE="${1:?Usage: $0 <backup_file.sql.gz>}"
 DB_CONTAINER="${DB_CONTAINER:-infrastructure-postgres-1}"
 POSTGRES_USER="${POSTGRES_USER:-postgres}"
-POSTGRES_DB="${POSTGRES_DB:-dream_central}"
+POSTGRES_DB="${POSTGRES_DB:-flow_central}"
 
 if [ ! -f "$BACKUP_FILE" ]; then
     echo "Error: Backup file not found: $BACKUP_FILE"

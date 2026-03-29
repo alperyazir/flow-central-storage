@@ -48,7 +48,7 @@
       },
       "targets": [
         {
-          "expr": "rate(dream_requests_total[5m])",
+          "expr": "rate(fcs_requests_total[5m])",
           "legendFormat": "{{method}} {{path}}",
           "refId": "A"
         }
@@ -85,7 +85,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(dream_request_errors_total[5m]))",
+          "expr": "sum(rate(fcs_request_errors_total[5m]))",
           "legendFormat": "Errors per second",
           "refId": "A"
         }
@@ -138,7 +138,7 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum(rate(dream_request_duration_seconds_bucket[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(fcs_request_duration_seconds_bucket[5m])) by (le))",
           "legendFormat": "p95 latency",
           "refId": "A"
         }
@@ -151,7 +151,7 @@
   "schemaVersion": 39,
   "style": "dark",
   "tags": [
-    "dream-central",
+    "flow-central",
     "api"
   ],
   "templating": {
@@ -162,6 +162,6 @@
     "to": "now"
   },
   "timezone": "",
-  "title": "Dream Central API Overview",
+  "title": "Flow Central API Overview",
   "version": 1
 }

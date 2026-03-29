@@ -1,4 +1,4 @@
-# Dream Central Storage — Production Deployment
+# Flow Central Storage — Production Deployment
 # Usage: docker compose -f docker-compose.prod.yml up -d
 
 services:
@@ -6,14 +6,14 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-dream_central}
+      POSTGRES_DB: ${POSTGRES_DB:-flow_central}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./backups:/backups
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-dream_central}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-flow_central}"]
       interval: 10s
       retries: 5
       start_period: 30s
@@ -80,7 +80,7 @@ services:
     env_file:
       - ../apps/api/.env
     environment:
-      - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-dream_central}
+      - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-flow_central}
       - REDIS_URL=redis://redis:6379/0
     depends_on:
       postgres:
@@ -115,7 +115,7 @@ services:
     env_file:
       - ../apps/api/.env
     environment:
-      - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-dream_central}
+      - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-flow_central}
       - REDIS_URL=redis://redis:6379/0
     depends_on:
       postgres:

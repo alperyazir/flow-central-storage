@@ -1,0 +1,10 @@
+# Flow Central Storage MinIO backup cron configuration
+#
+# Install this file under /etc/cron.d/ to trigger a nightly backup at 02:00 UTC.
+# The script expects credentials to be provided via /etc/flow-central-storage/backup.env
+# or exported within the shell invoking cron. Adjust the deployment path as needed.
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+0 2 * * * root . /etc/flow-central-storage/backup.env && /usr/local/bin/flow-backup >> /var/log/minio-backup.cron.log 2>&1

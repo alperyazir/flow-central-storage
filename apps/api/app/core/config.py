@@ -19,20 +19,20 @@ except ImportError:  # pragma: no cover - exercised only when dependency missing
 class Settings(BaseSettings):
     """Application configuration loaded from environment variables."""
 
-    app_name: str = "Dream Central Storage API"
+    app_name: str = "Flow Central Storage API"
     app_version: str = "0.1.0"
 
     database_scheme: str = "postgresql+psycopg"
     database_host: str = "localhost"
     database_port: int = 5432
-    database_user: str = "dream_admin"
-    database_password: str = "dream_password"
-    database_name: str = "dream_central"
+    database_user: str = "flow_admin"
+    database_password: str = "flow_password"
+    database_name: str = "flow_central"
 
     minio_endpoint: str = "localhost:9000"
     minio_external_url: str = "http://localhost:9000"  # Public URL for presigned URLs
-    minio_access_key: str = "dream_minio"
-    minio_secret_key: str = "dream_minio_secret"
+    minio_access_key: str = "flow_minio"
+    minio_secret_key: str = "flow_minio_secret"
     minio_secure: bool = False
     minio_publishers_bucket: str = "publishers"
     minio_apps_bucket: str = "apps"
@@ -124,7 +124,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
-        env_prefix="DCS_",
+        env_prefix="FCS_",
         extra="ignore",
     )
 

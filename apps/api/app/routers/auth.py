@@ -1,4 +1,4 @@
-"""Authentication endpoints for the Dream Central API."""
+"""Authentication endpoints for the Flow Central API."""
 
 from __future__ import annotations
 

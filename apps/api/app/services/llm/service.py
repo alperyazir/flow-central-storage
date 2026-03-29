@@ -235,7 +235,7 @@ class LLMService:
                     raise
 
         raise ValueError(
-            "No LLM providers available. Configure DCS_DEEPSEEK_API_KEY or DCS_GEMINI_API_KEY."
+            "No LLM providers available. Configure FCS_DEEPSEEK_API_KEY or FCS_GEMINI_API_KEY."
         )
 
     async def chat(
@@ -301,7 +301,7 @@ class LLMService:
         # No vision-capable provider - raise clear error
         raise ValueError(
             "Vision capabilities require Gemini provider. "
-            "Configure DCS_GEMINI_API_KEY to enable vision."
+            "Configure FCS_GEMINI_API_KEY to enable vision."
         )
 
     async def simple_completion(

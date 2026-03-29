@@ -34,8 +34,8 @@ jobs:
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script: |
-            cd /opt/dream-central-storage/infrastructure
-            git -C /opt/dream-central-storage pull origin main
+            cd /opt/flow-central-storage/infrastructure
+            git -C /opt/flow-central-storage pull origin main
             docker compose -f docker-compose.prod.yml build
             docker compose -f docker-compose.prod.yml up -d
             echo "DCS deployment complete at $(date)"

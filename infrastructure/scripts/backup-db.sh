@@ -1,7 +1,7 @@
 #!/bin/bash
 # DCS PostgreSQL backup script
 # Usage: ./scripts/backup-db.sh
-# Cron: 0 2 * * * /opt/dream-central-storage/infrastructure/scripts/backup-db.sh
+# Cron: 0 2 * * * /opt/flow-central-storage/infrastructure/scripts/backup-db.sh
 
 set -euo pipefail
 
@@ -10,7 +10,7 @@ RETENTION_DAILY=7
 RETENTION_WEEKLY=4
 DB_CONTAINER="${DB_CONTAINER:-infrastructure-postgres-1}"
 POSTGRES_USER="${POSTGRES_USER:-postgres}"
-POSTGRES_DB="${POSTGRES_DB:-dream_central}"
+POSTGRES_DB="${POSTGRES_DB:-flow_central}"
 DATE=$(date +%Y%m%d_%H%M%S)
 DAY_OF_WEEK=$(date +%u)
 

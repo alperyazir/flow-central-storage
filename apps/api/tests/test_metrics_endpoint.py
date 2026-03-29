@@ -17,8 +17,8 @@ def test_metrics_endpoint_exposes_prometheus_data() -> None:
 
     assert response.status_code == 200
     content = response.text
-    assert "dream_requests_total" in content
-    assert "dream_request_duration_seconds" in content
+    assert "fcs_requests_total" in content
+    assert "fcs_request_duration_seconds" in content
     assert response.headers["content-type"].startswith("text/plain")
 
 

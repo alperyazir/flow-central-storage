@@ -1,6 +1,6 @@
-# Dream Central Storage Admin Panel
+# Flow Central Storage Admin Panel
 
-React-based admin panel for managing publishers, books, and educational content in the Dream Central Storage system.
+React-based admin panel for managing publishers, books, and educational content in the Flow Central Storage system.
 
 ## Features
 
@@ -74,7 +74,7 @@ Manage soft-deleted content:
 ### Prerequisites
 
 - Node.js 18+ and npm
-- Access to the Dream Central Storage API
+- Access to the Flow Central Storage API
 - Valid admin credentials
 
 ### Installation
@@ -196,7 +196,7 @@ interface Book {
 
 ## API Integration
 
-The admin panel integrates with the Dream Central Storage API using the following endpoints:
+The admin panel integrates with the Flow Central Storage API using the following endpoints:
 
 ### Publishers
 - `POST /publishers/` - Create publisher
@@ -352,4 +352,4 @@ For issues or questions:
 
 ## License
 
-This project is part of the Dream Central Storage system.
+This project is part of the Flow Central Storage system.

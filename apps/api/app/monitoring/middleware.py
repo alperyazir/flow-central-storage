@@ -86,42 +86,42 @@ def render_metrics() -> str:
 
     lines: list[str] = []
 
-    lines.append("# HELP dream_requests_total Total HTTP requests")
-    lines.append("# TYPE dream_requests_total counter")
+    lines.append("# HELP fcs_requests_total Total HTTP requests")
+    lines.append("# TYPE fcs_requests_total counter")
     with _metrics_lock:
         for (method, path, status), value in sorted(_request_counts.items()):
             lines.append(
-                f'dream_requests_total{{method="{method}",path="{path}",status="{status}"}} {value}'
+                f'fcs_requests_total{{method="{method}",path="{path}",status="{status}"}} {value}'
             )
 
         lines.append(
-            "# HELP dream_request_errors_total HTTP requests that resulted in errors"
+            "# HELP fcs_request_errors_total HTTP requests that resulted in errors"
         )
-        lines.append("# TYPE dream_request_errors_total counter")
+        lines.append("# TYPE fcs_request_errors_total counter")
         if _error_counts:
             for (method, path, status), value in sorted(_error_counts.items()):
                 lines.append(
-                    f'dream_request_errors_total{{method="{method}",path="{path}",status="{status}"}} {value}'
+                    f'fcs_request_errors_total{{method="{method}",path="{path}",status="{status}"}} {value}'
                 )
         else:
-            lines.append('dream_request_errors_total{method="",path="",status=""} 0')
+            lines.append('fcs_request_errors_total{method="",path="",status=""} 0')
 
         lines.append(
-            "# HELP dream_request_duration_seconds_sum Total time spent handling requests"
+            "# HELP fcs_request_duration_seconds_sum Total time spent handling requests"
         )
-        lines.append("# TYPE dream_request_duration_seconds_sum counter")
+        lines.append("# TYPE fcs_request_duration_seconds_sum counter")
         for (method, path), stats in sorted(_latency_stats.items()):
             lines.append(
-                f'dream_request_duration_seconds_sum{{method="{method}",path="{path}"}} {stats.total_duration}'
+                f'fcs_request_duration_seconds_sum{{method="{method}",path="{path}"}} {stats.total_duration}'
             )
 
         lines.append(
-            "# HELP dream_request_duration_seconds_count Total number of timed requests"
+            "# HELP fcs_request_duration_seconds_count Total number of timed requests"
         )
-        lines.append("# TYPE dream_request_duration_seconds_count counter")
+        lines.append("# TYPE fcs_request_duration_seconds_count counter")
         for (method, path), stats in sorted(_latency_stats.items()):
             lines.append(
-                f'dream_request_duration_seconds_count{{method="{method}",path="{path}"}} {stats.count}'
+                f'fcs_request_duration_seconds_count{{method="{method}",path="{path}"}} {stats.count}'
             )
 
     return "\n".join(lines) + "\n"

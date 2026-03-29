@@ -46,7 +46,7 @@ const LoginPage = () => {
           <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-lg bg-primary text-primary-foreground">
             <BookOpenCheck className="h-6 w-6" />
           </div>
-          <CardTitle className="text-2xl">Dream Central Storage</CardTitle>
+          <CardTitle className="text-2xl">Flow Central Storage</CardTitle>
           <CardDescription>Sign in to your account</CardDescription>
         </CardHeader>
         <CardContent>

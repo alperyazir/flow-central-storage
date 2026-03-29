@@ -1,6 +1,6 @@
-# Dream Central Storage API
+# Flow Central Storage API
 
-FastAPI backend service for Dream Central Storage. This package exposes a foundational application skeleton including configuration management, database wiring, and a health-check endpoint.
+FastAPI backend service for Flow Central Storage. This package exposes a foundational application skeleton including configuration management, database wiring, and a health-check endpoint.
 
 ## Local Development
 
@@ -19,7 +19,7 @@ pytest
 
 ### Configuration
 
-Key environment variables are defined in `.env.example`. For local admin panel development, ensure `DCS_CORS_ALLOWED_ORIGINS` lists the allowed frontend origins (comma-separated), e.g. `http://localhost:5173`.
+Key environment variables are defined in `.env.example`. For local admin panel development, ensure `FCS_CORS_ALLOWED_ORIGINS` lists the allowed frontend origins (comma-separated), e.g. `http://localhost:5173`.
 
 ## API Documentation
 
