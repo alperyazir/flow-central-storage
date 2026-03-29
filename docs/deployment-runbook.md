@@ -1,4 +1,4 @@
-# DCS Production Deployment Runbook
+# FCS Production Deployment Runbook
 
 ## Prerequisites
 
@@ -64,7 +64,7 @@ openssl rand -hex 16  # For passwords
 cd infrastructure
 
 # 1. Start data stores first
-docker compose up -d postgres redis minio
+docker compose up -d postgres redis seaweedfs-master seaweedfs-volume seaweedfs-filer seaweedfs-s3
 
 # 2. Wait for healthy
 docker compose exec postgres pg_isready -U postgres
@@ -162,32 +162,42 @@ gunzip -c backup_20260326.sql.gz | docker compose exec -T postgres psql -U postg
 
 ---
 
-## 5. MinIO Backup & Restore
+## 5. SeaweedFS Storage Backup & Restore
 
-### Backup (using mc client)
+### Backup (using rclone)
 ```bash
-# Install mc
-docker run --rm -it --entrypoint mc minio/mc alias set dcs http://minio:9000 $MINIO_ROOT_USER $MINIO_ROOT_PASSWORD
+# Configure rclone remote
+rclone config create fcs s3 provider=Other \
+  endpoint=http://localhost:8333 \
+  access_key_id=admin secret_access_key=admin
 
-# Mirror all buckets
-docker run --rm -v /backups/minio:/backup minio/mc mirror dcs/ /backup/
+# Mirror all buckets to local backup
+for bucket in publishers apps teachers trash; do
+  rclone sync fcs:$bucket /backups/seaweedfs/$bucket --progress
+done
+```
 
-# Or backup data directory directly
-docker compose stop minio
-cp -r /var/lib/docker/volumes/infrastructure_minio_data/_data /backups/minio_data_$(date +%Y%m%d)
-docker compose up -d minio
+### Backup (volume-level)
+```bash
+docker compose stop seaweedfs-master seaweedfs-volume seaweedfs-filer seaweedfs-s3
+# Copy Docker volumes
+docker run --rm -v seaweedfs_master_data:/data -v /backups:/backup alpine tar czf /backup/seaweedfs_master_$(date +%Y%m%d).tar.gz /data
+docker run --rm -v seaweedfs_volume_data:/data -v /backups:/backup alpine tar czf /backup/seaweedfs_volume_$(date +%Y%m%d).tar.gz /data
+docker compose up -d seaweedfs-master seaweedfs-volume seaweedfs-filer seaweedfs-s3
 ```
 
 ### Restore
 ```bash
-# From mc mirror
-docker run --rm -v /backups/minio:/backup minio/mc mirror /backup/ dcs/
+# From rclone backup
+for bucket in publishers apps teachers trash; do
+  rclone sync /backups/seaweedfs/$bucket fcs:$bucket --progress
+done
+```
 
-# From data directory
-docker compose stop minio
-rm -rf /var/lib/docker/volumes/infrastructure_minio_data/_data/*
-cp -r /backups/minio_data_20260326/* /var/lib/docker/volumes/infrastructure_minio_data/_data/
-docker compose up -d minio
+### Migration from MinIO
+```bash
+# If migrating from an existing MinIO instance:
+./infrastructure/scripts/migrate-minio-to-seaweedfs.sh
 ```
 
 ---
@@ -201,7 +211,7 @@ docker compose up -d minio
 ### Key metrics to watch
 - API response times (p50, p95, p99)
 - Processing queue depth
-- MinIO storage usage
+- SeaweedFS storage usage
 - Database connection pool utilization
 
 ---
@@ -247,7 +257,7 @@ docker compose pull  # or tag specific versions
 gunzip -c /backups/dcs_YYYYMMDD.sql.gz | docker compose exec -T postgres psql -U postgres dream_central
 
 # 4. Restart
-docker compose up -d postgres redis minio
+docker compose up -d postgres redis seaweedfs-master seaweedfs-volume seaweedfs-filer seaweedfs-s3
 docker compose run --rm api alembic upgrade head
 docker compose up -d api worker nginx
 ```
@@ -261,5 +271,5 @@ docker compose up -d api worker nginx
 | Health returns "degraded" | Check individual service status in health response |
 | API returns 500 | Check API logs: `docker compose logs api` |
 | Processing stuck | Check worker logs: `docker compose logs worker` |
-| MinIO unreachable | Check MinIO logs: `docker compose logs minio` |
+| Storage unreachable | Check SeaweedFS logs: `docker compose logs seaweedfs-s3 seaweedfs-filer` |
 | DB connection errors | Check pool config and postgres max_connections |

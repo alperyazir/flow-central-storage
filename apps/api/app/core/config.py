@@ -29,10 +29,10 @@ class Settings(BaseSettings):
     database_password: str = "dream_password"
     database_name: str = "dream_central"
 
-    minio_endpoint: str = "localhost:9000"
-    minio_external_url: str = "http://localhost:9000"  # Public URL for presigned URLs
-    minio_access_key: str = "dream_minio"
-    minio_secret_key: str = "dream_minio_secret"
+    minio_endpoint: str = "seaweedfs-s3:8333"
+    minio_external_url: str = "http://localhost:8333"  # Public URL for presigned URLs
+    minio_access_key: str = "admin"
+    minio_secret_key: str = "admin"
     minio_secure: bool = False
     minio_publishers_bucket: str = "publishers"
     minio_apps_bucket: str = "apps"

@@ -41,8 +41,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      minio:
-        condition: service_started
+      seaweedfs-s3:
+        condition: service_healthy
     volumes:
       - ../apps/api:/app
     command: >
@@ -59,25 +59,50 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      minio:
-        condition: service_started
+      seaweedfs-s3:
+        condition: service_healthy
     volumes:
       - ../apps/api:/app
     command: python -m app.services.queue.worker
 
-  minio:
-    image: minio/minio:latest
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-dream_minio}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-dream_minio_secret}
-      MINIO_SERVER_URL: http://localhost:9000
-      MINIO_API_CORS_ALLOW_ORIGIN: "http://localhost:5173,http://localhost:5174"
-    command: server /data --console-address ":9090"
+  seaweedfs-master:
+    image: chrislusf/seaweedfs:latest
+    command: "master -ip=seaweedfs-master -ip.bind=0.0.0.0 -mdir=/data"
     ports:
-      - "9000:9000"
-      - "9090:9090"
+      - "9333:9333"
     volumes:
-      - minio_data:/data
+      - seaweedfs_master_data:/data
+
+  seaweedfs-volume:
+    image: chrislusf/seaweedfs:latest
+    command: "volume -mserver=seaweedfs-master:9333 -ip.bind=0.0.0.0 -port=8080 -dir=/data"
+    depends_on:
+      - seaweedfs-master
+    volumes:
+      - seaweedfs_volume_data:/data
+
+  seaweedfs-filer:
+    image: chrislusf/seaweedfs:latest
+    command: "filer -master=seaweedfs-master:9333 -ip.bind=0.0.0.0"
+    ports:
+      - "8888:8888"
+    depends_on:
+      - seaweedfs-master
+      - seaweedfs-volume
+
+  seaweedfs-s3:
+    image: chrislusf/seaweedfs:latest
+    command: "s3 -filer=seaweedfs-filer:8888 -ip.bind=0.0.0.0 -port=8333"
+    ports:
+      - "8333:8333"
+    depends_on:
+      - seaweedfs-filer
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8333 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
   nginx:
     image: nginx:1.27
@@ -143,6 +168,7 @@ services:
 volumes:
   postgres_data:
   redis_data:
-  minio_data:
+  seaweedfs_master_data:
+  seaweedfs_volume_data:
   grafana_data:
   admin_panel_node_modules:
