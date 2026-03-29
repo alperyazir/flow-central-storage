@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "Flow Central Team" }]
 dependencies = [
-  "fastapi>=0.111,<0.112",
+  "fastapi>=0.111,<0.136",
   "uvicorn[standard]>=0.30,<0.31",
   "pydantic-settings>=2.4,<2.5",
   "sqlalchemy>=2.0,<2.1",
