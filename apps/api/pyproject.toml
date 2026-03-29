@@ -12,7 +12,7 @@ authors = [{ name = "Flow Central Team" }]
 dependencies = [
   "fastapi>=0.111,<0.112",
   "uvicorn[standard]>=0.30,<0.31",
-  "pydantic-settings>=2.4,<2.5",
+  "pydantic-settings>=2.4,<2.14",
   "sqlalchemy>=2.0,<2.1",
   "alembic>=1.13,<1.14",
   "psycopg[binary]>=3.2,<3.3",
