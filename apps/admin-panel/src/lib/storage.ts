@@ -53,15 +53,15 @@ export interface DeleteTrashOptions {
 
 const encodePathSegment = (segment: string) => encodeURIComponent(segment);
 
-const bookStorageBasePath = (publisher: string, bookName: string) =>
-  `/storage/books/${encodePathSegment(publisher)}/${encodePathSegment(bookName)}`;
+const bookStorageBasePath = (publisherId: number, bookName: string) =>
+  `/storage/books/${publisherId}/${encodePathSegment(bookName)}`;
 
 const buildBookObjectUrl = (
-  publisher: string,
+  publisherId: number,
   bookName: string,
   objectPath: string
 ) =>
-  `${bookStorageBasePath(publisher, bookName)}/object?path=${encodeURIComponent(objectPath)}`;
+  `${bookStorageBasePath(publisherId, bookName)}/object?path=${encodeURIComponent(objectPath)}`;
 
 export const listAppContents = (
   platform: string,
@@ -122,25 +122,25 @@ export const deleteTrashEntry = (
 };
 
 export const listBookContents = (
-  publisher: string,
+  publisherId: number,
   bookName: string,
   token: string,
   tokenType: string = 'Bearer',
   client: ApiClient = apiClient
 ): Promise<StorageNode> =>
-  client.get<StorageNode>(bookStorageBasePath(publisher, bookName), {
+  client.get<StorageNode>(bookStorageBasePath(publisherId, bookName), {
     headers: buildAuthHeaders(token, tokenType),
   });
 
 export const fetchBookConfig = (
-  publisher: string,
+  publisherId: number,
   bookName: string,
   token: string,
   tokenType: string = 'Bearer',
   client: ApiClient = apiClient
 ): Promise<Record<string, unknown>> =>
   client.get<Record<string, unknown>>(
-    `${bookStorageBasePath(publisher, bookName)}/config`,
+    `${bookStorageBasePath(publisherId, bookName)}/config`,
     {
       headers: buildAuthHeaders(token, tokenType),
     }
@@ -164,18 +164,18 @@ const toError = (reason: unknown): Error => {
 };
 
 export const fetchBookExplorerData = async (
-  publisher: string,
+  publisherId: number,
   bookName: string,
   token: string,
   tokenType: string = 'Bearer',
   client: ApiClient = apiClient
 ): Promise<BookExplorerFetchResult> => {
   const [treeResult, configResult] = await Promise.allSettled([
-    client.get<StorageNode>(bookStorageBasePath(publisher, bookName), {
+    client.get<StorageNode>(bookStorageBasePath(publisherId, bookName), {
       headers: buildAuthHeaders(token, tokenType),
     }),
     client.get<Record<string, unknown>>(
-      `${bookStorageBasePath(publisher, bookName)}/config`,
+      `${bookStorageBasePath(publisherId, bookName)}/config`,
       {
         headers: buildAuthHeaders(token, tokenType),
       }
@@ -197,7 +197,7 @@ export const fetchBookExplorerData = async (
 };
 
 export const downloadBookObject = async (
-  publisher: string,
+  publisherId: number,
   bookName: string,
   objectPath: string,
   token: string,
@@ -205,7 +205,7 @@ export const downloadBookObject = async (
   options: DownloadBookObjectOptions = {}
 ): Promise<Blob> => {
   const { url, init } = createBookObjectRequest(
-    publisher,
+    publisherId,
     bookName,
     objectPath,
     token,
@@ -243,7 +243,7 @@ export interface BookObjectRequestOptions {
 }
 
 export const createBookObjectRequest = (
-  publisher: string,
+  publisherId: number,
   bookName: string,
   objectPath: string,
   token: string,
@@ -259,7 +259,7 @@ export const createBookObjectRequest = (
   }
 
   return {
-    url: resolveApiUrl(buildBookObjectUrl(publisher, bookName, objectPath)),
+    url: resolveApiUrl(buildBookObjectUrl(publisherId, bookName, objectPath)),
     init: {
       method: 'GET',
       headers,

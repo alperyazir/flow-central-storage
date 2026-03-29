@@ -46,13 +46,13 @@ class TopicStorage:
 
     def _build_modules_path(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
         *path_parts: str,
     ) -> str:
         """Build MinIO path within ai-data/modules directory."""
-        # Path: {publisher_name}/books/{book_name}/ai-data/modules (book_id not in path)
+        # Path: {publisher_id}/books/{book_name}/ai-data/modules (book_id not in path)
         base = f"{publisher_id}/books/{book_name}/ai-data/modules"
         if path_parts:
             return f"{base}/{'/'.join(path_parts)}"
@@ -60,7 +60,7 @@ class TopicStorage:
 
     def _build_module_path(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
         module_id: int,
@@ -71,7 +71,7 @@ class TopicStorage:
 
     def _build_metadata_path(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
     ) -> str:
@@ -80,7 +80,7 @@ class TopicStorage:
 
     def get_module(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
         module_id: int,
@@ -89,7 +89,7 @@ class TopicStorage:
         Retrieve a single module JSON.
 
         Args:
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
             module_id: Module ID.
@@ -115,7 +115,7 @@ class TopicStorage:
 
     def list_modules(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
     ) -> list[dict[str, Any]]:
@@ -123,7 +123,7 @@ class TopicStorage:
         List all modules for a book.
 
         Args:
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
 
@@ -163,7 +163,7 @@ class TopicStorage:
 
     def update_module_with_topics(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
         module_result: ModuleAnalysisResult,
@@ -172,7 +172,7 @@ class TopicStorage:
         Update an existing module JSON with topic analysis results.
 
         Args:
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
             module_result: Analysis result for the module.

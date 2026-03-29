@@ -40,7 +40,7 @@ class AIDataStructureManager:
 
     def get_ai_data_paths(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
     ) -> AIDataStructure:
@@ -48,7 +48,7 @@ class AIDataStructureManager:
         Get all expected paths for ai-data structure.
 
         Args:
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
 
@@ -59,7 +59,7 @@ class AIDataStructureManager:
 
     def initialize_ai_data_structure(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
     ) -> AIDataStructure:
@@ -71,7 +71,7 @@ class AIDataStructureManager:
         the directory structure is visible in storage browsers.
 
         Args:
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
 
@@ -135,7 +135,7 @@ class AIDataStructureManager:
 
     def verify_structure(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
     ) -> dict[str, bool]:
@@ -143,7 +143,7 @@ class AIDataStructureManager:
         Check if ai-data structure is properly initialized.
 
         Args:
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
 
@@ -169,7 +169,7 @@ class AIDataStructureManager:
 
     def structure_exists(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
     ) -> bool:
@@ -177,7 +177,7 @@ class AIDataStructureManager:
         Check if ai-data structure exists (at least base path).
 
         Args:
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
 

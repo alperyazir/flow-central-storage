@@ -54,13 +54,13 @@ class AudioStorage:
 
     def _build_ai_data_path(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
         *path_parts: str,
     ) -> str:
         """Build MinIO path within ai-data directory."""
-        # Path: {publisher_name}/books/{book_name}/ai-data (book_id not in path)
+        # Path: {publisher_id}/books/{book_name}/ai-data (book_id not in path)
         base = f"{publisher_id}/books/{book_name}/ai-data"
         if path_parts:
             return f"{base}/{'/'.join(path_parts)}"
@@ -68,7 +68,7 @@ class AudioStorage:
 
     def _build_vocabulary_path(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
     ) -> str:
@@ -77,7 +77,7 @@ class AudioStorage:
 
     def _build_audio_path(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
         language: str,
@@ -90,7 +90,7 @@ class AudioStorage:
 
     def _build_audio_prefix(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
     ) -> str:
@@ -99,7 +99,7 @@ class AudioStorage:
 
     def load_vocabulary(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
     ) -> dict[str, Any]:
@@ -107,7 +107,7 @@ class AudioStorage:
         Load vocabulary.json from storage.
 
         Args:
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
 
@@ -135,7 +135,7 @@ class AudioStorage:
 
     def save_audio_file(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
         audio_file: AudioFile,
@@ -145,7 +145,7 @@ class AudioStorage:
         Save a single audio MP3 file to MinIO.
 
         Args:
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
             audio_file: Audio file metadata.
@@ -189,7 +189,7 @@ class AudioStorage:
 
     def save_all_audio(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
         audio_files: list[AudioFile],
@@ -199,7 +199,7 @@ class AudioStorage:
         Save all generated audio files to MinIO.
 
         Args:
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
             audio_files: List of audio file metadata.
@@ -257,7 +257,7 @@ class AudioStorage:
 
     def update_vocabulary_audio_paths(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
         audio_files: list[AudioFile],
@@ -266,7 +266,7 @@ class AudioStorage:
         Update vocabulary.json with audio paths for each word.
 
         Args:
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
             audio_files: List of generated audio files.
@@ -351,7 +351,7 @@ class AudioStorage:
 
     def cleanup_audio_directory(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
     ) -> int:
@@ -359,7 +359,7 @@ class AudioStorage:
         Clean up existing audio files before re-generation.
 
         Args:
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
 

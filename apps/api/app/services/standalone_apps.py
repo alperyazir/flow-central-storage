@@ -263,7 +263,7 @@ def create_bundle(
     apps_bucket: str,
     publishers_bucket: str,
     platform: str,
-    publisher_name: str,
+    publisher_id: int,
     book_name: str,
     force: bool = False,
 ) -> tuple[str, str, int, datetime]:
@@ -275,7 +275,7 @@ def create_bundle(
         apps_bucket: Bucket containing app templates
         publishers_bucket: Bucket containing book assets
         platform: Target platform (mac, win, linux)
-        publisher_name: Publisher name for locating book assets
+        publisher_id: Publisher ID (integer, for locating book assets)
         book_name: Book name
         force: If True, recreate bundle even if it exists
 
@@ -300,7 +300,7 @@ def create_bundle(
 
     # Check if bundle already exists (unless force=True)
     if not force:
-        bundle_prefix = f"{BUNDLE_PREFIX}/{publisher_name}/{book_name}/"
+        bundle_prefix = f"{BUNDLE_PREFIX}/{publisher_id}/{book_name}/"
         try:
             existing_bundles = list(client.list_objects(apps_bucket, prefix=bundle_prefix, recursive=True))
             # Find bundle matching this platform
@@ -310,7 +310,7 @@ def create_bundle(
                 if f"({normalized_platform})" in file_name.lower():
                     logger.info(
                         "Found existing bundle for %s/%s platform %s: %s",
-                        publisher_name,
+                        publisher_id,
                         book_name,
                         normalized_platform,
                         obj.object_name,
@@ -364,7 +364,7 @@ def create_bundle(
             os.makedirs(book_dir, exist_ok=True)
 
             # 5. Download book assets from publishers bucket
-            book_prefix = f"{publisher_name}/books/{book_name}/"
+            book_prefix = f"{publisher_id}/books/{book_name}/"
             objects = client.list_objects(publishers_bucket, prefix=book_prefix, recursive=True)
 
             asset_count = 0
@@ -384,7 +384,7 @@ def create_bundle(
                 client.fget_object(publishers_bucket, obj.object_name, dest_path)
                 asset_count += 1
 
-            logger.info("Copied %d assets for book %s/%s", asset_count, publisher_name, book_name)
+            logger.info("Copied %d assets for book %s/%s", asset_count, publisher_id, book_name)
 
             # 6. Create bundle zip
             # Use format: "(platform) FlowBook v1.4.11 - BookName" or fallback
@@ -402,7 +402,7 @@ def create_bundle(
                         zf.write(file_path, arcname)
 
             # 6. Upload bundle to MinIO
-            bundle_object_name = f"{BUNDLE_PREFIX}/{publisher_name}/{book_name}/{bundle_name}.zip"
+            bundle_object_name = f"{BUNDLE_PREFIX}/{publisher_id}/{book_name}/{bundle_name}.zip"
             bundle_size = os.path.getsize(bundle_path)
 
             client.fput_object(
@@ -423,7 +423,7 @@ def create_bundle(
             logger.info(
                 "Created bundle %s for %s/%s (%d bytes)",
                 bundle_name,
-                publisher_name,
+                publisher_id,
                 book_name,
                 bundle_size,
             )

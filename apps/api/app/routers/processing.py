@@ -104,11 +104,11 @@ async def _check_rate_limit(publisher_id: int) -> tuple[bool, int]:
     return True, 0
 
 
-def _book_has_content(book, publisher_name: str) -> bool:
+def _book_has_content(book, publisher_id: int) -> bool:
     """Check if book has content in MinIO storage."""
     settings = get_settings()
     client = get_minio_client(settings)
-    prefix = f"{publisher_name}/books/{book.book_name}/"
+    prefix = f"{publisher_id}/books/{book.book_name}/"
 
     try:
         objects = list(
@@ -164,12 +164,12 @@ async def trigger_processing(
             detail="Book not found",
         )
 
-    # Get publisher name explicitly (don't rely on lazy loading)
+    # Get publisher explicitly (don't rely on lazy loading)
     publisher = _publisher_repository.get(db, book.publisher_id)
-    publisher_name = publisher.name if publisher else ""
+    publisher_id = publisher.id if publisher else book.publisher_id
 
     # Validate book has content
-    if not _book_has_content(book, publisher_name):
+    if not _book_has_content(book, publisher_id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Book has no content to process",
@@ -203,7 +203,7 @@ async def trigger_processing(
             publisher_id=str(book.publisher_id),
             job_type=payload.job_type,
             priority=priority,
-            metadata={"book_name": book.book_name, "publisher": publisher_name},
+            metadata={"book_name": book.book_name, "publisher_id": publisher_id},
         )
     except JobAlreadyExistsError:
         raise HTTPException(
@@ -332,14 +332,14 @@ async def delete_ai_data(
             detail="Book not found",
         )
 
-    # Get publisher name explicitly (don't rely on lazy loading)
+    # Get publisher explicitly (don't rely on lazy loading)
     publisher = _publisher_repository.get(db, book.publisher_id)
-    publisher_name = publisher.name if publisher else ""
+    publisher_id = publisher.id if publisher else book.publisher_id
 
-    # Cleanup AI data (use publisher name for correct storage path)
+    # Cleanup AI data (use publisher ID for correct storage path)
     cleanup_manager = get_ai_data_cleanup_manager()
     stats = cleanup_manager.cleanup_all(
-        publisher_id=publisher_name,  # Use publisher name, not numeric ID
+        publisher_id=str(publisher_id),
         book_id=str(book.id),
         book_name=book.book_name,
     )
@@ -351,13 +351,13 @@ async def delete_ai_data(
     )
 
     # Optionally trigger reprocessing
-    if reprocess and _book_has_content(book, publisher_name):
+    if reprocess and _book_has_content(book, publisher_id):
         queue_service = await get_queue_service()
         try:
             job = await queue_service.enqueue_job(
                 book_id=str(book.id),
                 publisher_id=str(book.publisher_id),
-                metadata={"book_name": book.book_name, "publisher": publisher_name},
+                metadata={"book_name": book.book_name, "publisher_id": publisher_id},
             )
             logger.info(
                 "Triggered reprocessing for book %s (job_id=%s)",
@@ -491,11 +491,11 @@ async def list_books_with_processing_status(
     # Apply pagination
     books = query.offset((page - 1) * page_size).limit(page_size).all()
 
-    # Build publisher name lookup (to avoid lazy loading issues)
+    # Build publisher lookup (to avoid lazy loading issues)
     publisher_ids = list(set(book.publisher_id for book in books))
-    publishers = (
+    publishers_by_id = (
         {
-            p.id: p.name
+            p.id: p
             for p in db.query(_publisher_repository.model)
             .filter(_publisher_repository.model.id.in_(publisher_ids))
             .all()
@@ -510,7 +510,9 @@ async def list_books_with_processing_status(
 
     result_books = []
     for book in books:
-        publisher_name = publishers.get(book.publisher_id, "")
+        pub = publishers_by_id.get(book.publisher_id)
+        publisher_name = pub.name if pub else ""
+        pub_id = pub.id if pub else book.publisher_id
         # Get most recent job for this book
         jobs = await queue_service.list_jobs(book_id=str(book.id), limit=1)
 
@@ -534,7 +536,7 @@ async def list_books_with_processing_status(
                 )
         else:
             # Check if metadata exists (means it was processed at some point)
-            metadata = retrieval_service.get_metadata(publisher_name, str(book.id), book.book_name)
+            metadata = retrieval_service.get_metadata(str(pub_id), str(book.id), book.book_name)
             if metadata:
                 processing_status = "completed"
                 progress = 100
@@ -729,11 +731,11 @@ async def bulk_reprocess(
             skipped += 1
             continue
 
-        # Get publisher name explicitly
+        # Get publisher explicitly
         publisher = _publisher_repository.get(db, book.publisher_id)
-        publisher_name = publisher.name if publisher else ""
+        publisher_id = publisher.id if publisher else book.publisher_id
 
-        if not _book_has_content(book, publisher_name):
+        if not _book_has_content(book, publisher_id):
             errors.append(f"Book {book_id} has no content")
             skipped += 1
             continue
@@ -744,7 +746,7 @@ async def bulk_reprocess(
                 publisher_id=str(book.publisher_id),
                 job_type=job_type,
                 priority=priority,
-                metadata={"book_name": book.book_name, "publisher": publisher_name},
+                metadata={"book_name": book.book_name, "publisher_id": publisher_id},
             )
             job_ids.append(job.job_id)
             triggered += 1

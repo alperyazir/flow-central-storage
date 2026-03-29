@@ -39,7 +39,7 @@ class AIDataCleanupManager:
 
     def _get_structure(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
     ) -> AIDataStructure:
@@ -48,7 +48,7 @@ class AIDataCleanupManager:
 
     def cleanup_all(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
     ) -> CleanupStats:
@@ -56,7 +56,7 @@ class AIDataCleanupManager:
         Remove all ai-data content for re-processing.
 
         Args:
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
 
@@ -121,7 +121,7 @@ class AIDataCleanupManager:
 
     def cleanup_selective(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
         directories: list[str],
@@ -130,7 +130,7 @@ class AIDataCleanupManager:
         Remove specific subdirectories.
 
         Args:
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
             directories: List of directory names to clean (text, modules, audio).
@@ -216,7 +216,7 @@ class AIDataCleanupManager:
 
     def get_cleanup_stats(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
     ) -> dict[str, int]:
@@ -224,7 +224,7 @@ class AIDataCleanupManager:
         Get count of files per directory without deleting.
 
         Args:
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
 

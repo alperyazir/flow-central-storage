@@ -161,7 +161,7 @@ class ProcessingMetadata:
     """
 
     book_id: str
-    publisher_id: str
+    publisher_id: int
     book_name: str
     processing_status: ProcessingStatus = ProcessingStatus.PENDING
     processing_started_at: datetime | None = None
@@ -225,7 +225,7 @@ class ProcessingMetadata:
 
         return cls(
             book_id=data.get("book_id", ""),
-            publisher_id=data.get("publisher_id", ""),
+            publisher_id=int(data.get("publisher_id", 0)),
             book_name=data.get("book_name", ""),
             processing_status=status,
             processing_started_at=started_at,
@@ -257,9 +257,9 @@ class AIDataStructure:
     metadata_path: str
 
     @classmethod
-    def from_book_info(cls, publisher_id: str, book_id: str, book_name: str) -> AIDataStructure:
+    def from_book_info(cls, publisher_id: int, book_id: str, book_name: str) -> AIDataStructure:
         """Create AIDataStructure from book information."""
-        # Path: {publisher_name}/books/{book_name}/ai-data (book_id not in path)
+        # Path: {publisher_id}/books/{book_name}/ai-data (book_id not in path)
         base = f"{publisher_id}/books/{book_name}/ai-data"
         return cls(
             base_path=base,

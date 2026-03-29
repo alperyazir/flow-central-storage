@@ -48,13 +48,13 @@ class VocabularyStorage:
 
     def _build_ai_data_path(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
         *path_parts: str,
     ) -> str:
         """Build MinIO path within ai-data directory."""
-        # Path: {publisher_name}/books/{book_name}/ai-data (book_id not in path)
+        # Path: {publisher_id}/books/{book_name}/ai-data (book_id not in path)
         base = f"{publisher_id}/books/{book_name}/ai-data"
         if path_parts:
             return f"{base}/{'/'.join(path_parts)}"
@@ -62,7 +62,7 @@ class VocabularyStorage:
 
     def _build_vocabulary_path(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
     ) -> str:
@@ -71,7 +71,7 @@ class VocabularyStorage:
 
     def _build_module_path(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
         module_id: int,
@@ -82,7 +82,7 @@ class VocabularyStorage:
 
     def _build_metadata_path(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
     ) -> str:
@@ -91,7 +91,7 @@ class VocabularyStorage:
 
     def load_vocabulary(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
     ) -> dict[str, Any] | None:
@@ -99,7 +99,7 @@ class VocabularyStorage:
         Load existing vocabulary.json if any.
 
         Args:
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
 
@@ -171,7 +171,7 @@ class VocabularyStorage:
 
     def get_module(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
         module_id: int,
@@ -180,7 +180,7 @@ class VocabularyStorage:
         Retrieve a single module JSON.
 
         Args:
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
             module_id: Module ID.
@@ -206,7 +206,7 @@ class VocabularyStorage:
 
     def list_modules(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
     ) -> list[dict[str, Any]]:
@@ -214,7 +214,7 @@ class VocabularyStorage:
         List all modules for a book.
 
         Args:
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
 
@@ -254,7 +254,7 @@ class VocabularyStorage:
 
     def update_module_vocabulary_ids(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
         module_result: ModuleVocabularyResult,
@@ -263,7 +263,7 @@ class VocabularyStorage:
         Update an existing module JSON with vocabulary_ids.
 
         Args:
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
             module_result: Vocabulary result for the module.

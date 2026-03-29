@@ -45,13 +45,13 @@ class ModuleStorage:
 
     def _build_modules_path(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
         *path_parts: str,
     ) -> str:
         """Build MinIO path within ai-data/modules directory."""
-        # Path: {publisher_name}/books/{book_name}/ai-data/modules (book_id not in path)
+        # Path: {publisher_id}/books/{book_name}/ai-data/modules (book_id not in path)
         base = f"{publisher_id}/books/{book_name}/ai-data/modules"
         if path_parts:
             return f"{base}/{'/'.join(path_parts)}"
@@ -59,7 +59,7 @@ class ModuleStorage:
 
     def _build_module_path(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
         module_id: int,
@@ -70,7 +70,7 @@ class ModuleStorage:
 
     def _build_metadata_path(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
     ) -> str:
@@ -203,7 +203,7 @@ class ModuleStorage:
 
     def get_module(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
         module_id: int,
@@ -212,7 +212,7 @@ class ModuleStorage:
         Retrieve a single module.
 
         Args:
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
             module_id: Module ID.
@@ -238,7 +238,7 @@ class ModuleStorage:
 
     def list_modules(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
     ) -> list[dict]:
@@ -246,7 +246,7 @@ class ModuleStorage:
         List all modules for a book.
 
         Args:
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
 
@@ -286,7 +286,7 @@ class ModuleStorage:
 
     def get_segmentation_metadata(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
     ) -> dict | None:
@@ -294,7 +294,7 @@ class ModuleStorage:
         Retrieve segmentation metadata.
 
         Args:
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
 
@@ -319,7 +319,7 @@ class ModuleStorage:
 
     def modules_exist(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
     ) -> bool:
@@ -327,7 +327,7 @@ class ModuleStorage:
         Check if segmentation data exists for a book.
 
         Args:
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
 
@@ -338,7 +338,7 @@ class ModuleStorage:
 
     def cleanup_modules_directory(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
     ) -> int:
@@ -346,7 +346,7 @@ class ModuleStorage:
         Delete existing module files before re-segmentation.
 
         Args:
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
 

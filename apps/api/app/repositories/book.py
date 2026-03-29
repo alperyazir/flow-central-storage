@@ -61,6 +61,14 @@ class BookRepository(BaseRepository[Book]):
         result = session.execute(statement)
         return result.scalars().first()
 
+    def get_by_publisher_id_and_book_name(self, session: Session, publisher_id: int, book_name: str) -> Book | None:
+        """Find a book by publisher ID and book name."""
+        statement = select(Book).where(
+            Book.publisher_id == publisher_id,
+            Book.book_name == book_name,
+        )
+        return session.scalars(statement).first()
+
     def get_by_publisher_name_and_book_name(
         self, session: Session, *, publisher_name: str, book_name: str
     ) -> Book | None:

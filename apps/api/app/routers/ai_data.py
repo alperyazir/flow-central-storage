@@ -79,10 +79,10 @@ def _require_auth(credentials: HTTPAuthorizationCredentials, db: Session) -> int
 
 
 def _get_book_info(db: Session, book_id: int) -> tuple[str, str]:
-    """Get publisher name and book name for a book ID.
+    """Get publisher ID (as string) and book name for a book ID.
 
     Returns:
-        Tuple of (publisher_name, book_name)
+        Tuple of (publisher_id_str, book_name)
 
     Raises:
         HTTPException 404 if book not found
@@ -93,10 +93,9 @@ def _get_book_info(db: Session, book_id: int) -> tuple[str, str]:
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Book not found",
         )
-    # Get publisher name explicitly (don't rely on lazy loading)
-    publisher = _publisher_repository.get(db, book.publisher_id)
-    publisher_name = publisher.name if publisher else ""
-    return publisher_name, book.book_name
+    # Use publisher ID for storage path construction
+    publisher_id_str = str(book.publisher_id)
+    return publisher_id_str, book.book_name
 
 
 # =============================================================================
@@ -235,10 +234,9 @@ def get_bulk_ai_summary(
             results.append({"book_id": book_id, "processing_status": "not_found"})
             continue
 
-        publisher = _publisher_repository.get(db, book.publisher_id)
-        publisher_name = publisher.name if publisher else ""
+        publisher_id_str = str(book.publisher_id)
 
-        metadata = retrieval_service.get_metadata(publisher_name, str(book_id), book.book_name)
+        metadata = retrieval_service.get_metadata(publisher_id_str, str(book_id), book.book_name)
         if metadata is None:
             results.append({"book_id": book_id, "processing_status": "not_found"})
             continue
@@ -594,12 +592,12 @@ def stream_vocabulary_audio(
             detail="Invalid word_id format",
         )
 
-    publisher, book_name = _get_book_info(db, book_id)
+    publisher_id_str, book_name = _get_book_info(db, book_id)
     settings = get_settings()
     client = get_minio_client(settings)
 
     # Build audio file path
-    audio_path = f"{publisher}/books/{book_name}/ai-data/audio/vocabulary/{lang}/{word_id}.mp3"
+    audio_path = f"{publisher_id_str}/books/{book_name}/ai-data/audio/vocabulary/{lang}/{word_id}.mp3"
 
     # Get file metadata
     try:

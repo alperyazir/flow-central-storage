@@ -46,7 +46,7 @@ class AIDataRetrievalService:
 
     def get_metadata(
         self,
-        publisher: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
     ) -> ProcessingMetadata | None:
@@ -54,18 +54,18 @@ class AIDataRetrievalService:
         Get processing metadata for a book.
 
         Args:
-            publisher: Publisher name (used as path component).
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
 
         Returns:
             ProcessingMetadata instance or None if not found.
         """
-        return self._metadata_service.get_metadata(publisher, book_id, book_name)
+        return self._metadata_service.get_metadata(publisher_id, book_id, book_name)
 
     def list_modules(
         self,
-        publisher: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
     ) -> list[dict[str, Any]] | None:
@@ -73,7 +73,7 @@ class AIDataRetrievalService:
         List all modules for a book.
 
         Args:
-            publisher: Publisher name.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
 
@@ -81,7 +81,7 @@ class AIDataRetrievalService:
             List of module summary dictionaries, or None if not found.
         """
         try:
-            modules = self._module_storage.list_modules(publisher, book_id, book_name)
+            modules = self._module_storage.list_modules(publisher_id, book_id, book_name)
             if not modules:
                 return None
             return modules
@@ -93,7 +93,7 @@ class AIDataRetrievalService:
 
     def get_module(
         self,
-        publisher: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
         module_id: int,
@@ -102,7 +102,7 @@ class AIDataRetrievalService:
         Get full data for a single module.
 
         Args:
-            publisher: Publisher name.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
             module_id: Module identifier.
@@ -110,11 +110,11 @@ class AIDataRetrievalService:
         Returns:
             Module dictionary or None if not found.
         """
-        return self._module_storage.get_module(publisher, book_id, book_name, module_id)
+        return self._module_storage.get_module(publisher_id, book_id, book_name, module_id)
 
     def get_vocabulary(
         self,
-        publisher: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
         module_id: int | None = None,
@@ -123,7 +123,7 @@ class AIDataRetrievalService:
         Get vocabulary data for a book.
 
         Args:
-            publisher: Publisher name.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
             module_id: Optional module ID to filter by.
@@ -131,7 +131,7 @@ class AIDataRetrievalService:
         Returns:
             Vocabulary dictionary or None if not found.
         """
-        vocabulary = self._vocabulary_storage.load_vocabulary(publisher, book_id, book_name)
+        vocabulary = self._vocabulary_storage.load_vocabulary(publisher_id, book_id, book_name)
         if vocabulary is None:
             return None
 
@@ -144,7 +144,7 @@ class AIDataRetrievalService:
 
     def get_audio_url(
         self,
-        publisher: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
         language: str,
@@ -155,7 +155,7 @@ class AIDataRetrievalService:
         Get presigned URL for a vocabulary audio file.
 
         Args:
-            publisher: Publisher name.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
             language: Language code (e.g., 'en', 'tr').
@@ -169,8 +169,8 @@ class AIDataRetrievalService:
         bucket = self.settings.minio_publishers_bucket
 
         # Build audio file path
-        # Path: {publisher}/books/{book_name}/ai-data/audio/vocabulary/{lang}/{word}.mp3
-        audio_path = f"{publisher}/books/{book_name}/ai-data/audio/vocabulary/{language}/{word}.mp3"
+        # Path: {publisher_id}/books/{book_name}/ai-data/audio/vocabulary/{lang}/{word}.mp3
+        audio_path = f"{publisher_id}/books/{book_name}/ai-data/audio/vocabulary/{language}/{word}.mp3"
 
         # Check if file exists
         try:
@@ -197,7 +197,7 @@ class AIDataRetrievalService:
 
     def audio_exists(
         self,
-        publisher: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
         language: str,
@@ -207,7 +207,7 @@ class AIDataRetrievalService:
         Check if an audio file exists.
 
         Args:
-            publisher: Publisher name.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
             language: Language code.
@@ -219,7 +219,7 @@ class AIDataRetrievalService:
         client = get_minio_client(self.settings)
         bucket = self.settings.minio_publishers_bucket
 
-        audio_path = f"{publisher}/books/{book_name}/ai-data/audio/vocabulary/{language}/{word}.mp3"
+        audio_path = f"{publisher_id}/books/{book_name}/ai-data/audio/vocabulary/{language}/{word}.mp3"
 
         try:
             client.stat_object(bucket, audio_path)
@@ -231,7 +231,7 @@ class AIDataRetrievalService:
 
     def get_modules_metadata(
         self,
-        publisher: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
     ) -> dict[str, Any] | None:
@@ -239,7 +239,7 @@ class AIDataRetrievalService:
         Get modules metadata.json containing summary info for all modules.
 
         Args:
-            publisher: Publisher name.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
 
@@ -251,8 +251,8 @@ class AIDataRetrievalService:
         client = get_minio_client(self.settings)
         bucket = self.settings.minio_publishers_bucket
 
-        # Path: {publisher}/books/{book_name}/ai-data/modules/metadata.json
-        metadata_path = f"{publisher}/books/{book_name}/ai-data/modules/metadata.json"
+        # Path: {publisher_id}/books/{book_name}/ai-data/modules/metadata.json
+        metadata_path = f"{publisher_id}/books/{book_name}/ai-data/modules/metadata.json"
 
         try:
             response = client.get_object(bucket, metadata_path)

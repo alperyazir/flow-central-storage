@@ -372,7 +372,7 @@ def permanent_delete_publisher(
     # Delete all files from MinIO storage
     settings = get_settings()
     client = get_minio_client(settings)
-    publisher_prefix = f"{publisher.name}/"
+    publisher_prefix = f"{publisher.id}/"
 
     try:
         # List and delete all objects under publisher prefix
@@ -431,7 +431,7 @@ def list_publisher_assets(
 
     settings = get_settings()
     client = get_minio_client(settings)
-    assets_prefix = f"{publisher.name}/assets/"
+    assets_prefix = f"{publisher.id}/assets/"
 
     # List all folders under assets/
     asset_types: dict[str, AssetTypeInfo] = {}
@@ -487,7 +487,7 @@ def list_asset_type_files(
 
     settings = get_settings()
     client = get_minio_client(settings)
-    prefix = f"{publisher.name}/assets/{asset_type}/"
+    prefix = f"{publisher.id}/assets/{asset_type}/"
 
     files: list[AssetFileInfo] = []
     try:
@@ -544,7 +544,7 @@ async def upload_asset_file(
 
     settings = get_settings()
     client = get_minio_client(settings)
-    object_key = f"{publisher.name}/assets/{asset_type}/{file.filename}"
+    object_key = f"{publisher.id}/assets/{asset_type}/{file.filename}"
 
     # Read file contents
     contents = await file.read()
@@ -599,7 +599,7 @@ def get_publisher_logo(
 
     settings = get_settings()
     client = get_minio_client(settings)
-    logo_prefix = f"{publisher.name}/assets/logos/"
+    logo_prefix = f"{publisher.id}/assets/logos/"
 
     # List files under the logo prefix
     try:
@@ -672,7 +672,7 @@ def download_asset_file(
 
     settings = get_settings()
     client = get_minio_client(settings)
-    object_key = f"{publisher.name}/assets/{asset_type}/{filename}"
+    object_key = f"{publisher.id}/assets/{asset_type}/{filename}"
 
     try:
         response = client.get_object(settings.minio_publishers_bucket, object_key)
@@ -716,7 +716,7 @@ def delete_asset_file(
 
     settings = get_settings()
     client = get_minio_client(settings)
-    object_key = f"{publisher.name}/assets/{asset_type}/{filename}"
+    object_key = f"{publisher.id}/assets/{asset_type}/{filename}"
 
     # Move to trash
     try:

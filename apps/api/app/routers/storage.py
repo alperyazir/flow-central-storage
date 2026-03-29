@@ -185,27 +185,26 @@ def _normalize_relative_path(path: str) -> str:
     return normalized
 
 
-def _build_book_object_key(publisher: str, book_name: str, relative_path: str | None = None) -> str:
+def _build_book_object_key(publisher_id: int, book_name: str, relative_path: str | None = None) -> str:
     """Build the MinIO object key for book content.
 
-    Path structure: {publisher}/books/{book_name}/...
+    Path structure: {publisher_id}/books/{book_name}/...
 
     Reserved publisher path prefixes:
-        - {publisher}/books/    - Book content (implemented)
-        - {publisher}/logos/    - Publisher logos (reserved for future use)
-        - {publisher}/materials/ - Publisher materials (reserved for future use)
+        - {publisher_id}/books/    - Book content (implemented)
+        - {publisher_id}/logos/    - Publisher logos (reserved for future use)
+        - {publisher_id}/materials/ - Publisher materials (reserved for future use)
     """
-    publisher_segment = _sanitize_segment(publisher, "publisher")
     book_segment = _sanitize_segment(book_name, "book name")
     if relative_path is None:
-        return f"{publisher_segment}/books/{book_segment}/"
+        return f"{publisher_id}/books/{book_segment}/"
     normalized_path = _normalize_relative_path(relative_path)
-    return f"{publisher_segment}/books/{book_segment}/{normalized_path}"
+    return f"{publisher_id}/books/{book_segment}/{normalized_path}"
 
 
-@router.get("/books/{publisher}/{book_name}")
+@router.get("/books/{publisher_id}/{book_name}")
 async def list_book_contents(
-    publisher: str,
+    publisher_id: int,
     book_name: str,
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
     db: Session = Depends(get_db),
@@ -215,14 +214,14 @@ async def list_book_contents(
     _require_admin(credentials, db)
     settings = get_settings()
     client = get_minio_client(settings)
-    prefix = _build_book_object_key(publisher, book_name, None)
+    prefix = _build_book_object_key(publisher_id, book_name, None)
     tree = list_objects_tree(client, settings.minio_publishers_bucket, prefix)
     return tree
 
 
-@router.get("/books/{publisher}/{book_name}/config")
+@router.get("/books/{publisher_id}/{book_name}/config")
 async def get_book_config(
-    publisher: str,
+    publisher_id: int,
     book_name: str,
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
     db: Session = Depends(get_db),
@@ -234,15 +233,15 @@ async def get_book_config(
     settings = get_settings()
     client = get_minio_client(settings)
 
-    # Build path: {publisher}/books/{book_name}/config.json
-    object_key = _build_book_object_key(publisher, book_name, "config.json")
+    # Build path: {publisher_id}/books/{book_name}/config.json
+    object_key = _build_book_object_key(publisher_id, book_name, "config.json")
 
     try:
         client.stat_object(settings.minio_publishers_bucket, object_key)
     except S3Error as exc:
         if exc.code == "NoSuchKey":
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail="config.json not found") from exc
-        logger.error("Failed statting config '%s/%s': %s", publisher, book_name, exc)
+        logger.error("Failed statting config '%s/%s': %s", publisher_id, book_name, exc)
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail="Unable to load config.json") from exc
 
     try:
@@ -250,7 +249,7 @@ async def get_book_config(
     except S3Error as exc:
         if exc.code == "NoSuchKey":
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail="config.json not found") from exc
-        logger.error("Failed retrieving config '%s/%s': %s", publisher, book_name, exc)
+        logger.error("Failed retrieving config '%s/%s': %s", publisher_id, book_name, exc)
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail="Unable to load config.json") from exc
 
     try:
@@ -262,15 +261,15 @@ async def get_book_config(
     try:
         payload = json.loads(raw_data.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        logger.error("Invalid config.json for '%s/%s': %s", publisher, book_name, exc)
+        logger.error("Invalid config.json for '%s/%s': %s", publisher_id, book_name, exc)
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail="config.json is invalid") from exc
 
     return payload
 
 
-@router.get("/books/{publisher}/{book_name}/cover")
+@router.get("/books/{publisher_id}/{book_name}/cover")
 async def get_book_cover(
-    publisher: str,
+    publisher_id: int,
     book_name: str,
     request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
@@ -281,7 +280,7 @@ async def get_book_cover(
     _require_admin(credentials, db)
 
     # Look up book to get the cover filename
-    book = _book_repository.get_by_publisher_name_and_book_name(db, publisher_name=publisher, book_name=book_name)
+    book = _book_repository.get_by_publisher_id_and_book_name(db, publisher_id, book_name)
     if book is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Book not found")
 
@@ -290,7 +289,7 @@ async def get_book_cover(
 
     settings = get_settings()
     client = get_minio_client(settings)
-    object_key = _build_book_object_key(publisher, book_name, f"images/{cover_filename}")
+    object_key = _build_book_object_key(publisher_id, book_name, f"images/{cover_filename}")
 
     # Get file metadata
     try:
@@ -349,9 +348,9 @@ async def get_book_cover(
     )
 
 
-@router.get("/books/{publisher}/{book_name}/object")
+@router.get("/books/{publisher_id}/{book_name}/object")
 async def download_book_object(
-    publisher: str,
+    publisher_id: int,
     book_name: str,
     request: Request,
     path: str = Query(..., description="Relative path to the object within the book"),
@@ -379,7 +378,7 @@ async def download_book_object(
     _require_admin(credentials, db)
     settings = get_settings()
     client = get_minio_client(settings)
-    object_key = _build_book_object_key(publisher, book_name, path)
+    object_key = _build_book_object_key(publisher_id, book_name, path)
 
     # Get file metadata (size is required for Range support)
     try:
@@ -481,9 +480,9 @@ async def download_book_object(
         )
 
 
-@router.get("/books/{publisher}/{book_name}/presigned")
+@router.get("/books/{publisher_id}/{book_name}/presigned")
 async def get_presigned_url(
-    publisher: str,
+    publisher_id: int,
     book_name: str,
     path: str = Query(..., description="Relative path to the object within the book"),
     expires: int = Query(3600, ge=60, le=86400, description="URL expiry in seconds (default 1h, max 24h)"),
@@ -498,7 +497,7 @@ async def get_presigned_url(
     """
     _require_admin(credentials, db)
     settings = get_settings()
-    object_key = _build_book_object_key(publisher, book_name, path)
+    object_key = _build_book_object_key(publisher_id, book_name, path)
 
     # Verify the object exists
     client = get_minio_client(settings)
@@ -631,12 +630,12 @@ def restore_item(
 
     if bucket == "publishers":
         item_type = "book"
-        publisher, book_name = _extract_book_identifiers(path_parts)
-        book = _book_repository.get_by_publisher_name_and_book_name(
-            db,
-            publisher_name=publisher,
-            book_name=book_name,
-        )
+        publisher_id_str, book_name = _extract_book_identifiers(path_parts)
+        try:
+            pub_id = int(publisher_id_str)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Invalid publisher ID in key") from exc
+        book = _book_repository.get_by_publisher_id_and_book_name(db, pub_id, book_name)
         if book is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Book not found")
 
@@ -706,14 +705,15 @@ def delete_trash_entry(
     item_type: Literal["book", "app", "teacher_material", "unknown"] = "unknown"
     if bucket == "publishers":
         item_type = "book"
-        publisher, book_name = _extract_book_identifiers(path_parts)
-        book = _book_repository.get_by_publisher_name_and_book_name(
-            db,
-            publisher_name=publisher,
-            book_name=book_name,
-        )
-        if book is not None:
-            _book_repository.delete(db, book)
+        publisher_id_str, book_name = _extract_book_identifiers(path_parts)
+        try:
+            pub_id = int(publisher_id_str)
+        except (TypeError, ValueError):
+            pub_id = None
+        if pub_id is not None:
+            book = _book_repository.get_by_publisher_id_and_book_name(db, pub_id, book_name)
+            if book is not None:
+                _book_repository.delete(db, book)
     elif bucket == "apps":
         item_type = "app"
     elif bucket == "teachers":

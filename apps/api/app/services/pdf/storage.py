@@ -45,7 +45,7 @@ class AIDataStorage:
 
     def _build_ai_data_path(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
         *path_parts: str,
@@ -54,7 +54,7 @@ class AIDataStorage:
         Build MinIO path within ai-data directory.
 
         Args:
-            publisher_id: Publisher identifier (actually publisher name).
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier (not used in path).
             book_name: Book name (folder name).
             *path_parts: Additional path segments.
@@ -62,7 +62,7 @@ class AIDataStorage:
         Returns:
             Complete MinIO object path.
         """
-        # Path: {publisher_name}/books/{book_name}/ai-data (book_id not in path)
+        # Path: {publisher_id}/books/{book_name}/ai-data (book_id not in path)
         base = f"{publisher_id}/books/{book_name}/ai-data"
         if path_parts:
             return f"{base}/{'/'.join(path_parts)}"
@@ -70,7 +70,7 @@ class AIDataStorage:
 
     def _build_text_path(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
         page_number: int,
@@ -79,7 +79,7 @@ class AIDataStorage:
         Build path for a page text file.
 
         Args:
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book name.
             page_number: Page number (1-indexed).
@@ -92,7 +92,7 @@ class AIDataStorage:
 
     def _build_metadata_path(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
     ) -> str:
@@ -100,7 +100,7 @@ class AIDataStorage:
         Build path for extraction metadata file.
 
         Args:
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book name.
 
@@ -280,7 +280,7 @@ class AIDataStorage:
 
     def cleanup_text_directory(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
     ) -> int:
@@ -288,7 +288,7 @@ class AIDataStorage:
         Delete existing text files before re-extraction.
 
         Args:
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book name.
 
@@ -320,7 +320,7 @@ class AIDataStorage:
 
     def text_exists(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
     ) -> bool:
@@ -328,7 +328,7 @@ class AIDataStorage:
         Check if extracted text already exists for a book.
 
         Args:
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book name.
 
@@ -350,7 +350,7 @@ class AIDataStorage:
 
     def get_extraction_metadata(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
     ) -> dict | None:
@@ -358,7 +358,7 @@ class AIDataStorage:
         Retrieve extraction metadata for a book.
 
         Args:
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book name.
 

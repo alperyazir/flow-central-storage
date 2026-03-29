@@ -45,18 +45,18 @@ class AIDataMetadataService:
 
     def _build_metadata_path(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
     ) -> str:
         """Build path for metadata.json file."""
-        # Path: {publisher_name}/books/{book_name}/ai-data (book_id not in path)
+        # Path: {publisher_id}/books/{book_name}/ai-data (book_id not in path)
         return f"{publisher_id}/books/{book_name}/ai-data/metadata.json"
 
     def create_metadata(
         self,
         book_id: str,
-        publisher_id: str,
+        publisher_id: int,
         book_name: str,
     ) -> ProcessingMetadata:
         """
@@ -64,7 +64,7 @@ class AIDataMetadataService:
 
         Args:
             book_id: Book identifier.
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_name: Book folder name.
 
         Returns:
@@ -111,7 +111,7 @@ class AIDataMetadataService:
 
     def update_metadata(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
         stage_name: str,
@@ -123,7 +123,7 @@ class AIDataMetadataService:
         Update metadata.json with stage results.
 
         Args:
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
             stage_name: Name of the completed stage.
@@ -231,7 +231,7 @@ class AIDataMetadataService:
 
     def finalize_metadata(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
         final_status: ProcessingStatus,
@@ -241,7 +241,7 @@ class AIDataMetadataService:
         Finalize metadata.json with final status and completion timestamp.
 
         Args:
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
             final_status: Final processing status.
@@ -289,7 +289,7 @@ class AIDataMetadataService:
 
     def get_metadata(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
     ) -> ProcessingMetadata | None:
@@ -297,7 +297,7 @@ class AIDataMetadataService:
         Retrieve current metadata.json.
 
         Args:
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
 
@@ -323,7 +323,7 @@ class AIDataMetadataService:
 
     def metadata_exists(
         self,
-        publisher_id: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
     ) -> bool:
@@ -331,7 +331,7 @@ class AIDataMetadataService:
         Check if metadata.json exists.
 
         Args:
-            publisher_id: Publisher identifier.
+            publisher_id: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
 
