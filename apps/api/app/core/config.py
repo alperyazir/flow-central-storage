@@ -19,7 +19,7 @@ except ImportError:  # pragma: no cover - exercised only when dependency missing
 class Settings(BaseSettings):
     """Application configuration loaded from environment variables."""
 
-    app_name: str = "Dream Central Storage API"
+    app_name: str = "Flow Central Storage API"
     app_version: str = "0.1.0"
 
     database_scheme: str = "postgresql+psycopg"
@@ -122,7 +122,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
-        env_prefix="DCS_",
+        env_prefix="FCS_",
         extra="ignore",
     )
 

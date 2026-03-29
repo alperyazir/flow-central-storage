@@ -219,7 +219,7 @@ class TTSService:
 
         raise ValueError(
             "No TTS providers available. Edge TTS should always be available. "
-            "Configure DCS_AZURE_TTS_KEY for Azure fallback."
+            "Configure FCS_AZURE_TTS_KEY for Azure fallback."
         )
 
     async def synthesize_text(

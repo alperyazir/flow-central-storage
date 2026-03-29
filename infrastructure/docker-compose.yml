@@ -90,7 +90,9 @@ services:
 
   seaweedfs-s3:
     image: chrislusf/seaweedfs:latest
-    command: "s3 -filer=seaweedfs-filer:8888 -ip.bind=0.0.0.0 -port=8333"
+    command: "s3 -filer=seaweedfs-filer:8888 -ip.bind=0.0.0.0 -port=8333 -config=/etc/seaweedfs/s3.json"
+    volumes:
+      - ./seaweedfs/s3.json:/etc/seaweedfs/s3.json:ro
     ports:
       - "8333:8333"
     depends_on:

@@ -140,7 +140,7 @@ app.include_router(storage.router)
 app.include_router(teachers.router)
 app.include_router(teachers_crud.router)
 app.include_router(webhooks.router)
-app.include_router(health.router)
+app.include_router(health.router, prefix="/health")
 app.include_router(monitoring_router)
 
 
@@ -150,11 +150,4 @@ async def global_exception_handler(request, exc):
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 
-@app.get("/health", tags=["Health"])
-async def health_check() -> dict[str, str]:
-    """Explicit health endpoint for readiness probes."""
-    return {
-        "status": "ok",
-        "service": settings.app_name,
-        "version": settings.app_version,
-    }
+

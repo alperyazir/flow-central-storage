@@ -60,7 +60,7 @@ def _check_minio() -> str:
         return "error"
 
 
-@router.get("/", tags=["Health"])
+@router.get("", tags=["Health"])
 def read_health(db: Session = Depends(get_db)) -> dict[str, Any]:
     """Return system health status including DB, Redis, and MinIO connectivity."""
     settings = get_settings()
