@@ -536,7 +536,7 @@ async def list_books_with_processing_status(
                 )
         else:
             # Check if metadata exists (means it was processed at some point)
-            metadata = retrieval_service.get_metadata(str(pub_id), str(book.id), book.book_name)
+            metadata = retrieval_service.get_metadata(pub_id, str(book.id), book.book_name)
             if metadata:
                 processing_status = "completed"
                 progress = 100

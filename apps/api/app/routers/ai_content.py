@@ -81,14 +81,14 @@ def _get_book_or_404(db: Session, book_id: int):
     return book
 
 
-def _ai_content_prefix(publisher: str, book_name: str) -> str:
+def _ai_content_prefix(publisher_id: int, book_name: str) -> str:
     """Build the base MinIO prefix for ai-content under a book."""
-    return f"{publisher}/books/{book_name}/ai-content/"
+    return f"{publisher_id}/books/{book_name}/ai-content/"
 
 
-def _content_prefix(publisher: str, book_name: str, content_id: str) -> str:
+def _content_prefix(publisher_id: int, book_name: str, content_id: str) -> str:
     """Build the MinIO prefix for a specific content_id folder."""
-    return f"{publisher}/books/{book_name}/ai-content/{content_id}/"
+    return f"{publisher_id}/books/{book_name}/ai-content/{content_id}/"
 
 
 def _validate_content_id(content_id: str) -> None:
@@ -174,7 +174,7 @@ def create_ai_content(
     bucket = settings.minio_publishers_bucket
 
     content_id = str(uuid.uuid4())
-    prefix = _content_prefix(book.publisher, book.book_name, content_id)
+    prefix = _content_prefix(book.publisher_id, book.book_name, content_id)
 
     # Build manifest with server-assigned content_id
     manifest_dict = payload.manifest.model_dump(mode="json")
@@ -204,7 +204,7 @@ def create_ai_content(
         "Created AI content %s for book_id=%s (%s/%s)",
         content_id,
         book_id,
-        book.publisher,
+        book.publisher_id,
         book.book_name,
     )
 
@@ -232,7 +232,7 @@ def list_ai_content(
     settings = get_settings()
     client = get_minio_client(settings)
     bucket = settings.minio_publishers_bucket
-    base_prefix = _ai_content_prefix(book.publisher, book.book_name)
+    base_prefix = _ai_content_prefix(book.publisher_id, book.book_name)
 
     # List all objects under ai-content/ to discover content_id folders
     objects = list(client.list_objects(bucket, prefix=base_prefix, recursive=True))
@@ -279,7 +279,7 @@ def get_ai_content(
     settings = get_settings()
     client = get_minio_client(settings)
     bucket = settings.minio_publishers_bucket
-    prefix = _content_prefix(book.publisher, book.book_name, content_id)
+    prefix = _content_prefix(book.publisher_id, book.book_name, content_id)
 
     # Read manifest.json
     try:
@@ -334,7 +334,7 @@ def delete_ai_content(
     settings = get_settings()
     client = get_minio_client(settings)
     bucket = settings.minio_publishers_bucket
-    prefix = _content_prefix(book.publisher, book.book_name, content_id)
+    prefix = _content_prefix(book.publisher_id, book.book_name, content_id)
 
     objects = list(client.list_objects(bucket, prefix=prefix, recursive=True))
     if not objects:
@@ -378,7 +378,7 @@ async def upload_audio(
     settings = get_settings()
     client = get_minio_client(settings)
     bucket = settings.minio_publishers_bucket
-    prefix = _content_prefix(book.publisher, book.book_name, content_id)
+    prefix = _content_prefix(book.publisher_id, book.book_name, content_id)
 
     # Verify content exists (manifest.json must be present)
     try:
@@ -429,7 +429,7 @@ async def upload_audio_batch(
     settings = get_settings()
     client = get_minio_client(settings)
     bucket = settings.minio_publishers_bucket
-    prefix = _content_prefix(book.publisher, book.book_name, content_id)
+    prefix = _content_prefix(book.publisher_id, book.book_name, content_id)
 
     # Verify content exists
     try:
@@ -503,7 +503,7 @@ async def stream_audio(
     settings = get_settings()
     client = get_minio_client(settings)
     bucket = settings.minio_publishers_bucket
-    prefix = _content_prefix(book.publisher, book.book_name, content_id)
+    prefix = _content_prefix(book.publisher_id, book.book_name, content_id)
     object_key = f"{prefix}audio/{filename}"
 
     # Get file metadata

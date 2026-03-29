@@ -151,6 +151,14 @@ class StageResult:
         )
 
 
+def _safe_int(value: object) -> int:
+    """Parse value as int, return 0 if not numeric (handles legacy name-based publisher_id)."""
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return 0
+
+
 @dataclass
 class ProcessingMetadata:
     """
@@ -225,7 +233,7 @@ class ProcessingMetadata:
 
         return cls(
             book_id=data.get("book_id", ""),
-            publisher_id=int(data.get("publisher_id", 0)),
+            publisher_id=_safe_int(data.get("publisher_id", 0)),
             book_name=data.get("book_name", ""),
             processing_status=status,
             processing_started_at=started_at,
