@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_access_token_expires_minutes: int = 10080  # 7 days
 
-    cors_allowed_origins: str | list[str] = "http://localhost:5173,http://localhost:5174"
+    cors_allowed_origins: str | list[str] = "http://localhost:5173,http://localhost:5174,https://storage.dreamedtech.com,https://storage-api.dreamedtech.com"
 
     # LLM Provider Configuration
     deepseek_api_key: str = ""
