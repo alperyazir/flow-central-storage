@@ -72,6 +72,13 @@ class Settings(BaseSettings):
     tts_max_retries: int = 3
     tts_batch_concurrency: int = 5
 
+    # Database pool settings (tune per deployment)
+    # Defaults for Hetzner CX43 sharing with Flow Learn
+    db_pool_size: int = 5  # Base connections (PGBouncer handles pooling)
+    db_max_overflow: int = 5  # Extra connections under burst
+    db_pool_timeout: int = 30  # Seconds to wait for a connection
+    db_pool_recycle: int = 1800  # Recycle connections after 30 min
+
     # Queue Configuration (Redis/arq)
     redis_url: str = "redis://localhost:6379"
     queue_name: str = "ai_processing"
