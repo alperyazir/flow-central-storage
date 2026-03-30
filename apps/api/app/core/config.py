@@ -25,9 +25,9 @@ class Settings(BaseSettings):
     database_scheme: str = "postgresql+psycopg"
     database_host: str = "pgbouncer"
     database_port: int = 6432
-    database_user: str = "dream_admin"
-    database_password: str = "dream_password"
-    database_name: str = "dream_central"
+    database_user: str = "flow_admin"
+    database_password: str = "flow_password"
+    database_name: str = "flow_central"
 
     minio_endpoint: str = "seaweedfs-s3:8333"
     minio_external_url: str = "http://localhost:8333"  # Public URL for presigned URLs

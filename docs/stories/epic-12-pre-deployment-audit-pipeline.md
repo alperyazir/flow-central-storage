@@ -8,7 +8,7 @@
 
 ## Epic Goal
 
-Systematically audit the Dream Central Storage (DCS) codebase for security vulnerabilities, performance bottlenecks, and reliability risks, then ensure the deployment pipeline is production-ready — covering the API, admin panel, MinIO storage, and book processing pipeline.
+Systematically audit the Flow Central Storage (DCS) codebase for security vulnerabilities, performance bottlenecks, and reliability risks, then ensure the deployment pipeline is production-ready — covering the API, admin panel, MinIO storage, and book processing pipeline.
 
 ---
 

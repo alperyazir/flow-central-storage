@@ -17,35 +17,35 @@ Create a `.env` file in the project root (or set via your deployment platform):
 ```bash
 # Database
 POSTGRES_PASSWORD=<strong-random-password>
-DCS_DATABASE_USER=dream_admin
-DCS_DATABASE_PASSWORD=<strong-random-password>
-DCS_DATABASE_HOST=postgres
-DCS_DATABASE_PORT=5432
-DCS_DATABASE_NAME=dream_central
+FCS_DATABASE_USER=flow_admin
+FCS_DATABASE_PASSWORD=<strong-random-password>
+FCS_DATABASE_HOST=postgres
+FCS_DATABASE_PORT=5432
+FCS_DATABASE_NAME=flow_central
 
 # MinIO
 MINIO_ROOT_USER=<minio-admin-user>
 MINIO_ROOT_PASSWORD=<strong-random-password>
-DCS_MINIO_ENDPOINT=minio:9000
-DCS_MINIO_ACCESS_KEY=<same-as-MINIO_ROOT_USER>
-DCS_MINIO_SECRET_KEY=<same-as-MINIO_ROOT_PASSWORD>
+FCS_MINIO_ENDPOINT=minio:9000
+FCS_MINIO_ACCESS_KEY=<same-as-MINIO_ROOT_USER>
+FCS_MINIO_SECRET_KEY=<same-as-MINIO_ROOT_PASSWORD>
 
 # Auth
-DCS_JWT_SECRET_KEY=<random-64-char-string>
+FCS_JWT_SECRET_KEY=<random-64-char-string>
 
 # CORS (production frontend URL)
-DCS_CORS_ALLOWED_ORIGINS=https://admin.yourdomain.com
+FCS_CORS_ALLOWED_ORIGINS=https://admin.yourdomain.com
 
 # Redis
-DCS_REDIS_URL=redis://redis:6379
+FCS_REDIS_URL=redis://redis:6379
 
 # LLM Providers
-DCS_DEEPSEEK_API_KEY=<key>
-DCS_GEMINI_API_KEY=<key>
+FCS_DEEPSEEK_API_KEY=<key>
+FCS_GEMINI_API_KEY=<key>
 
 # TTS
-DCS_AZURE_TTS_KEY=<key>
-DCS_AZURE_TTS_REGION=<region>
+FCS_AZURE_TTS_KEY=<key>
+FCS_AZURE_TTS_REGION=<region>
 ```
 
 Generate secrets:
@@ -140,24 +140,24 @@ server {
 ### Backup
 ```bash
 # Automated daily backup
-docker compose exec postgres pg_dump -U postgres dream_central > backup_$(date +%Y%m%d).sql
+docker compose exec postgres pg_dump -U postgres flow_central > backup_$(date +%Y%m%d).sql
 
 # Compressed
-docker compose exec postgres pg_dump -U postgres dream_central | gzip > backup_$(date +%Y%m%d).sql.gz
+docker compose exec postgres pg_dump -U postgres flow_central | gzip > backup_$(date +%Y%m%d).sql.gz
 ```
 
 ### Restore
 ```bash
 # From SQL file
-docker compose exec -T postgres psql -U postgres dream_central < backup_20260326.sql
+docker compose exec -T postgres psql -U postgres flow_central < backup_20260326.sql
 
 # From compressed
-gunzip -c backup_20260326.sql.gz | docker compose exec -T postgres psql -U postgres dream_central
+gunzip -c backup_20260326.sql.gz | docker compose exec -T postgres psql -U postgres flow_central
 ```
 
 ### Scheduled backups (cron)
 ```bash
-0 2 * * * cd /path/to/project/infrastructure && docker compose exec -T postgres pg_dump -U postgres dream_central | gzip > /backups/dcs_$(date +\%Y\%m\%d).sql.gz
+0 2 * * * cd /path/to/project/infrastructure && docker compose exec -T postgres pg_dump -U postgres flow_central | gzip > /backups/dcs_$(date +\%Y\%m\%d).sql.gz
 ```
 
 ---
@@ -254,7 +254,7 @@ docker compose down
 docker compose pull  # or tag specific versions
 
 # 3. Restore database
-gunzip -c /backups/dcs_YYYYMMDD.sql.gz | docker compose exec -T postgres psql -U postgres dream_central
+gunzip -c /backups/dcs_YYYYMMDD.sql.gz | docker compose exec -T postgres psql -U postgres flow_central
 
 # 4. Restart
 docker compose up -d postgres redis seaweedfs-master seaweedfs-volume seaweedfs-filer seaweedfs-s3

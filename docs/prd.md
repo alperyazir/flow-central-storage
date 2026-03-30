@@ -1,10 +1,10 @@
-# Dream Central Storage Product Requirements Document (PRD)
+# Flow Central Storage Product Requirements Document (PRD)
 
 ## **Goals and Background Context**
 
 ### **Goals**
 
-* Build a stable, scalable, and extensible storage and distribution system named **Dream Central Storage**.
+* Build a stable, scalable, and extensible storage and distribution system named **Flow Central Storage**.
 * Manage both FlowBook application builds and the interactive book datasets within a single system.
 * Support uploading book and application data as open-structure folders, not just zipped files.
 * Provide a secure, JWT-authenticated API service to handle all data management operations like uploads, downloads, and listings.
@@ -16,7 +16,7 @@
 
 FlowBook is a cross-platform desktop application that renders interactive books for students and teachers. The application is designed to be portable, with a clear separation between the app itself and the book datasets it loads.
 
-This project's purpose is to create "Dream Central Storage," a unified and extensible platform to replace the current manual management of FlowBook builds and book data. This centralized system will provide a stable, scalable foundation for the entire ecosystem, supporting an Admin Panel for management and future integrations with a Learning Management System (LMS) and a Kanban production tracker.
+This project's purpose is to create "Flow Central Storage," a unified and extensible platform to replace the current manual management of FlowBook builds and book data. This centralized system will provide a stable, scalable foundation for the entire ecosystem, supporting an Admin Panel for management and future integrations with a Learning Management System (LMS) and a Kanban production tracker.
 
 ### **Change Log**
 
@@ -53,7 +53,7 @@ This project's purpose is to create "Dream Central Storage," a unified and exten
 
 ### **Overall UX Vision**
 
-The UX vision for the Dream Central Storage Admin Panel is a clean, efficient, and straightforward web interface. The primary goal is to provide administrators with a powerful tool for managing application builds and book data with minimal friction. The design should prioritize clarity and ease of use over complex aesthetics, enabling users to perform core tasks like uploading, managing, and restoring content quickly and confidently.
+The UX vision for the Flow Central Storage Admin Panel is a clean, efficient, and straightforward web interface. The primary goal is to provide administrators with a powerful tool for managing application builds and book data with minimal friction. The design should prioritize clarity and ease of use over complex aesthetics, enabling users to perform core tasks like uploading, managing, and restoring content quickly and confidently.
 
 ### **Key Interaction Paradigms**
 
@@ -118,7 +118,7 @@ The UX vision for the Dream Central Storage Admin Panel is a clean, efficient, a
 ---
 ## **Epic 1: Core API & Project Foundation**
 
-**Epic Goal**: This epic lays the groundwork for the entire Dream Central Storage system. It involves setting up the monorepo, initializing the Python/FastAPI backend project, establishing a CI/CD pipeline, and implementing the core API for creating, reading, and updating book metadata. Upon completion, we will have a deployable, secure, and testable API service, forming the foundational layer for all future features.
+**Epic Goal**: This epic lays the groundwork for the entire Flow Central Storage system. It involves setting up the monorepo, initializing the Python/FastAPI backend project, establishing a CI/CD pipeline, and implementing the core API for creating, reading, and updating book metadata. Upon completion, we will have a deployable, secure, and testable API service, forming the foundational layer for all future features.
 
 ### **Story 1.1: Project Initialization & CI/CD**
 **As a** developer, **I want** a configured monorepo with an initial FastAPI application and a basic CI/CD pipeline, **so that** I can start building and deploying the backend service efficiently.
@@ -192,7 +192,7 @@ The UX vision for the Dream Central Storage Admin Panel is a clean, efficient, a
 
 ---
 ## **Epic 3: Admin Panel MVP**
-**Epic Goal**: This epic focuses on creating the user-facing interface for the Dream Central Storage system. We will develop a minimum viable Admin Panel using React that consumes the APIs built in the previous epics. The goal is to provide administrators with the essential tools to log in, view book and app data, and upload new content. Upon completion, we will have the first end-to-end, user-operable version of the platform.
+**Epic Goal**: This epic focuses on creating the user-facing interface for the Flow Central Storage system. We will develop a minimum viable Admin Panel using React that consumes the APIs built in the previous epics. The goal is to provide administrators with the essential tools to log in, view book and app data, and upload new content. Upon completion, we will have the first end-to-end, user-operable version of the platform.
 
 ### **Story 3.1: React App Initialization & Layout**
 **As a** developer, **I want** a new React application initialized within the monorepo with basic routing and a main application layout, **so that** I have a foundation for building the Admin Panel UI.
@@ -231,7 +231,7 @@ The UX vision for the Dream Central Storage Admin Panel is a clean, efficient, a
 
 ---
 ## **Epic 4: Advanced Features & Production Readiness**
-**Epic Goal**: This final epic elevates the MVP from a functional prototype to a robust, production-ready application. It focuses on implementing critical operational features mentioned in the brief, such as the soft-delete and restore mechanism, backups, and monitoring. Upon completion, the Dream Central Storage system will be fully operational, resilient, and ready for production use.
+**Epic Goal**: This final epic elevates the MVP from a functional prototype to a robust, production-ready application. It focuses on implementing critical operational features mentioned in the brief, such as the soft-delete and restore mechanism, backups, and monitoring. Upon completion, the Flow Central Storage system will be fully operational, resilient, and ready for production use.
 
 ### **Story 4.1: Soft-Delete for Books and Apps**
 **As an** administrator, **I want** to soft-delete books and app builds, **so that** I can remove them from the main view without permanently losing them immediately.

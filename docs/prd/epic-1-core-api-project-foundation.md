@@ -1,6 +1,6 @@
 # **Epic 1: Core API & Project Foundation**
 
-**Epic Goal**: This epic lays the groundwork for the entire Dream Central Storage system. It involves setting up the monorepo, initializing the Python/FastAPI backend project, establishing a CI/CD pipeline, and implementing the core API for creating, reading, and updating book metadata. Upon completion, we will have a deployable, secure, and testable API service, forming the foundational layer for all future features.
+**Epic Goal**: This epic lays the groundwork for the entire Flow Central Storage system. It involves setting up the monorepo, initializing the Python/FastAPI backend project, establishing a CI/CD pipeline, and implementing the core API for creating, reading, and updating book metadata. Upon completion, we will have a deployable, secure, and testable API service, forming the foundational layer for all future features.
 
 ## **Story 1.1: Project Initialization & CI/CD**
 **As a** developer, **I want** a configured monorepo with an initial FastAPI application and a basic CI/CD pipeline, **so that** I can start building and deploying the backend service efficiently.

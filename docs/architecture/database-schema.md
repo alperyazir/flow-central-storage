@@ -1,6 +1,6 @@
 # Database Schema Documentation
 
-This document describes the PostgreSQL database schema for the Dream Central Storage application.
+This document describes the PostgreSQL database schema for the Flow Central Storage application.
 
 ## Overview
 

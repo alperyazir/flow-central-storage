@@ -1,6 +1,6 @@
 # 1. Introduction
 
-This document outlines the complete fullstack architecture for Dream Central Storage.
+This document outlines the complete fullstack architecture for Flow Central Storage.
 
 ## Starter Template or Existing Project
 

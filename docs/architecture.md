@@ -1,8 +1,8 @@
-# Dream Central Storage Fullstack Architecture Document
+# Flow Central Storage Fullstack Architecture Document
 
 ## 1. Introduction
 
-This document outlines the complete fullstack architecture for Dream Central Storage.
+This document outlines the complete fullstack architecture for Flow Central Storage.
 
 ### Starter Template or Existing Project
 
@@ -14,7 +14,7 @@ The PRD specifies a greenfield project. To efficiently manage the monorepo conta
 
 ### Technical Summary
 
-The Dream Central Storage system will be a **full-stack application** built within…
+The Flow Central Storage system will be a **full-stack application** built within…
 
 ### Platform and Infrastructure Choice
 

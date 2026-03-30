@@ -1,5 +1,5 @@
 # **Epic 3: Admin Panel MVP**
-**Epic Goal**: This epic focuses on creating the user-facing interface for the Dream Central Storage system. We will develop a minimum viable Admin Panel using React that consumes the APIs built in the previous epics. The goal is to provide administrators with the essential tools to log in, view book and app data, and upload new content. Upon completion, we will have the first end-to-end, user-operable version of the platform.
+**Epic Goal**: This epic focuses on creating the user-facing interface for the Flow Central Storage system. We will develop a minimum viable Admin Panel using React that consumes the APIs built in the previous epics. The goal is to provide administrators with the essential tools to log in, view book and app data, and upload new content. Upon completion, we will have the first end-to-end, user-operable version of the platform.
 
 ## **Story 3.1: React App Initialization & Layout**
 **As a** developer, **I want** a new React application initialized within the monorepo with basic routing and a main application layout, **so that** I have a foundation for building the Admin Panel UI.

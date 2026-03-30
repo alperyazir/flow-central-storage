@@ -12,7 +12,7 @@ S3_ACCESS_KEY="${S3_ACCESS_KEY:-admin}"
 S3_SECRET_KEY="${S3_SECRET_KEY:-admin}"
 DB_HOST="${DB_HOST:-localhost}"
 DB_PORT="${DB_PORT:-5433}"
-DB_NAME="${DB_NAME:-dream_central}"
+DB_NAME="${DB_NAME:-flow_central}"
 DB_USER="${DB_USER:-postgres}"
 DB_PASSWORD="${DB_PASSWORD:-changethis}"
 

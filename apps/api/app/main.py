@@ -97,12 +97,12 @@ def _validate_startup_config() -> None:
     if settings.jwt_secret_key == "CHANGE_ME":
         raise RuntimeError(
             "SEC-C1: jwt_secret_key is still the default 'CHANGE_ME'. "
-            "Set the DCS_JWT_SECRET_KEY environment variable to a secure random value."
+            "Set the FCS_JWT_SECRET_KEY environment variable to a secure random value."
         )
-    if settings.database_password == "dream_password":
+    if settings.database_password == "flow_password":
         logger.warning(
-            "SEC-C5: database_password is still the default 'dream_password'. "
-            "Set DCS_DATABASE_PASSWORD to a strong password before deploying to production."
+            "SEC-C5: database_password is still the default 'flow_password'. "
+            "Set FCS_DATABASE_PASSWORD to a strong password before deploying to production."
         )
 
 

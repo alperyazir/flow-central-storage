@@ -1,8 +1,8 @@
-# Dream Central Storage Fullstack Architecture Document
+# Flow Central Storage Fullstack Architecture Document
 
 ## Table of Contents
 
-- [Dream Central Storage Fullstack Architecture Document](#table-of-contents)
+- [Flow Central Storage Fullstack Architecture Document](#table-of-contents)
   - [1. Introduction](./1-introduction.md)
     - [Starter Template or Existing Project](./1-introduction.md#starter-template-or-existing-project)
   - [2. High Level Architecture](./2-high-level-architecture.md)

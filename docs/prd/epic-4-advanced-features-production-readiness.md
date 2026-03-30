@@ -1,5 +1,5 @@
 # **Epic 4: Advanced Features & Production Readiness**
-**Epic Goal**: This final epic elevates the MVP from a functional prototype to a robust, production-ready application. It focuses on implementing critical operational features mentioned in the brief, such as the soft-delete and restore mechanism, backups, and monitoring. Upon completion, the Dream Central Storage system will be fully operational, resilient, and ready for production use.
+**Epic Goal**: This final epic elevates the MVP from a functional prototype to a robust, production-ready application. It focuses on implementing critical operational features mentioned in the brief, such as the soft-delete and restore mechanism, backups, and monitoring. Upon completion, the Flow Central Storage system will be fully operational, resilient, and ready for production use.
 
 ## **Story 4.1: Soft-Delete for Books and Apps**
 **As an** administrator, **I want** to soft-delete books and app builds, **so that** I can remove them from the main view without permanently losing them immediately.

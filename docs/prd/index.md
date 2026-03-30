@@ -1,8 +1,8 @@
-# Dream Central Storage Product Requirements Document (PRD)
+# Flow Central Storage Product Requirements Document (PRD)
 
 ## Table of Contents
 
-- [Dream Central Storage Product Requirements Document (PRD)](#table-of-contents)
+- [Flow Central Storage Product Requirements Document (PRD)](#table-of-contents)
   - [Goals and Background Context](#goals-and-background-context)
   - [Requirements](#requirements)
   - [User Interface Design Goals](#user-interface-design-goals)

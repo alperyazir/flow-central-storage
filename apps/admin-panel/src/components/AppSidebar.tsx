@@ -83,7 +83,7 @@ export function AppSidebar() {
           <BookOpenCheck className="h-6 w-6 shrink-0 text-primary" />
           {!isCollapsed && (
             <span className="text-base font-semibold truncate">
-              Dream Central Storage
+              Flow Central Storage
             </span>
           )}
         </Link>

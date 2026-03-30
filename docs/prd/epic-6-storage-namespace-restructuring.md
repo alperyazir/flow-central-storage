@@ -16,7 +16,7 @@
 2. The `minio_buckets` property returns the updated bucket list: `["publishers", "apps", "trash", "teachers"]`.
 3. All references to `settings.minio_books_bucket` across routers and services are updated to `settings.minio_publishers_bucket`.
 4. MinIO initialization script (`init_minio.py`) creates the `publishers` bucket on startup.
-5. Environment variable support via `DCS_MINIO_PUBLISHERS_BUCKET` is available for custom bucket naming.
+5. Environment variable support via `FCS_MINIO_PUBLISHERS_BUCKET` is available for custom bucket naming.
 6. Existing tests are updated to reflect the new bucket name and all pass.
 
 **Technical Notes:**

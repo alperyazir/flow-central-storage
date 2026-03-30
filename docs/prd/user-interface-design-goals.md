@@ -2,7 +2,7 @@
 
 ## **Overall UX Vision**
 
-The UX vision for the Dream Central Storage Admin Panel is a clean, efficient, and straightforward web interface. The primary goal is to provide administrators with a powerful tool for managing application builds and book data with minimal friction. The design should prioritize clarity and ease of use over complex aesthetics, enabling users to perform core tasks like uploading, managing, and restoring content quickly and confidently.
+The UX vision for the Flow Central Storage Admin Panel is a clean, efficient, and straightforward web interface. The primary goal is to provide administrators with a powerful tool for managing application builds and book data with minimal friction. The design should prioritize clarity and ease of use over complex aesthetics, enabling users to perform core tasks like uploading, managing, and restoring content quickly and confidently.
 
 ## **Key Interaction Paradigms**
 

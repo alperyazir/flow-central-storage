@@ -1,4 +1,4 @@
-# Dream Central Storage MinIO backup cron configuration
+# Flow Central Storage MinIO backup cron configuration
 #
 # Install this file under /etc/cron.d/ to trigger a nightly backup at 02:00 UTC.
 # The script expects credentials to be provided via /etc/dream-central-storage/backup.env

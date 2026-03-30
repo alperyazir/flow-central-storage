@@ -1,4 +1,4 @@
-# Security Audit Report — Dream Central Storage
+# Security Audit Report — Flow Central Storage
 
 **Date:** 2026-03-26
 **Auditor:** James (Dev Agent) — Claude Opus 4.6
@@ -51,7 +51,7 @@ Audited 14 router files (118+ endpoints), auth system, storage layer, webhook se
 
 #### SEC-C5: Database Default Credentials in Code
 - **File:** `apps/api/app/core/config.py:28-29`
-- **Issue:** `database_user: str = "dream_admin"`, `database_password: str = "dream_password"` as defaults
+- **Issue:** `database_user: str = "flow_admin"`, `database_password: str = "flow_password"` as defaults
 - **Impact:** If .env misconfigured, app connects with known default credentials
 - **Remediation:** Remove defaults or raise startup error if defaults unchanged.
 

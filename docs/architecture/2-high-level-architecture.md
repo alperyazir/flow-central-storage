@@ -2,7 +2,7 @@
 
 ## Technical Summary
 
-The Dream Central Storage system will be a **full-stack application** built within…
+The Flow Central Storage system will be a **full-stack application** built within…
 
 ## Platform and Infrastructure Choice
 

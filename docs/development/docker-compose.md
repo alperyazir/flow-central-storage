@@ -1,4 +1,4 @@
-# Running Dream Central Storage Locally with Docker Compose
+# Running Flow Central Storage Locally with Docker Compose
 
 This stack mirrors the production deployment topology described in the architecture documents. It provisions the API, PostgreSQL, MinIO, and an Nginx reverse proxy.
 

@@ -1,4 +1,4 @@
-"""SQLAlchemy declarative base for Dream Central Storage models."""
+"""SQLAlchemy declarative base for Flow Central Storage models."""
 
 from sqlalchemy.orm import DeclarativeBase
 

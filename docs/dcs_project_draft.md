@@ -1,4 +1,4 @@
-# FlowBook & Dream Central Storage - Project Brief
+# FlowBook & Flow Central Storage - Project Brief
 
 ## Introduction
 
@@ -15,7 +15,7 @@ paths---page images, audio/video files, activity coordinates, and other
 settings.
 
 The goal is to build a stable, scalable, and extensible storage and
-distribution system, called **Dream Central Storage**, that will manage
+distribution system, called **Flow Central Storage**, that will manage
 FlowBook builds and book datasets.
 
 ---
@@ -89,7 +89,7 @@ across LMS and admin panel.
 
 ---
 
-## Dream Central Storage
+## Flow Central Storage
 
 ### Storage Requirements
 
@@ -213,7 +213,7 @@ data.
 
 ## Conclusion
 
-Dream Central Storage provides a unified, extensible platform for
+Flow Central Storage provides a unified, extensible platform for
 managing FlowBook builds and book data. It separates application and
 content, supports folder-based uploads, integrates with LMS, and ensures
 flexible scaling for future needs. The metadata-driven approach enables

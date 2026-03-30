@@ -2,7 +2,7 @@
 
 ## Overview
 
-Prometheus and Grafana provide runtime visibility into Dream Central Storage. Prometheus scrapes metrics exposed by the FastAPI service at `/metrics`; Grafana visualises the data via the "Dream Central API Overview" dashboard.
+Prometheus and Grafana provide runtime visibility into Flow Central Storage. Prometheus scrapes metrics exposed by the FastAPI service at `/metrics`; Grafana visualises the data via the "Flow Central API Overview" dashboard.
 
 ## Components
 
@@ -33,7 +33,7 @@ docker compose --profile monitoring up -d prometheus grafana
 ## Validation
 
 1. Open `http://<host>:9091/targets` – ensure the `dream-central-api` scrape target is UP.
-2. Visit `http://<host>:3000` – log in and open the "Dream Central API Overview" dashboard.
+2. Visit `http://<host>:3000` – log in and open the "Flow Central API Overview" dashboard.
 3. Confirm panels show data for request rate, error rate, and latency.
 4. Trigger sample requests (e.g., `curl http://<host>:8000/health`) and verify metrics update within ~15 seconds.
 
