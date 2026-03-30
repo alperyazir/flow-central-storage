@@ -44,6 +44,8 @@ jobs:
         with:
           context: ./apps/admin-panel
           push: true
+          build-args: |
+            VITE_API_BASE_URL=https://storage-api.dreamedtech.com
           tags: |
             ${{ env.ADMIN_IMAGE }}:${{ github.sha }}
             ${{ env.ADMIN_IMAGE }}:latest
@@ -68,7 +70,7 @@ jobs:
 
             # Update and restart services
             cd /opt/flow-central-storage
-            docker compose -f infrastructure/docker-compose.prod.yml up -d --no-build
+            docker compose -f docker-compose.prod.yml up -d --no-build
             docker image prune -f
 
             echo "✅ Flow Central Storage deployed at $(date)"
