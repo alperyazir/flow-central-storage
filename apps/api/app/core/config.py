@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     teacher_quota_bytes: int = 524288000  # 500MB default
     teacher_max_file_size_bytes: int = 104857600  # 100MB default
 
+    # Admin user (created on first startup)
+    admin_email: str = "admin@admin.com"
+    admin_password: str = "admin"
+
     jwt_secret_key: str = "CHANGE_ME"
     jwt_algorithm: str = "HS256"
     jwt_access_token_expires_minutes: int = 10080  # 7 days

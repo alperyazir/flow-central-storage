@@ -75,9 +75,10 @@ def ensure_default_admin() -> None:
         existing_user = session.query(repository.model).first()
 
         if existing_user is None:
-            # No users exist, create default admin
-            default_email = "admin@admin.com"
-            default_password = "admin"
+            # No users exist, create admin from config
+            settings = get_settings()
+            default_email = settings.admin_email
+            default_password = settings.admin_password
 
             try:
                 user = create_admin_user(session, email=default_email, password=default_password)
