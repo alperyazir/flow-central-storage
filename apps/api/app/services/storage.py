@@ -176,44 +176,54 @@ def iter_zip_entries(archive: zipfile.ZipFile, strip_root: str | None = None) ->
 def upload_book_archive(
     *,
     client: Minio,
-    archive_bytes: bytes,
+    archive_bytes: bytes | None = None,
+    archive_path: str | None = None,
     bucket: str,
     object_prefix: str,
     content_type: str | None = None,
     strip_root_folder: bool = True,
 ) -> list[dict[str, object]]:
-    """Upload the provided ZIP archive into MinIO under the given prefix.
+    """Upload a ZIP archive into S3 under the given prefix.
 
-    If strip_root_folder is True and ZIP contains a single root folder, that folder is stripped.
-    For example: BRAINS/file.txt becomes file.txt in storage.
+    Accepts either archive_path (disk file — preferred, low memory) or
+    archive_bytes (in-memory — legacy fallback).
 
-    Returns a manifest containing uploaded file paths and sizes.
+    Returns a manifest of uploaded file paths and sizes.
     """
 
     try:
-        archive = zipfile.ZipFile(io.BytesIO(archive_bytes))
-    except zipfile.BadZipFile as exc:  # pragma: no cover - handled in tests
+        if archive_path:
+            archive = zipfile.ZipFile(archive_path, "r")
+        elif archive_bytes:
+            archive = zipfile.ZipFile(io.BytesIO(archive_bytes))
+        else:
+            raise UploadError("Either archive_path or archive_bytes must be provided")
+    except zipfile.BadZipFile as exc:
         raise UploadError("Uploaded file is not a valid ZIP archive") from exc
 
-    # Detect and strip root folder if requested
-    root_to_strip = None
-    if strip_root_folder:
-        root_to_strip = _detect_root_folder(archive)
+    try:
+        # Detect and strip root folder if requested
+        root_to_strip = None
+        if strip_root_folder:
+            root_to_strip = _detect_root_folder(archive)
 
-    manifest: list[dict[str, object]] = []
-    for entry, final_path in iter_zip_entries(archive, strip_root=root_to_strip):
-        file_path = f"{object_prefix}{final_path}"
-        with archive.open(entry) as file_obj:
-            stream = io.BytesIO(file_obj.read())
-            stream.seek(0)
-            client.put_object(
-                bucket,
-                file_path,
-                stream,
-                length=entry.file_size,
-                content_type=content_type or "application/octet-stream",
-            )
-        manifest.append({"path": file_path, "size": entry.file_size})
+        manifest: list[dict[str, object]] = []
+        for entry, final_path in iter_zip_entries(archive, strip_root=root_to_strip):
+            file_path = f"{object_prefix}{final_path}"
+            with archive.open(entry) as file_obj:
+                data = file_obj.read()
+                stream = io.BytesIO(data)
+                client.put_object(
+                    bucket,
+                    file_path,
+                    stream,
+                    length=len(data),
+                    content_type=content_type or "application/octet-stream",
+                )
+                del data  # free memory immediately
+            manifest.append({"path": file_path, "size": entry.file_size})
+    finally:
+        archive.close()
 
     return manifest
 
