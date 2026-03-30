@@ -217,25 +217,30 @@ async def upload_teacher_material(
             detail=f"File size exceeds maximum allowed size of {settings.teacher_max_file_size_bytes} bytes",
         )
 
+    import asyncio
+
     # Get or create Teacher record in database
     teacher = _teacher_repository.get_or_create_by_teacher_id(db, teacher_id)
+    teacher_db_id = teacher.id
     logger.info(
         "Teacher record: id=%d, teacher_id='%s' (created=%s)",
         teacher.id,
         teacher.teacher_id,
         teacher.created_at,
     )
+    db.commit()  # Release DB connection before S3 upload
 
     client = get_minio_client(settings)
     object_key = _build_teacher_object_key(teacher_id, file.filename)
 
     try:
         stream = io.BytesIO(contents)
-        client.put_object(
+        await asyncio.to_thread(
+            client.put_object,
             settings.minio_teachers_bucket,
             object_key,
             stream,
-            length=len(contents),
+            len(contents),
             content_type=file.content_type,
         )
     except Exception as exc:
@@ -258,7 +263,7 @@ async def upload_teacher_material(
             "file_type": file_ext,
             "content_type": file.content_type or "application/octet-stream",
             "size": len(contents),
-            "teacher_id": teacher.id,
+            "teacher_id": teacher_db_id,
             "status": "active",
         },
     )

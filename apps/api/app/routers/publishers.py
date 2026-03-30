@@ -553,6 +553,8 @@ async def upload_asset_file(
     _require_admin(credentials, db)
     validate_asset_type(asset_type)
 
+    import asyncio
+
     publisher = _publisher_repository.get(db, publisher_id)
     if publisher is None:
         raise HTTPException(
@@ -566,21 +568,25 @@ async def upload_asset_file(
             detail="Filename is required",
         )
 
+    pub_id = publisher.id
+    db.commit()  # Release DB connection before S3 upload
+
     settings = get_settings()
     client = get_minio_client(settings)
-    object_key = f"{publisher.id}/assets/{asset_type}/{file.filename}"
+    object_key = f"{pub_id}/assets/{asset_type}/{file.filename}"
 
     # Read file contents
     contents = await file.read()
     file_size = len(contents)
 
-    # Upload to MinIO
+    # Upload to S3
     try:
-        client.put_object(
+        await asyncio.to_thread(
+            client.put_object,
             settings.minio_publishers_bucket,
             object_key,
             io.BytesIO(contents),
-            length=file_size,
+            file_size,
             content_type=file.content_type or "application/octet-stream",
         )
     except Exception as e:

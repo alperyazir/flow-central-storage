@@ -321,14 +321,19 @@ async def upload_book(
     db: Session = Depends(get_db),
 ):
     """Upload/replace content for an existing book."""
+    import asyncio
+    import os
+    import tempfile
+
     _require_admin(credentials, db)
     book = _book_repository.get_by_id(db, book_id)
     if book is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
 
-    import asyncio
-    import os
-    import tempfile
+    # PHASE 1: Extract needed data, release DB connection
+    book_publisher_id = book.publisher_id
+    book_name = book.book_name
+    db.commit()  # Release connection before long S3 ops
 
     # Stream upload to temp file (never load entire ZIP into memory)
     with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
@@ -336,10 +341,11 @@ async def upload_book(
         while chunk := await file.read(1024 * 1024):  # 1MB chunks
             tmp.write(chunk)
 
+    # PHASE 2: S3 operations (no DB held)
     try:
         settings = get_settings()
         client = get_minio_client(settings)
-        prefix = f"{book.publisher_id}/books/{book.book_name}/"
+        prefix = f"{book_publisher_id}/books/{book_name}/"
 
         # Clear existing files
         try:
@@ -492,17 +498,20 @@ async def upload_new_book(
         if book_data.get("status") is None or book_data["status"] == BookStatusEnum.DRAFT:
             book_data["status"] = BookStatusEnum.PUBLISHED
 
-        # Resolve publisher to get ID for storage path
+        # PHASE 1: Quick DB operations — resolve publisher, then release connection
         publisher_name = book_data.get("publisher", "")
         resolved_publisher = _publisher_repository.get_or_create_by_name(db, publisher_name)
+        publisher_id = resolved_publisher.id
+        db.commit()  # Release DB connection back to PGBouncer pool before long S3 ops
 
+        # PHASE 2: S3 operations (may take minutes — no DB connection held)
         settings = get_settings()
         client = get_minio_client(settings)
-        object_prefix = f"{resolved_publisher.id}/books/{book_data['book_name']}/"
+        object_prefix = f"{publisher_id}/books/{book_data['book_name']}/"
 
         # Check if book already exists in storage
         try:
-            prefix_exists = _prefix_exists(client, settings.minio_publishers_bucket, object_prefix)
+            prefix_exists = await asyncio.to_thread(_prefix_exists, client, settings.minio_publishers_bucket, object_prefix)
         except Exception as exc:
             logger.error("Failed to check existing book prefix '%s': %s", object_prefix, exc)
             raise HTTPException(
@@ -526,11 +535,11 @@ async def upload_new_book(
         if prefix_exists and override:
             try:
                 # Delete all objects at this prefix
-                objects = list(
-                    client.list_objects(settings.minio_publishers_bucket, prefix=object_prefix, recursive=True)
+                objects = await asyncio.to_thread(
+                    lambda: list(client.list_objects(settings.minio_publishers_bucket, prefix=object_prefix, recursive=True))
                 )
                 for obj in objects:
-                    client.remove_object(settings.minio_publishers_bucket, obj.object_name)
+                    await asyncio.to_thread(client.remove_object, settings.minio_publishers_bucket, obj.object_name)
 
                 logger.info(
                     "Deleted %d existing objects for book %s/%s",
@@ -566,11 +575,10 @@ async def upload_new_book(
                 detail="Failed to upload book archive",
             ) from exc
 
-        # Use already-resolved publisher
+        # PHASE 3: Quick DB operations — session will lazily reconnect via PGBouncer
         book_data.pop("publisher", None)
-        book_data["publisher_id"] = resolved_publisher.id
+        book_data["publisher_id"] = publisher_id
 
-        # Create or update book metadata in database
         existing_book = _book_repository.get_by_publisher_id_and_name(
             db,
             publisher_id=resolved_publisher.id,

@@ -162,7 +162,10 @@ async def upload_template_endpoint(
     - **platform**: Target platform (mac, win, linux)
     - **file**: Zip file containing the app template
     """
+    import asyncio
+
     _require_admin(credentials, db)
+    db.commit()  # Release DB connection before S3 upload
 
     if not file.filename or not file.filename.endswith(".zip"):
         raise HTTPException(
@@ -176,7 +179,8 @@ async def upload_template_endpoint(
     file_data = await file.read()
 
     try:
-        metadata = upload_template(
+        metadata = await asyncio.to_thread(
+            upload_template,
             client=client,
             bucket=settings.minio_apps_bucket,
             platform=platform,
