@@ -7,9 +7,11 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, UploadFile, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.core.security import decode_access_token
+from app.core.security import decode_access_token, verify_api_key_from_db
+from app.db import get_db
 from app.services import (
     RelocationError,
     UploadConflictError,
@@ -34,21 +36,26 @@ class AppDeleteRequest(BaseModel):
     path: str
 
 
-def _require_admin(credentials: HTTPAuthorizationCredentials) -> int:
+def _require_admin(credentials: HTTPAuthorizationCredentials, db: Session) -> int:
+    """Validate JWT token or API key."""
     token = credentials.credentials
+
     try:
         payload = decode_access_token(token, settings=get_settings())
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from exc
+        subject = payload.get("sub")
+        if subject is not None:
+            try:
+                return int(subject)
+            except (TypeError, ValueError):
+                pass
+    except ValueError:
+        pass
 
-    subject = payload.get("sub")
-    if subject is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    api_key_info = verify_api_key_from_db(token, db)
+    if api_key_info is not None:
+        return -1
 
-    try:
-        return int(subject)
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from exc
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
 
 @router.post("/{platform}/upload", status_code=status.HTTP_201_CREATED)
@@ -60,10 +67,11 @@ async def upload_application_build(
         description="When true, replace an existing version folder if one already exists.",
     ),
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
 ):
     """Upload an application build archive to the apps bucket."""
 
-    _require_admin(credentials)
+    _require_admin(credentials, db)
 
     normalized_platform = platform.lower()
     if normalized_platform not in ALLOWED_PLATFORMS:
@@ -154,10 +162,11 @@ def soft_delete_application_build(
     platform: str,
     payload: AppDeleteRequest,
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
 ) -> Response:
     """Soft-delete an application build by moving its assets into the trash bucket."""
 
-    admin_id = _require_admin(credentials)
+    admin_id = _require_admin(credentials, db)
 
     normalized_platform = platform.lower()
     if normalized_platform not in ALLOWED_PLATFORMS:

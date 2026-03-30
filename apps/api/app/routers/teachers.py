@@ -16,7 +16,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.core.security import decode_access_token
+from app.core.security import decode_access_token, verify_api_key_from_db
 from app.db import get_db
 from app.repositories.material import MaterialRepository
 from app.repositories.teacher import TeacherRepository
@@ -100,27 +100,28 @@ def _parse_range_header(range_header: str, file_size: int) -> tuple[int, int]:
 
 
 def _require_admin(credentials: HTTPAuthorizationCredentials, db: Session) -> int:
-    """Validate JWT token and ensure user exists."""
+    """Validate JWT token or API key."""
     token = credentials.credentials
+
     try:
         payload = decode_access_token(token, settings=get_settings())
-    except ValueError as exc:
-        raise HTTPException(status_code=401, detail="Invalid token") from exc
+        subject = payload.get("sub")
+        if subject is not None:
+            try:
+                user_id = int(subject)
+                user = _user_repository.get(db, user_id)
+                if user is not None:
+                    return user_id
+            except (TypeError, ValueError):
+                pass
+    except ValueError:
+        pass
 
-    subject = payload.get("sub")
-    if subject is None:
-        raise HTTPException(status_code=401, detail="Invalid token")
+    api_key_info = verify_api_key_from_db(token, db)
+    if api_key_info is not None:
+        return -1
 
-    try:
-        user_id = int(subject)
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=401, detail="Invalid token") from exc
-
-    user = _user_repository.get(db, user_id)
-    if user is None:
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-    return user_id
+    raise HTTPException(status_code=401, detail="Invalid token")
 
 
 def _sanitize_segment(segment: str, label: str) -> str:

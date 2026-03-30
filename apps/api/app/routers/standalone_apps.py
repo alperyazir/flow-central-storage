@@ -52,28 +52,25 @@ logger = logging.getLogger(__name__)
 
 
 def _require_admin(credentials: HTTPAuthorizationCredentials, db: Session) -> int:
-    """Validate JWT token for admin access.
-
-    Returns:
-        User ID if authenticated via JWT
-
-    Raises:
-        HTTPException: If authentication fails
-    """
+    """Validate JWT token or API key."""
     token = credentials.credentials
+
     try:
         payload = decode_access_token(token, settings=get_settings())
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from exc
+        subject = payload.get("sub")
+        if subject is not None:
+            try:
+                return int(subject)
+            except (TypeError, ValueError):
+                pass
+    except ValueError:
+        pass
 
-    subject = payload.get("sub")
-    if subject is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    api_key_info = verify_api_key_from_db(token, db)
+    if api_key_info is not None:
+        return -1
 
-    try:
-        return int(subject)
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from exc
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
 
 def _require_api_key_or_admin(credentials: HTTPAuthorizationCredentials, db: Session) -> int:
