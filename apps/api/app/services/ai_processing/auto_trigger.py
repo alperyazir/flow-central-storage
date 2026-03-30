@@ -57,7 +57,7 @@ class AutoProcessingService:
 
     def is_already_processed(
         self,
-        publisher: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
     ) -> bool:
@@ -65,7 +65,7 @@ class AutoProcessingService:
         Check if a book has already been processed.
 
         Args:
-            publisher: Publisher name.
+            publisher_id: Publisher ID.
             book_id: Book identifier.
             book_name: Book folder name.
 
@@ -73,12 +73,12 @@ class AutoProcessingService:
             True if metadata.json exists for the book.
         """
         retrieval_service = get_ai_data_retrieval_service()
-        metadata = retrieval_service.get_metadata(publisher, book_id, book_name)
+        metadata = retrieval_service.get_metadata(publisher_id, book_id, book_name)
         return metadata is not None
 
     def should_auto_process(
         self,
-        publisher: str,
+        publisher_id: int,
         book_id: str,
         book_name: str,
         force: bool = False,
@@ -87,7 +87,7 @@ class AutoProcessingService:
         Determine if auto-processing should be triggered for a book.
 
         Args:
-            publisher: Publisher name.
+            publisher_id: Publisher ID.
             book_id: Book identifier.
             book_name: Book folder name.
             force: If True, ignore skip_existing setting.
@@ -105,7 +105,7 @@ class AutoProcessingService:
 
         # Check if we should skip already-processed books
         if not force and self.should_skip_existing():
-            if self.is_already_processed(publisher, book_id, book_name):
+            if self.is_already_processed(publisher_id, book_id, book_name):
                 logger.info(
                     "Book %s already processed, skipping auto-processing",
                     book_id,
@@ -117,7 +117,7 @@ class AutoProcessingService:
     async def trigger_processing(
         self,
         book_id: int,
-        publisher: str,
+        publisher_id: int,
         book_name: str,
         force: bool = False,
         priority: JobPriority = JobPriority.NORMAL,
@@ -128,7 +128,7 @@ class AutoProcessingService:
 
         Args:
             book_id: Book database ID.
-            publisher: Publisher name.
+            publisher_id: Publisher ID.
             book_name: Book folder name.
             force: If True, process even if already processed.
             priority: Job priority level.
@@ -138,7 +138,7 @@ class AutoProcessingService:
             ProcessingJob if enqueued, None if skipped.
         """
         # Check if we should process this book
-        if not self.should_auto_process(publisher, str(book_id), book_name, force):
+        if not self.should_auto_process(publisher_id, str(book_id), book_name, force):
             return None
 
         # Use UNIFIED by default for better accuracy and lower cost
@@ -148,12 +148,12 @@ class AutoProcessingService:
             queue_service = await get_queue_service()
             job = await queue_service.enqueue_job(
                 book_id=str(book_id),
-                publisher_id=publisher,
+                publisher_id=publisher_id,
                 job_type=actual_job_type,
                 priority=priority,
                 metadata={
                     "book_name": book_name,
-                    "publisher": publisher,  # Required for storage path construction
+                    "publisher_id": publisher_id,  # Required for storage path construction
                     "auto_triggered": True,
                     "force_reprocess": force,
                 },
@@ -163,7 +163,7 @@ class AutoProcessingService:
                 "Auto-triggered processing job %s for book %s (publisher: %s)",
                 job.job_id,
                 book_id,
-                publisher,
+                publisher_id,
             )
             return job
 
@@ -191,7 +191,7 @@ def get_auto_processing_service() -> AutoProcessingService:
 
 async def trigger_auto_processing(
     book_id: int,
-    publisher: str,
+    publisher_id: int,
     book_name: str,
     force: bool = False,
 ) -> None:
@@ -202,14 +202,14 @@ async def trigger_auto_processing(
 
     Args:
         book_id: Book database ID.
-        publisher: Publisher name.
+        publisher_id: Publisher ID.
         book_name: Book folder name.
         force: If True, process even if already processed.
     """
     service = get_auto_processing_service()
     await service.trigger_processing(
         book_id=book_id,
-        publisher=publisher,
+        publisher=publisher_id,
         book_name=book_name,
         force=force,
     )

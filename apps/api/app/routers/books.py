@@ -51,6 +51,15 @@ _webhook_service = WebhookService()
 logger = logging.getLogger(__name__)
 
 
+def _invalidate_book_cache() -> None:
+    from app.services.cache import get_cache
+
+    try:
+        get_cache().invalidate("fcs:books:*")
+    except Exception:
+        pass
+
+
 def _require_admin(credentials: HTTPAuthorizationCredentials, db: Session) -> int:
     """Validate JWT token or API key and ensure authentication is valid."""
 
@@ -126,6 +135,7 @@ def create_book(
         f"[WEBHOOK-TRIGGER] Scheduling BOOK_CREATED webhook for book_id={book.id}, book_name='{book.book_name}', publisher='{book.publisher}'"
     )
     background_tasks.add_task(_trigger_webhook, book.id, WebhookEventType.BOOK_CREATED)
+    _invalidate_book_cache()
     logger.debug(f"[WEBHOOK-TRIGGER] BOOK_CREATED webhook task added to background queue for book_id={book.id}")
 
     return BookRead.model_validate(book)
@@ -142,11 +152,22 @@ def list_books(
     """Return stored books with pagination, optionally filtered by publisher."""
 
     _require_admin(credentials, db)
+
+    from app.services.cache import cache_key, get_cache
+
+    cache = get_cache()
+    ck = cache_key("books", "list", publisher_id, skip, limit)
+    cached = cache.get(ck)
+    if cached is not None:
+        return cached
+
     if publisher_id is not None:
         books = _book_repository.list_by_publisher_id(db, publisher_id, skip=skip, limit=limit)
     else:
         books = _book_repository.list_all_books(db, skip=skip, limit=limit)
-    return [BookRead.model_validate(book) for book in books]
+    result = [BookRead.model_validate(book).model_dump(mode="json") for book in books]
+    cache.set(ck, result, ttl=300)
+    return result
 
 
 class _BatchBookRequest(BaseModel):
@@ -227,6 +248,7 @@ def update_book(
         f"[WEBHOOK-TRIGGER] Scheduling BOOK_UPDATED webhook for book_id={book_id}, book_name='{updated.book_name}', updated_fields={list(update_data.keys())}"
     )
     background_tasks.add_task(_trigger_webhook, book_id, WebhookEventType.BOOK_UPDATED)
+    _invalidate_book_cache()
     logger.debug(f"[WEBHOOK-TRIGGER] BOOK_UPDATED webhook task added to background queue for book_id={book_id}")
 
     return BookRead.model_validate(updated)
@@ -251,7 +273,7 @@ def soft_delete_book(
 
     settings = get_settings()
     client = get_minio_client(settings)
-    prefix = f"{book.publisher}/books/{book.book_name}/"
+    prefix = f"{book.publisher_id}/books/{book.book_name}/"
 
     try:
         report = move_prefix_to_trash(
@@ -284,6 +306,7 @@ def soft_delete_book(
         f"[WEBHOOK-TRIGGER] Scheduling BOOK_DELETED webhook for book_id={book_id}, book_name='{archived.book_name}', objects_moved={report.objects_moved}"
     )
     background_tasks.add_task(_trigger_webhook, book_id, WebhookEventType.BOOK_DELETED)
+    _invalidate_book_cache()
     logger.debug(f"[WEBHOOK-TRIGGER] BOOK_DELETED webhook task added to background queue for book_id={book_id}")
 
     return BookRead.model_validate(archived)
@@ -307,7 +330,7 @@ async def upload_book(
     settings = get_settings()
     client = get_minio_client(settings)
 
-    prefix = f"{book.publisher}/books/{book.book_name}/"
+    prefix = f"{book.publisher_id}/books/{book.book_name}/"
 
     # Clear existing files
     try:
@@ -352,6 +375,7 @@ async def upload_book(
         f"[WEBHOOK-TRIGGER] Scheduling BOOK_UPDATED webhook (upload) for book_id={book_id}, files_uploaded={len(manifest)}"
     )
     background_tasks.add_task(_trigger_webhook, book_id, WebhookEventType.BOOK_UPDATED)
+    _invalidate_book_cache()
     logger.debug(
         f"[WEBHOOK-TRIGGER] BOOK_UPDATED webhook task (upload) added to background queue for book_id={book_id}"
     )
@@ -361,7 +385,7 @@ async def upload_book(
     background_tasks.add_task(
         trigger_auto_processing,
         book_id=book_id,
-        publisher=book.publisher,
+        publisher_id=book.publisher_id,
         book_name=book.book_name,
         force=True,  # Force reprocess since content changed
     )
@@ -452,9 +476,13 @@ async def upload_new_book(
     if book_data.get("status") is None or book_data["status"] == BookStatusEnum.DRAFT:
         book_data["status"] = BookStatusEnum.PUBLISHED
 
+    # Resolve publisher to get ID for storage path
+    publisher_name = book_data.get("publisher", "")
+    resolved_publisher = _publisher_repository.get_or_create_by_name(db, publisher_name)
+
     settings = get_settings()
     client = get_minio_client(settings)
-    object_prefix = f"{book_data['publisher']}/books/{book_data['book_name']}/"
+    object_prefix = f"{resolved_publisher.id}/books/{book_data['book_name']}/"
 
     # Check if book already exists in storage
     try:
@@ -518,15 +546,14 @@ async def upload_new_book(
             detail="Failed to upload book archive",
         ) from exc
 
-    # Convert publisher name to publisher_id
-    publisher_name = book_data.pop("publisher")
-    publisher = _publisher_repository.get_or_create_by_name(db, publisher_name)
-    book_data["publisher_id"] = publisher.id
+    # Use already-resolved publisher
+    book_data.pop("publisher", None)
+    book_data["publisher_id"] = resolved_publisher.id
 
     # Create or update book metadata in database
     existing_book = _book_repository.get_by_publisher_id_and_name(
         db,
-        publisher_id=publisher.id,
+        publisher_id=resolved_publisher.id,
         book_name=book_data["book_name"],
     )
 
@@ -552,6 +579,7 @@ async def upload_new_book(
         f"[WEBHOOK-TRIGGER] Scheduling BOOK_CREATED webhook (new upload) for book_id={book.id}, book_name='{book.book_name}', files_uploaded={len(manifest)}"
     )
     background_tasks.add_task(_trigger_webhook, book.id, WebhookEventType.BOOK_CREATED)
+    _invalidate_book_cache()
     logger.debug(
         f"[WEBHOOK-TRIGGER] BOOK_CREATED webhook task (new upload) added to background queue for book_id={book.id}"
     )
@@ -561,7 +589,7 @@ async def upload_new_book(
     background_tasks.add_task(
         trigger_auto_processing,
         book_id=book.id,
-        publisher=publisher.name,
+        publisher_id=resolved_publisher.id,
         book_name=book.book_name,
         force=override,  # Force reprocess if override was used
     )
@@ -752,6 +780,7 @@ async def upload_bulk_books(
                 f"[WEBHOOK-TRIGGER] Scheduling BOOK_CREATED webhook (bulk upload) for book_id={book.id}, book_name='{book.book_name}', files_uploaded={len(manifest)}"
             )
             background_tasks.add_task(_trigger_webhook, book.id, WebhookEventType.BOOK_CREATED)
+            _invalidate_book_cache()
             logger.debug(
                 f"[WEBHOOK-TRIGGER] BOOK_CREATED webhook task (bulk upload) added to background queue for book_id={book.id}"
             )
@@ -763,7 +792,7 @@ async def upload_bulk_books(
             background_tasks.add_task(
                 trigger_auto_processing,
                 book_id=book.id,
-                publisher=publisher.name,
+                publisher_id=publisher.id,
                 book_name=book.book_name,
                 force=override,  # Force reprocess if override was used
             )

@@ -51,6 +51,20 @@ def get_minio_client_external(settings: Settings | None = None) -> Minio:
     )
 
 
+def get_async_s3_client(settings: Settings | None = None):
+    """Create an async S3 client wrapping the sync MinIO client."""
+    from app.services.async_s3 import AsyncS3Client
+
+    return AsyncS3Client(get_minio_client(settings))
+
+
+def get_async_s3_client_external(settings: Settings | None = None):
+    """Create an async S3 client using external URL (for presigned URLs)."""
+    from app.services.async_s3 import AsyncS3Client
+
+    return AsyncS3Client(get_minio_client_external(settings))
+
+
 def ensure_buckets(client: Minio, bucket_names: Iterable[str]) -> None:
     """Ensure that each bucket in ``bucket_names`` exists."""
 

@@ -23,8 +23,8 @@ class Settings(BaseSettings):
     app_version: str = "0.1.0"
 
     database_scheme: str = "postgresql+psycopg"
-    database_host: str = "localhost"
-    database_port: int = 5432
+    database_host: str = "pgbouncer"
+    database_port: int = 6432
     database_user: str = "dream_admin"
     database_password: str = "dream_password"
     database_name: str = "dream_central"
@@ -46,7 +46,7 @@ class Settings(BaseSettings):
 
     jwt_secret_key: str = "CHANGE_ME"
     jwt_algorithm: str = "HS256"
-    jwt_access_token_expires_minutes: int = 30
+    jwt_access_token_expires_minutes: int = 10080  # 7 days
 
     cors_allowed_origins: str | list[str] = "http://localhost:5173,http://localhost:5174"
 

@@ -22,16 +22,9 @@ class BookRepository(BaseRepository[Book]):
         session.commit()
         return created
 
-    def list_all_books(
-        self, session: Session, *, skip: int = 0, limit: int = 50
-    ) -> list[Book]:
+    def list_all_books(self, session: Session, *, skip: int = 0, limit: int = 50) -> list[Book]:
         """List all books that are not archived (not in trash)."""
-        statement = (
-            select(Book)
-            .where(Book.status != BookStatusEnum.ARCHIVED)
-            .offset(skip)
-            .limit(limit)
-        )
+        statement = select(Book).where(Book.status != BookStatusEnum.ARCHIVED).offset(skip).limit(limit)
         return list(session.scalars(statement).all())
 
     def list_by_publisher_id(

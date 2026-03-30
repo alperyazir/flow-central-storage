@@ -39,6 +39,15 @@ _webhook_service = WebhookService()
 logger = logging.getLogger(__name__)
 
 
+def _invalidate_publisher_cache() -> None:
+    from app.services.cache import get_cache
+
+    try:
+        get_cache().invalidate("fcs:publishers:*")
+    except Exception:
+        pass
+
+
 def _trigger_publisher_webhook(publisher_id: int, event_type: WebhookEventType) -> None:
     """Trigger webhook broadcast for a publisher event (runs in background)."""
     logger.info(f"[WEBHOOK] Triggering {event_type.value} webhook for publisher_id={publisher_id}")
@@ -130,6 +139,7 @@ def create_publisher(
         f"[WEBHOOK-TRIGGER] Scheduling PUBLISHER_CREATED webhook for publisher_id={publisher.id}, name='{publisher.name}'"
     )
     background_tasks.add_task(_trigger_publisher_webhook, publisher.id, WebhookEventType.PUBLISHER_CREATED)
+    _invalidate_publisher_cache()
     logger.debug(
         f"[WEBHOOK-TRIGGER] PUBLISHER_CREATED webhook task added to background queue for publisher_id={publisher.id}"
     )
@@ -147,6 +157,15 @@ def list_publishers(
     """Return active publishers with pagination."""
 
     _require_admin(credentials, db)
+
+    from app.services.cache import cache_key, get_cache
+
+    cache = get_cache()
+    ck = cache_key("publishers", "list", skip, limit)
+    cached = cache.get(ck)
+    if cached is not None:
+        return cached
+
     publishers = _publisher_repository.list_active(db, skip=skip, limit=limit)
     total = _publisher_repository.count_active(db)
 
@@ -165,7 +184,9 @@ def list_publishers(
         for p in publishers
     ]
 
-    return PublisherListResponse(items=items, total=total)
+    result = PublisherListResponse(items=items, total=total).model_dump(mode="json")
+    cache.set(ck, result, ttl=600)
+    return result
 
 
 @router.get("/trash", response_model=PublisherListResponse)
@@ -271,6 +292,7 @@ def update_publisher(
         f"[WEBHOOK-TRIGGER] Scheduling PUBLISHER_UPDATED webhook for publisher_id={updated.id}, name='{updated.name}', updated_fields={list(update_data.keys())}"
     )
     background_tasks.add_task(_trigger_publisher_webhook, updated.id, WebhookEventType.PUBLISHER_UPDATED)
+    _invalidate_publisher_cache()
     logger.debug(
         f"[WEBHOOK-TRIGGER] PUBLISHER_UPDATED webhook task added to background queue for publisher_id={updated.id}"
     )
@@ -303,6 +325,7 @@ def soft_delete_publisher(
         f"[WEBHOOK-TRIGGER] Scheduling PUBLISHER_DELETED webhook for publisher_id={updated.id}, name='{updated.name}', status='inactive'"
     )
     background_tasks.add_task(_trigger_publisher_webhook, updated.id, WebhookEventType.PUBLISHER_DELETED)
+    _invalidate_publisher_cache()
     logger.debug(
         f"[WEBHOOK-TRIGGER] PUBLISHER_DELETED webhook task added to background queue for publisher_id={updated.id}"
     )
@@ -340,6 +363,7 @@ def restore_publisher(
         f"[WEBHOOK-TRIGGER] Scheduling PUBLISHER_CREATED webhook (restore) for publisher_id={updated.id}, name='{updated.name}', status='active'"
     )
     background_tasks.add_task(_trigger_publisher_webhook, updated.id, WebhookEventType.PUBLISHER_CREATED)
+    _invalidate_publisher_cache()
     logger.debug(
         f"[WEBHOOK-TRIGGER] PUBLISHER_CREATED webhook task (restore) added to background queue for publisher_id={updated.id}"
     )

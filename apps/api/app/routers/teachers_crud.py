@@ -72,6 +72,15 @@ def _require_admin(credentials: HTTPAuthorizationCredentials, db: Session) -> in
 # =============================================================================
 
 
+def _invalidate_teacher_cache() -> None:
+    from app.services.cache import get_cache
+
+    try:
+        get_cache().invalidate("fcs:teachers:*")
+    except Exception:
+        pass
+
+
 @router.post("/", response_model=TeacherRead, status_code=status.HTTP_201_CREATED)
 def create_teacher(
     payload: TeacherCreate,
@@ -90,6 +99,7 @@ def create_teacher(
             detail=f"Teacher with ID '{payload.teacher_id}' already exists",
         )
 
+    _invalidate_teacher_cache()
     return TeacherRead.model_validate(teacher)
 
 
@@ -112,10 +122,12 @@ def list_teachers(
         teachers = _teacher_repository.list_active(db, skip=skip, limit=limit)
         total = _teacher_repository.count_active(db)
 
+    teacher_ids = [t.id for t in teachers]
+    bulk_stats = _material_repository.get_bulk_storage_stats(db, teacher_ids)
+
     items = []
     for t in teachers:
-        # Get material count and storage size
-        stats = _material_repository.get_storage_stats(db, t.id)
+        stats = bulk_stats.get(t.id, {"total_count": 0, "total_size": 0})
         items.append(
             TeacherListItem(
                 id=t.id,
@@ -148,9 +160,12 @@ def list_trashed_teachers(
     teachers = _teacher_repository.list_archived(db, skip=skip, limit=limit)
     total = _teacher_repository.count_archived(db)
 
+    teacher_ids = [t.id for t in teachers]
+    bulk_stats = _material_repository.get_bulk_storage_stats(db, teacher_ids)
+
     items = []
     for t in teachers:
-        stats = _material_repository.get_storage_stats(db, t.id)
+        stats = bulk_stats.get(t.id, {"total_count": 0, "total_size": 0})
         items.append(
             TeacherListItem(
                 id=t.id,

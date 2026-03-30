@@ -73,21 +73,19 @@ class MaterialRepository(BaseRepository[Material]):
         session: Session,
         teacher_id: int,
     ) -> dict:
-        """Get storage statistics for a teacher.
-
-        Returns:
-            Dict with total_size, total_count, by_type breakdown, and AI stats.
-        """
-        # Total size and count
-        total_stmt = select(
-            func.count().label("count"),
-            func.coalesce(func.sum(Material.size), 0).label("size"),
+        """Get storage statistics for a teacher (2 queries: aggregates + by_type)."""
+        # Query 1: All aggregates in one shot using conditional counts
+        agg_stmt = select(
+            func.count(Material.id).label("total_count"),
+            func.coalesce(func.sum(Material.size), 0).label("total_size"),
+            func.count(Material.id).filter(Material.file_type.in_(TEXT_MATERIAL_TYPES)).label("ai_processable"),
+            func.count(Material.id)
+            .filter(Material.ai_processing_status == AIProcessingStatusEnum.COMPLETED.value)
+            .label("ai_processed"),
         ).where(Material.teacher_id == teacher_id, Material.status != "archived")
-        total_result = session.execute(total_stmt).first()
-        total_count = total_result.count if total_result else 0
-        total_size = total_result.size if total_result else 0
+        agg = session.execute(agg_stmt).first()
 
-        # Breakdown by file type
+        # Query 2: File type breakdown
         by_type_stmt = (
             select(
                 Material.file_type,
@@ -97,40 +95,81 @@ class MaterialRepository(BaseRepository[Material]):
             .where(Material.teacher_id == teacher_id, Material.status != "archived")
             .group_by(Material.file_type)
         )
-        by_type_result = session.execute(by_type_stmt).all()
-        by_type = {row.file_type: {"count": row.count, "size": row.size} for row in by_type_result}
-
-        # AI processable count (text materials)
-        ai_processable_stmt = (
-            select(func.count())
-            .select_from(Material)
-            .where(
-                Material.teacher_id == teacher_id,
-                Material.status != "archived",
-                Material.file_type.in_(TEXT_MATERIAL_TYPES),
-            )
-        )
-        ai_processable_count = session.execute(ai_processable_stmt).scalar() or 0
-
-        # AI processed count
-        ai_processed_stmt = (
-            select(func.count())
-            .select_from(Material)
-            .where(
-                Material.teacher_id == teacher_id,
-                Material.status != "archived",
-                Material.ai_processing_status == AIProcessingStatusEnum.COMPLETED.value,
-            )
-        )
-        ai_processed_count = session.execute(ai_processed_stmt).scalar() or 0
+        by_type = {row.file_type: {"count": row.count, "size": row.size} for row in session.execute(by_type_stmt).all()}
 
         return {
-            "total_size": int(total_size),
-            "total_count": total_count,
+            "total_size": int(agg.total_size) if agg else 0,
+            "total_count": agg.total_count if agg else 0,
             "by_type": by_type,
-            "ai_processable_count": ai_processable_count,
-            "ai_processed_count": ai_processed_count,
+            "ai_processable_count": agg.ai_processable if agg else 0,
+            "ai_processed_count": agg.ai_processed if agg else 0,
         }
+
+    def get_bulk_storage_stats(
+        self,
+        session: Session,
+        teacher_ids: list[int],
+    ) -> dict[int, dict]:
+        """Get storage stats for multiple teachers in bulk (2 queries total).
+
+        Returns:
+            Dict mapping teacher_id → stats dict.
+        """
+        if not teacher_ids:
+            return {}
+
+        # Query 1: Aggregates per teacher
+        agg_stmt = (
+            select(
+                Material.teacher_id,
+                func.count(Material.id).label("total_count"),
+                func.coalesce(func.sum(Material.size), 0).label("total_size"),
+                func.count(Material.id).filter(Material.file_type.in_(TEXT_MATERIAL_TYPES)).label("ai_processable"),
+                func.count(Material.id)
+                .filter(Material.ai_processing_status == AIProcessingStatusEnum.COMPLETED.value)
+                .label("ai_processed"),
+            )
+            .where(Material.teacher_id.in_(teacher_ids), Material.status != "archived")
+            .group_by(Material.teacher_id)
+        )
+        agg_rows = {row.teacher_id: row for row in session.execute(agg_stmt).all()}
+
+        # Query 2: File type breakdown per teacher
+        by_type_stmt = (
+            select(
+                Material.teacher_id,
+                Material.file_type,
+                func.count().label("count"),
+                func.coalesce(func.sum(Material.size), 0).label("size"),
+            )
+            .where(Material.teacher_id.in_(teacher_ids), Material.status != "archived")
+            .group_by(Material.teacher_id, Material.file_type)
+        )
+        by_type_map: dict[int, dict] = {}
+        for row in session.execute(by_type_stmt).all():
+            by_type_map.setdefault(row.teacher_id, {})[row.file_type] = {"count": row.count, "size": row.size}
+
+        empty_stats = {
+            "total_size": 0,
+            "total_count": 0,
+            "by_type": {},
+            "ai_processable_count": 0,
+            "ai_processed_count": 0,
+        }
+        result = {}
+        for tid in teacher_ids:
+            agg = agg_rows.get(tid)
+            if agg:
+                result[tid] = {
+                    "total_size": int(agg.total_size),
+                    "total_count": agg.total_count,
+                    "by_type": by_type_map.get(tid, {}),
+                    "ai_processable_count": agg.ai_processable,
+                    "ai_processed_count": agg.ai_processed,
+                }
+            else:
+                result[tid] = dict(empty_stats)
+        return result
 
     def list_pending_ai_processing(
         self,

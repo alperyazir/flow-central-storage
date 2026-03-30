@@ -29,13 +29,34 @@ services:
       retries: 5
     command: redis-server --appendonly yes
 
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.23.1-p2
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "6433:6432"
+    volumes:
+      - ./pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
+      - ./pgbouncer/entrypoint.sh:/entrypoint.sh:ro
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-changethis}
+    entrypoint: /entrypoint.sh
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 6432"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+      timeout: 5s
+
   api:
     build:
       context: ../apps/api
     env_file:
       - ../apps/api/.env
     depends_on:
-      postgres:
+      pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -53,7 +74,7 @@ services:
     env_file:
       - ../apps/api/.env
     depends_on:
-      postgres:
+      pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -87,6 +108,8 @@ services:
     depends_on:
       - seaweedfs-master
       - seaweedfs-volume
+    volumes:
+      - seaweedfs_filer_data:/data
 
   seaweedfs-s3:
     image: chrislusf/seaweedfs:latest
@@ -170,5 +193,6 @@ volumes:
   redis_data:
   seaweedfs_master_data:
   seaweedfs_volume_data:
+  seaweedfs_filer_data:
   grafana_data:
   admin_panel_node_modules:

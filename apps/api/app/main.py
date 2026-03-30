@@ -148,6 +148,3 @@ app.include_router(monitoring_router)
 async def global_exception_handler(request, exc):
     logger.error("Unhandled exception: %s", exc, exc_info=True)
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})
-
-
-

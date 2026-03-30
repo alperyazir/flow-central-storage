@@ -159,15 +159,11 @@ def iter_zip_entries(archive: zipfile.ZipFile, strip_root: str | None = None) ->
         # SEC-C2: Reject oversized entries to mitigate zip-bomb attacks
         if entry.file_size > _ZIP_MAX_ENTRY_SIZE:
             raise UploadError(
-                f"Entry '{entry.filename}' exceeds the 2 GB per-file limit "
-                f"(declared size: {entry.file_size} bytes)"
+                f"Entry '{entry.filename}' exceeds the 2 GB per-file limit (declared size: {entry.file_size} bytes)"
             )
         total_size += entry.file_size
         if total_size > _ZIP_MAX_TOTAL_SIZE:
-            raise UploadError(
-                f"Total extracted size exceeds the 20 GB limit "
-                f"(accumulated: {total_size} bytes)"
-            )
+            raise UploadError(f"Total extracted size exceeds the 20 GB limit (accumulated: {total_size} bytes)")
 
         # Strip root folder if specified
         final_path = normalized_path
