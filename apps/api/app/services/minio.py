@@ -47,7 +47,7 @@ def get_minio_client_external(settings: Settings | None = None) -> Minio:
         access_key=config.minio_access_key,
         secret_key=config.minio_secret_key,
         secure=secure,
-        region="us-east-1",  # Fixed region to skip region lookup HTTP request
+        region=config.minio_region,
     )
 
 

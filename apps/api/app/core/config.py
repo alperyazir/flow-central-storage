@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     minio_access_key: str = "admin"
     minio_secret_key: str = "admin"
     minio_secure: bool = False
+    minio_region: str = "us-east-1"
     minio_publishers_bucket: str = "publishers"
     minio_apps_bucket: str = "apps"
     minio_trash_bucket: str = "trash"
