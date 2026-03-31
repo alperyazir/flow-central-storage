@@ -479,9 +479,11 @@ async def upload_new_book_async(
 
     # Run the rest in background
     def _process_upload():
+        import time as _time
         from app.db.session import SessionLocal
 
         try:
+            logger.info("[UPLOAD:%s] Phase 2 started — processing temp file %s (%dMB)", job_id, tmp_path, total_bytes // 1024 // 1024)
             set_upload_progress(job_id, 45, "extracting", "Reading metadata...")
 
             # Extract metadata
@@ -536,6 +538,8 @@ async def upload_new_book_async(
                     for obj in objects:
                         client.remove_object(settings.minio_publishers_bucket, obj.object_name)
 
+                logger.info("[UPLOAD:%s] Starting S3 upload — prefix: %s", job_id, object_prefix)
+                _upload_start = _time.time()
                 set_upload_progress(job_id, 55, "uploading", "Uploading files to storage...")
 
                 # Upload with progress callback
@@ -553,6 +557,8 @@ async def upload_new_book_async(
                     on_progress=on_file_progress,
                 )
 
+                _upload_elapsed = _time.time() - _upload_start
+                logger.info("[UPLOAD:%s] S3 upload complete — %d files in %.1fs", job_id, len(manifest), _upload_elapsed)
                 set_upload_progress(job_id, 96, "saving", "Creating database record...")
 
                 # DB operations
@@ -572,13 +578,14 @@ async def upload_new_book_async(
 
                 _invalidate_book_cache()
 
+                logger.info("[UPLOAD:%s] DB record saved — book_id=%d", job_id, book.id)
                 set_upload_progress(job_id, 100, "completed", f"{len(manifest)} files uploaded", book_id=book.id)
 
             finally:
                 session.close()
 
         except Exception as exc:
-            logger.error("Async upload failed for job %s: %s", job_id, exc, exc_info=True)
+            logger.error("[UPLOAD:%s] FAILED: %s", job_id, exc, exc_info=True)
             set_upload_progress(job_id, 0, "error", error=str(exc))
         finally:
             try:
