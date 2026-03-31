@@ -463,8 +463,9 @@ async def upload_new_book_async(
 
     set_upload_progress(job_id, 40, "received", f"File received ({total_bytes // 1024 // 1024}MB)")
 
-    # Extract needed DB data before releasing connection
-    resolved_publisher = None
+    # Extract needed DB data into plain values before releasing connection
+    override_pub_id: int | None = None
+    override_pub_name: str | None = None
     if publisher_id is not None:
         resolved_publisher = _publisher_repository.get(db, publisher_id)
         if resolved_publisher is None:
@@ -472,6 +473,8 @@ async def upload_new_book_async(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail=f"Publisher with ID {publisher_id} not found"
             )
+        override_pub_id = resolved_publisher.id
+        override_pub_name = resolved_publisher.name
     db.commit()
 
     # Run the rest in background
@@ -504,9 +507,9 @@ async def upload_new_book_async(
             # Resolve publisher
             session = SessionLocal()
             try:
-                if resolved_publisher:
-                    book_data["publisher"] = resolved_publisher.name
-                    pub_id = resolved_publisher.id
+                if override_pub_id is not None:
+                    book_data["publisher"] = override_pub_name
+                    pub_id = override_pub_id
                 else:
                     publisher_name = book_data.get("publisher", "")
                     pub = _publisher_repository.get_or_create_by_name(session, publisher_name)
