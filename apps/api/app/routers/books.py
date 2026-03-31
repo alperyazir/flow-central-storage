@@ -407,6 +407,187 @@ async def upload_book(
         os.unlink(tmp_path)
 
 
+@router.get("/upload-status/{job_id}")
+def get_upload_status(
+    job_id: str,
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+):
+    """Get upload progress for an async upload job."""
+    _require_admin(credentials, db)
+
+    from app.services.cache import get_upload_progress
+
+    progress = get_upload_progress(job_id)
+    if progress is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Upload job not found")
+    return progress
+
+
+@router.post("/upload-async", status_code=status.HTTP_202_ACCEPTED)
+async def upload_new_book_async(
+    file: UploadFile,
+    background_tasks: BackgroundTasks,
+    publisher_id: int | None = Query(default=None, description="Override publisher from config.json"),
+    override: bool = Query(default=False, description="If true, replace existing book"),
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+):
+    """Upload a book asynchronously with progress tracking.
+
+    Returns a job_id immediately. Poll /books/upload-status/{job_id} for progress.
+    """
+    import os
+    import tempfile
+    import uuid
+
+    from app.services.cache import set_upload_progress
+
+    _require_admin(credentials, db)
+
+    if not file.filename or not file.filename.lower().endswith(".zip"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File must be a ZIP archive")
+
+    job_id = str(uuid.uuid4())
+    book_name_from_zip = file.filename[:-4]
+
+    set_upload_progress(job_id, 0, "receiving", "Uploading file to server...")
+
+    # Stream to temp file
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+        tmp_path = tmp.name
+        total_bytes = 0
+        while chunk := await file.read(1024 * 1024):
+            tmp.write(chunk)
+            total_bytes += len(chunk)
+
+    set_upload_progress(job_id, 40, "received", f"File received ({total_bytes // 1024 // 1024}MB)")
+
+    # Extract needed DB data before releasing connection
+    resolved_publisher = None
+    if publisher_id is not None:
+        resolved_publisher = _publisher_repository.get(db, publisher_id)
+        if resolved_publisher is None:
+            os.unlink(tmp_path)
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=f"Publisher with ID {publisher_id} not found"
+            )
+    db.commit()
+
+    # Run the rest in background
+    def _process_upload():
+        from app.db.session import SessionLocal
+
+        try:
+            set_upload_progress(job_id, 45, "extracting", "Reading metadata...")
+
+            # Extract metadata
+            try:
+                create_payload = _extract_book_metadata(archive_path=tmp_path)
+            except UploadError as exc:
+                set_upload_progress(job_id, 0, "error", error=str(exc))
+                return
+
+            additional_metadata = _extract_additional_metadata(archive_path=tmp_path)
+
+            book_data = create_payload.model_dump()
+            book_data["book_name"] = book_name_from_zip
+            book_data.update(additional_metadata)
+
+            for field in ("publisher", "book_name", "book_title", "language", "category"):
+                value = book_data.get(field)
+                if isinstance(value, str):
+                    book_data[field] = value.strip()
+
+            set_upload_progress(job_id, 50, "resolving", "Resolving publisher...")
+
+            # Resolve publisher
+            session = SessionLocal()
+            try:
+                if resolved_publisher:
+                    book_data["publisher"] = resolved_publisher.name
+                    pub_id = resolved_publisher.id
+                else:
+                    publisher_name = book_data.get("publisher", "")
+                    pub = _publisher_repository.get_or_create_by_name(session, publisher_name)
+                    pub_id = pub.id
+                    session.commit()
+
+                settings = get_settings()
+                client = get_minio_client(settings)
+                object_prefix = f"{pub_id}/books/{book_data['book_name']}/"
+
+                # Check conflict
+                prefix_exists = _prefix_exists(client, settings.minio_publishers_bucket, object_prefix)
+                if prefix_exists and not override:
+                    set_upload_progress(
+                        job_id, 0, "error", error=f"Book '{book_data['book_name']}' already exists. Use override=true."
+                    )
+                    return
+
+                if prefix_exists and override:
+                    set_upload_progress(job_id, 52, "clearing", "Removing existing files...")
+                    objects = list(
+                        client.list_objects(settings.minio_publishers_bucket, prefix=object_prefix, recursive=True)
+                    )
+                    for obj in objects:
+                        client.remove_object(settings.minio_publishers_bucket, obj.object_name)
+
+                set_upload_progress(job_id, 55, "uploading", "Uploading files to storage...")
+
+                # Upload with progress callback
+                def on_file_progress(uploaded: int, total: int):
+                    pct = 55 + int((uploaded / max(total, 1)) * 40)  # 55-95%
+                    set_upload_progress(job_id, pct, "uploading", f"{uploaded}/{total} files")
+
+                manifest = upload_book_archive(
+                    client=client,
+                    archive_path=tmp_path,
+                    bucket=settings.minio_publishers_bucket,
+                    object_prefix=object_prefix,
+                    content_type="application/octet-stream",
+                    strip_root_folder=True,
+                    on_progress=on_file_progress,
+                )
+
+                set_upload_progress(job_id, 96, "saving", "Creating database record...")
+
+                # DB operations
+                book_data.pop("publisher", None)
+                book_data["publisher_id"] = pub_id
+                if book_data.get("status") is None or book_data["status"] == BookStatusEnum.DRAFT:
+                    book_data["status"] = BookStatusEnum.PUBLISHED
+
+                existing_book = _book_repository.get_by_publisher_id_and_name(
+                    session, publisher_id=pub_id, book_name=book_data["book_name"]
+                )
+                if existing_book:
+                    book = _book_repository.update(session, existing_book, data=book_data)
+                else:
+                    book = _book_repository.create(session, data=book_data)
+                session.commit()
+
+                _invalidate_book_cache()
+
+                set_upload_progress(job_id, 100, "completed", f"{len(manifest)} files uploaded", book_id=book.id)
+
+            finally:
+                session.close()
+
+        except Exception as exc:
+            logger.error("Async upload failed for job %s: %s", job_id, exc, exc_info=True)
+            set_upload_progress(job_id, 0, "error", error=str(exc))
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+    background_tasks.add_task(_process_upload)
+
+    return {"job_id": job_id, "status": "accepted"}
+
+
 @router.post("/upload", status_code=status.HTTP_201_CREATED)
 async def upload_new_book(
     file: UploadFile,
@@ -511,7 +692,9 @@ async def upload_new_book(
 
         # Check if book already exists in storage
         try:
-            prefix_exists = await asyncio.to_thread(_prefix_exists, client, settings.minio_publishers_bucket, object_prefix)
+            prefix_exists = await asyncio.to_thread(
+                _prefix_exists, client, settings.minio_publishers_bucket, object_prefix
+            )
         except Exception as exc:
             logger.error("Failed to check existing book prefix '%s': %s", object_prefix, exc)
             raise HTTPException(
@@ -536,7 +719,9 @@ async def upload_new_book(
             try:
                 # Delete all objects at this prefix
                 objects = await asyncio.to_thread(
-                    lambda: list(client.list_objects(settings.minio_publishers_bucket, prefix=object_prefix, recursive=True))
+                    lambda: list(
+                        client.list_objects(settings.minio_publishers_bucket, prefix=object_prefix, recursive=True)
+                    )
                 )
                 for obj in objects:
                     await asyncio.to_thread(client.remove_object, settings.minio_publishers_bucket, obj.object_name)

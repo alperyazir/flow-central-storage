@@ -9,7 +9,7 @@ import re
 import zipfile
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Iterable
+from typing import Callable, Iterable
 
 from minio import Minio
 from minio.commonconfig import CopySource
@@ -182,11 +182,15 @@ def upload_book_archive(
     object_prefix: str,
     content_type: str | None = None,
     strip_root_folder: bool = True,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> list[dict[str, object]]:
     """Upload a ZIP archive into S3 under the given prefix.
 
     Accepts either archive_path (disk file — preferred, low memory) or
     archive_bytes (in-memory — legacy fallback).
+
+    Args:
+        on_progress: Optional callback(uploaded_count, total_count) called after each file.
 
     Returns a manifest of uploaded file paths and sizes.
     """
@@ -207,8 +211,12 @@ def upload_book_archive(
         if strip_root_folder:
             root_to_strip = _detect_root_folder(archive)
 
+        # Count total files for progress
+        entries = list(iter_zip_entries(archive, strip_root=root_to_strip))
+        total_files = len(entries)
+
         manifest: list[dict[str, object]] = []
-        for entry, final_path in iter_zip_entries(archive, strip_root=root_to_strip):
+        for idx, (entry, final_path) in enumerate(entries):
             file_path = f"{object_prefix}{final_path}"
             with archive.open(entry) as file_obj:
                 data = file_obj.read()
@@ -220,8 +228,10 @@ def upload_book_archive(
                     length=len(data),
                     content_type=content_type or "application/octet-stream",
                 )
-                del data  # free memory immediately
+                del data
             manifest.append({"path": file_path, "size": entry.file_size})
+            if on_progress:
+                on_progress(idx + 1, total_files)
     finally:
         archive.close()
 

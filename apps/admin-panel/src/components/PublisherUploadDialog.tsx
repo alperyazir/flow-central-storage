@@ -26,7 +26,11 @@ import {
   uploadPublisherAsset,
   type Publisher,
 } from 'lib/publishers';
-import { uploadNewBookArchive } from 'lib/uploads';
+import {
+  uploadNewBookArchive,
+  uploadNewBookWithProgress,
+  type UploadProgress,
+} from 'lib/uploads';
 import { ApiError } from 'lib/api';
 
 interface PublisherUploadDialogProps {
@@ -207,19 +211,38 @@ export function PublisherUploadDialog({
     e.target.value = '';
   };
 
+  const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(
+    null
+  );
+
   const handleUpload = async () => {
     if (!token || !state.publisherId || !state.files.length) return;
     dispatch({ type: 'SET_STEP', step: 'uploading' });
 
     const results: UploadResult[] = [];
     const tt = tokenType || 'Bearer';
+    const apiBase = import.meta.env?.VITE_API_BASE_URL || '';
 
     for (const file of state.files) {
       try {
         if (effectiveType === 'books') {
-          await uploadNewBookArchive(file, token, tt, undefined, {
-            publisherId: state.publisherId,
+          setUploadProgress({
+            progress: 0,
+            step: 'starting',
+            detail: '',
+            book_id: null,
+            error: null,
           });
+          const { promise } = uploadNewBookWithProgress(
+            file,
+            token,
+            tt,
+            (p) => setUploadProgress(p),
+            { publisherId: state.publisherId! },
+            apiBase
+          );
+          await promise;
+          setUploadProgress(null);
           results.push({
             filename: file.name,
             success: true,
@@ -450,10 +473,25 @@ export function PublisherUploadDialog({
           {state.step === 'uploading' && (
             <div className="flex flex-col items-center gap-3 py-4">
               <Loader2 className="h-8 w-8 animate-spin text-primary" />
-              <p className="text-sm text-muted-foreground">
-                Uploading {state.files.length} file(s)...
-              </p>
-              <Progress value={undefined} className="animate-pulse" />
+              {uploadProgress ? (
+                <>
+                  <Progress value={uploadProgress.progress} />
+                  <p className="text-sm font-medium">
+                    {uploadProgress.progress}%
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {uploadProgress.detail ||
+                      uploadProgress.step.replace(/_/g, ' ')}
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm text-muted-foreground">
+                    Uploading {state.files.length} file(s)...
+                  </p>
+                  <Progress value={undefined} className="animate-pulse" />
+                </>
+              )}
             </div>
           )}
 

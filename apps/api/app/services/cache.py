@@ -76,3 +76,40 @@ class CacheService:
 def get_cache() -> CacheService:
     """Get a CacheService instance."""
     return CacheService(_get_sync_redis())
+
+
+# ---------------------------------------------------------------------------
+# Upload progress tracking
+# ---------------------------------------------------------------------------
+
+_UPLOAD_TTL = 3600  # 1 hour
+
+
+def set_upload_progress(
+    job_id: str, progress: int, step: str, detail: str = "", book_id: int | None = None, error: str | None = None
+) -> None:
+    """Update upload progress in Redis."""
+    try:
+        r = _get_sync_redis()
+        data = {"progress": progress, "step": step, "detail": detail, "book_id": book_id, "error": error}
+        r.setex(f"fcs:upload:{job_id}", _UPLOAD_TTL, json.dumps(data, default=str))
+    except Exception:
+        pass
+
+
+def get_upload_progress(job_id: str) -> dict | None:
+    """Read upload progress from Redis."""
+    try:
+        r = _get_sync_redis()
+        data = r.get(f"fcs:upload:{job_id}")
+        return json.loads(data) if data else None
+    except Exception:
+        return None
+
+
+def delete_upload_progress(job_id: str) -> None:
+    """Clean up upload progress."""
+    try:
+        _get_sync_redis().delete(f"fcs:upload:{job_id}")
+    except Exception:
+        pass
