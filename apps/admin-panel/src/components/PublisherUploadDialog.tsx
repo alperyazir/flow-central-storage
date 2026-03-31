@@ -221,8 +221,7 @@ export function PublisherUploadDialog({
 
     const results: UploadResult[] = [];
     const tt = tokenType || 'Bearer';
-    const { appConfig } = await import('config/environment');
-    const apiBase = appConfig.apiBaseUrl;
+    const apiBase = import.meta.env?.VITE_API_BASE_URL || '';
 
     for (const file of state.files) {
       try {
