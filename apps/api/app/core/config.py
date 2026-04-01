@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     llm_primary_provider: str = "gemini"
     llm_fallback_provider: str = "deepseek"
     llm_default_model: str = "gemini-2.5-flash"
+    llm_gemini_model: str = "gemini-2.5-flash"
+    llm_gemini_vision_model: str = "gemini-2.5-flash"
     llm_max_tokens: int = 4096
     llm_timeout_seconds: int = 60
     llm_max_retries: int = 3

@@ -81,6 +81,8 @@ class LLMService:
                 return None
             return GeminiProvider(
                 api_key=self.settings.gemini_api_key,
+                default_model=self.settings.llm_gemini_model,
+                vision_model=self.settings.llm_gemini_vision_model,
                 timeout=float(self.settings.llm_timeout_seconds),
                 max_retries=self.settings.llm_max_retries,
             )
