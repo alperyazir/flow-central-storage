@@ -59,3 +59,20 @@ export const getDeleteStatus = (
   client.get<DeleteProgressResponse>(`/books/delete-status/${jobId}`, {
     headers: buildAuthHeaders(token, tokenType),
   });
+
+export interface SyncR2Response {
+  synced: boolean;
+  created: { id: number; publisher_id: number; book_name: string }[];
+  removed: { id: number; publisher_id: number; book_name: string }[];
+  r2_count: number;
+  db_count: number;
+}
+
+export const syncBooksWithR2 = (
+  token: string,
+  tokenType: string = 'Bearer',
+  client: ApiClient = apiClient
+): Promise<SyncR2Response> =>
+  client.post<SyncR2Response, undefined>('/books/sync-r2', undefined, {
+    headers: buildAuthHeaders(token, tokenType),
+  });

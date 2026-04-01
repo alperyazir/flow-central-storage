@@ -13,6 +13,7 @@ from collections.abc import Iterable
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, ValidationError
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -95,6 +96,79 @@ def _require_admin(credentials: HTTPAuthorizationCredentials, db: Session) -> in
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid token",
     )
+
+
+@router.post("/sync-r2", status_code=status.HTTP_200_OK)
+def sync_books_with_r2(
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+):
+    """Sync DB book records with R2 storage.
+
+    - Books in R2 but not in DB → creates DB record
+    - Books in DB but not in R2 → deletes DB record
+    """
+    _require_admin(credentials, db)
+
+    settings = get_settings()
+    client = get_minio_client(settings)
+    bucket = settings.minio_publishers_bucket
+
+    # Get all publisher folders from R2
+    r2_books: dict[tuple[int, str], bool] = {}  # (publisher_id, book_name) → exists
+    try:
+        for pub_obj in client.list_objects(bucket, recursive=False):
+            pub_prefix = pub_obj.object_name.rstrip("/")
+            try:
+                pub_id = int(pub_prefix)
+            except ValueError:
+                continue
+            books_prefix = f"{pub_id}/books/"
+            for book_obj in client.list_objects(bucket, prefix=books_prefix, recursive=False):
+                book_name = book_obj.object_name[len(books_prefix):].rstrip("/")
+                if book_name:
+                    r2_books[(pub_id, book_name)] = True
+    except Exception as exc:
+        logger.error("Failed to list R2 books: %s", exc)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Failed to list R2 storage") from exc
+
+    # Get all books from DB
+    all_db_books = db.execute(select(Book)).scalars().all()
+    db_books = {(b.publisher_id, b.book_name): b for b in all_db_books}
+
+    created = []
+    removed = []
+
+    # R2'de var, DB'de yok → oluştur
+    for (pub_id, book_name) in r2_books:
+        if (pub_id, book_name) not in db_books:
+            book = _book_repository.create(db, data={
+                "publisher_id": pub_id,
+                "book_name": book_name,
+                "book_title": book_name,
+                "language": "en",
+                "status": BookStatusEnum.PUBLISHED,
+            })
+            created.append({"id": book.id, "publisher_id": pub_id, "book_name": book_name})
+            logger.info("Sync: created DB record for R2 book %s/%s (id=%d)", pub_id, book_name, book.id)
+
+    # DB'de var, R2'de yok → sil
+    for (pub_id, book_name), book in db_books.items():
+        if (pub_id, book_name) not in r2_books:
+            _book_repository.delete(db, book)
+            removed.append({"id": book.id, "publisher_id": pub_id, "book_name": book_name})
+            logger.info("Sync: removed orphan DB record for %s/%s (id=%d)", pub_id, book_name, book.id)
+
+    if created or removed:
+        _invalidate_book_cache()
+
+    return {
+        "synced": True,
+        "created": created,
+        "removed": removed,
+        "r2_count": len(r2_books),
+        "db_count": len(db_books),
+    }
 
 
 def _trigger_webhook(book_id: int, event_type: WebhookEventType) -> None:

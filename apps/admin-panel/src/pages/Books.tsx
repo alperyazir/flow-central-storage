@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Loader2, Cpu } from 'lucide-react';
+import { Loader2, Cpu, RefreshCw } from 'lucide-react';
 
 import { Card, CardContent } from 'components/ui/card';
 import {
@@ -23,7 +23,7 @@ import { Badge } from 'components/ui/badge';
 import { Alert, AlertDescription } from 'components/ui/alert';
 import ProcessingDialog from 'components/ProcessingDialog';
 import { useAuthStore } from 'stores/auth';
-import { fetchBooks } from 'lib/books';
+import { fetchBooks, syncBooksWithR2, type SyncR2Response } from 'lib/books';
 
 type SortField =
   | 'bookTitle'
@@ -60,6 +60,23 @@ const BooksPage = () => {
     d: 'asc',
   });
   const [processingBook, setProcessingBook] = useState<BookRow | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState<SyncR2Response | null>(null);
+
+  const handleSync = async () => {
+    if (!token) return;
+    setSyncing(true);
+    setSyncResult(null);
+    try {
+      const result = await syncBooksWithR2(token, tt);
+      setSyncResult(result);
+      if (result.created.length > 0 || result.removed.length > 0) load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Sync failed');
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   const load = async () => {
     if (!token) return;
@@ -150,7 +167,21 @@ const BooksPage = () => {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">All Books</h1>
+        <Button variant="outline" onClick={handleSync} disabled={syncing}>
+          <RefreshCw className={`h-4 w-4 ${syncing ? 'animate-spin' : ''}`} />
+          {syncing ? 'Syncing...' : 'Sync R2'}
+        </Button>
       </div>
+      {syncResult && (
+        <Alert>
+          <AlertDescription>
+            R2: {syncResult.r2_count} books, DB: {syncResult.db_count} books.
+            {syncResult.created.length > 0 && ` Created ${syncResult.created.length} record(s).`}
+            {syncResult.removed.length > 0 && ` Removed ${syncResult.removed.length} orphan(s).`}
+            {syncResult.created.length === 0 && syncResult.removed.length === 0 && ' Already in sync.'}
+          </AlertDescription>
+        </Alert>
+      )}
       {error && (
         <Alert variant="destructive">
           <AlertDescription>{error}</AlertDescription>
