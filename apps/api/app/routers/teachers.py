@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.security import decode_access_token, verify_api_key_from_db
-from app.db import get_db
+from app.db import SessionLocal, get_db
 from app.repositories.material import MaterialRepository
 from app.repositories.teacher import TeacherRepository
 from app.repositories.user import UserRepository
@@ -442,6 +442,10 @@ async def delete_teacher_material(
 ):
     """Soft-delete a teacher material by moving it to the trash bucket."""
     _require_admin(credentials, db)
+
+    # Release DB connection before slow storage operation
+    db.close()
+
     settings = get_settings()
     client = get_minio_client(settings)
 

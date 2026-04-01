@@ -271,9 +271,14 @@ def soft_delete_book(
     if book.status == BookStatusEnum.ARCHIVED:
         return BookRead.model_validate(book)
 
+    # Capture book info and release DB connection before slow storage operation
+    book_publisher_id = book.publisher_id
+    book_name = book.book_name
+    db.close()
+
     settings = get_settings()
     client = get_minio_client(settings)
-    prefix = f"{book.publisher_id}/books/{book.book_name}/"
+    prefix = f"{book_publisher_id}/books/{book_name}/"
 
     try:
         report = move_prefix_to_trash(
@@ -288,12 +293,19 @@ def soft_delete_book(
             detail="Failed to relocate book assets",
         ) from exc
 
-    archived = _book_repository.archive(db, book)
+    # Re-open DB session for the archive update
+    db = SessionLocal()
+    try:
+        book = _book_repository.get_by_id(db, book_id)
+        archived = _book_repository.archive(db, book)
+        result = BookRead.model_validate(archived)
+    finally:
+        db.close()
 
     logger.info(
         "User %s archived book %s; moved %s objects from %s/%s to %s/%s",
         admin_id,
-        archived.id,
+        book_id,
         report.objects_moved,
         report.source_bucket,
         report.source_prefix,
@@ -303,13 +315,13 @@ def soft_delete_book(
 
     # Trigger webhook in background
     logger.info(
-        f"[WEBHOOK-TRIGGER] Scheduling BOOK_DELETED webhook for book_id={book_id}, book_name='{archived.book_name}', objects_moved={report.objects_moved}"
+        f"[WEBHOOK-TRIGGER] Scheduling BOOK_DELETED webhook for book_id={book_id}, book_name='{book_name}', objects_moved={report.objects_moved}"
     )
     background_tasks.add_task(_trigger_webhook, book_id, WebhookEventType.BOOK_DELETED)
     _invalidate_book_cache()
     logger.debug(f"[WEBHOOK-TRIGGER] BOOK_DELETED webhook task added to background queue for book_id={book_id}")
 
-    return BookRead.model_validate(archived)
+    return result
 
 
 @router.post("/{book_id}/upload", status_code=status.HTTP_201_CREATED)

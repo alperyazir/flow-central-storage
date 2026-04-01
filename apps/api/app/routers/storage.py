@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.security import decode_access_token, verify_api_key_from_db
-from app.db import get_db
+from app.db import SessionLocal, get_db
 from app.repositories.book import BookRepository
 from app.repositories.user import UserRepository
 from app.schemas.book import BookRead
@@ -684,6 +684,9 @@ def delete_trash_entry(
     # Override reason is optional now - no longer required for force deletion
     override_reason = payload.override_reason.strip() if payload.override_reason else None
 
+    # Release DB connection before slow storage operation
+    db.close()
+
     settings = get_settings()
     client = get_minio_client(settings)
 
@@ -715,9 +718,14 @@ def delete_trash_entry(
         except (TypeError, ValueError):
             pub_id = None
         if pub_id is not None:
-            book = _book_repository.get_by_publisher_id_and_book_name(db, pub_id, book_name)
-            if book is not None:
-                _book_repository.delete(db, book)
+            # Re-open DB session only for the delete operation
+            db = SessionLocal()
+            try:
+                book = _book_repository.get_by_publisher_id_and_book_name(db, pub_id, book_name)
+                if book is not None:
+                    _book_repository.delete(db, book)
+            finally:
+                db.close()
     elif bucket == "apps":
         item_type = "app"
     elif bucket == "teachers":

@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.security import decode_access_token, verify_api_key_from_db
-from app.db import get_db
+from app.db import SessionLocal, get_db
 from app.repositories.book import BookRepository
 from app.repositories.publisher import PublisherRepository
 from app.repositories.user import UserRepository
@@ -324,7 +324,7 @@ async def delete_ai_data(
     """
     _require_auth(credentials, db)
 
-    # Validate book exists
+    # Validate book exists and capture needed data
     book = _book_repository.get_by_id(db, book_id)
     if book is None:
         raise HTTPException(
@@ -335,13 +335,18 @@ async def delete_ai_data(
     # Get publisher explicitly (don't rely on lazy loading)
     publisher = _publisher_repository.get(db, book.publisher_id)
     publisher_id = publisher.id if publisher else book.publisher_id
+    book_name = book.book_name
+    book_publisher_id = book.publisher_id
+
+    # Release DB connection before slow storage operation
+    db.close()
 
     # Cleanup AI data (use publisher ID for correct storage path)
     cleanup_manager = get_ai_data_cleanup_manager()
     stats = cleanup_manager.cleanup_all(
         publisher_id=str(publisher_id),
-        book_id=str(book.id),
-        book_name=book.book_name,
+        book_id=str(book_id),
+        book_name=book_name,
     )
 
     logger.info(
@@ -351,24 +356,31 @@ async def delete_ai_data(
     )
 
     # Optionally trigger reprocessing
-    if reprocess and _book_has_content(book, publisher_id):
-        queue_service = await get_queue_service()
+    if reprocess:
+        # Re-open DB to check book content
+        db = SessionLocal()
         try:
-            job = await queue_service.enqueue_job(
-                book_id=str(book.id),
-                publisher_id=str(book.publisher_id),
-                metadata={"book_name": book.book_name, "publisher_id": publisher_id},
-            )
-            logger.info(
-                "Triggered reprocessing for book %s (job_id=%s)",
-                book_id,
-                job.job_id,
-            )
-        except JobAlreadyExistsError:
-            logger.warning(
-                "Skipped reprocessing for book %s: active job exists",
-                book_id,
-            )
+            book = _book_repository.get_by_id(db, book_id)
+            if book and _book_has_content(book, publisher_id):
+                queue_service = await get_queue_service()
+                try:
+                    job = await queue_service.enqueue_job(
+                        book_id=str(book_id),
+                        publisher_id=str(book_publisher_id),
+                        metadata={"book_name": book_name, "publisher_id": publisher_id},
+                    )
+                    logger.info(
+                        "Triggered reprocessing for book %s (job_id=%s)",
+                        book_id,
+                        job.job_id,
+                    )
+                except JobAlreadyExistsError:
+                    logger.warning(
+                        "Skipped reprocessing for book %s: active job exists",
+                        book_id,
+                    )
+        finally:
+            db.close()
 
     return CleanupStatsResponse(
         total_deleted=stats.total_deleted,
