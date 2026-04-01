@@ -27,6 +27,9 @@ const OperationRow = ({ op }: { op: Operation }) => {
     <div className="px-3 py-2 border-b border-border/50 last:border-0">
       <div className="flex items-center gap-2">
         {statusIcon(op.status, op.type)}
+        <span className="text-xs text-muted-foreground">
+          {op.type === 'upload' ? 'Uploaded' : 'Deleted'}
+        </span>
         <span className="text-sm font-medium truncate flex-1">
           {op.bookName}
         </span>
