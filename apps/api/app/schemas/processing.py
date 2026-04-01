@@ -30,8 +30,8 @@ class ProcessingJobResponse(BaseModel):
     """Response representing a processing job."""
 
     job_id: str
-    book_id: str
-    publisher_id: str
+    book_id: str | int
+    publisher_id: str | int
     job_type: ProcessingJobType
     status: ProcessingStatus
     priority: JobPriority
@@ -50,7 +50,7 @@ class ProcessingStatusResponse(BaseModel):
     """Response for processing status endpoint."""
 
     job_id: str
-    book_id: str
+    book_id: str | int
     status: ProcessingStatus
     progress: int = Field(ge=0, le=100)
     current_step: str

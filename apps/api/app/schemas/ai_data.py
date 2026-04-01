@@ -21,7 +21,7 @@ class ModuleSummary(BaseModel):
 class ModuleListResponse(BaseModel):
     """Response schema for listing modules."""
 
-    book_id: str = Field(..., description="Book identifier")
+    book_id: str | int = Field(..., description="Book identifier")
     total_modules: int = Field(..., description="Total number of modules")
     modules: list[ModuleSummary] = Field(default_factory=list, description="List of module summaries")
 
@@ -61,8 +61,8 @@ class ModuleMetadataSummary(BaseModel):
 class ModulesMetadataResponse(BaseModel):
     """Response schema for modules metadata.json."""
 
-    book_id: str = Field(..., description="Book identifier")
-    publisher_id: str = Field(..., description="Publisher identifier")
+    book_id: str | int = Field(..., description="Book identifier")
+    publisher_id: str | int = Field(..., description="Publisher identifier")
     book_name: str = Field(..., description="Book folder name")
     total_pages: int = Field(0, description="Total pages in book")
     module_count: int = Field(0, description="Total number of modules")
@@ -103,7 +103,7 @@ class VocabularyWordResponse(BaseModel):
 class VocabularyResponse(BaseModel):
     """Response schema for vocabulary data."""
 
-    book_id: str = Field(..., description="Book identifier")
+    book_id: str | int = Field(..., description="Book identifier")
     language: str = Field("", description="Primary language")
     translation_language: str = Field("", description="Translation language")
     total_words: int = Field(0, description="Total number of vocabulary words")
@@ -127,7 +127,7 @@ class StageResultResponse(BaseModel):
 class ProcessingMetadataResponse(BaseModel):
     """Response schema for processing metadata."""
 
-    book_id: str = Field(..., description="Book identifier")
+    book_id: str | int = Field(..., description="Book identifier")
     processing_status: str = Field(..., description="Overall processing status")
     processing_started_at: str | None = Field(None, description="When processing started")
     processing_completed_at: str | None = Field(None, description="When processing completed")
