@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft,
@@ -6,6 +6,7 @@ import {
   Pencil,
   ChevronRight,
   FolderOpen,
+  Trash2,
   Upload,
 } from 'lucide-react';
 
@@ -23,9 +24,19 @@ import { Button } from 'components/ui/button';
 import { Badge } from 'components/ui/badge';
 import { Alert, AlertDescription } from 'components/ui/alert';
 import AuthenticatedImage from 'components/AuthenticatedImage';
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from 'components/ui/dialog';
 import PublisherFormDialog from 'components/PublisherFormDialog';
 import PublisherUploadDialog from 'components/PublisherUploadDialog';
 import { useAuthStore } from 'stores/auth';
+import { useOperationsStore } from 'stores/operations';
+import { deleteBook, getDeleteStatus } from 'lib/books';
 import {
   fetchPublisher,
   fetchPublisherBooks,
@@ -59,6 +70,7 @@ const PublisherDetailPage = () => {
   const [formOpen, setFormOpen] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [bookSearch, setBookSearch] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState<PublisherBook | null>(null);
   const [expandedAssets, setExpandedAssets] = useState<Set<string>>(new Set());
   const [assetFiles, setAssetFiles] = useState<Record<string, AssetFileInfo[]>>(
     {}
@@ -122,6 +134,52 @@ const PublisherDetailPage = () => {
     }
     setExpandedAssets(next);
   };
+
+  const { addOperation, updateOperation } = useOperationsStore();
+  const pollRef = useRef<ReturnType<typeof setInterval>>();
+
+  const handleDeleteBook = useCallback(async () => {
+    if (!deleteTarget || !token) return;
+    const bookName = deleteTarget.book_title || deleteTarget.book_name;
+    setDeleteTarget(null);
+
+    try {
+      const res = await deleteBook(deleteTarget.id, token, tt);
+      const jobId = res.job_id;
+      addOperation({ id: jobId, type: 'delete', bookName });
+      updateOperation(jobId, { status: 'in_progress', progress: 5 });
+
+      // Poll for progress
+      pollRef.current = setInterval(async () => {
+        try {
+          const status = await getDeleteStatus(jobId, token, tt);
+          if (status.error) {
+            updateOperation(jobId, { status: 'failed', error: status.error, progress: 0 });
+            clearInterval(pollRef.current);
+            return;
+          }
+          updateOperation(jobId, {
+            status: status.progress >= 100 ? 'completed' : 'in_progress',
+            progress: status.progress,
+            detail: status.detail,
+          });
+          if (status.progress >= 100) {
+            clearInterval(pollRef.current);
+            load();
+          }
+        } catch {
+          updateOperation(jobId, { status: 'failed', error: 'Lost connection' });
+          clearInterval(pollRef.current);
+        }
+      }, 1000);
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : 'Delete failed';
+      addOperation({ id: `err-${Date.now()}`, type: 'delete', bookName });
+      updateOperation(`err-${Date.now()}`, { status: 'failed', error: errMsg });
+    }
+  }, [deleteTarget, token, tt, addOperation, updateOperation, load]);
+
+  useEffect(() => () => clearInterval(pollRef.current), []);
 
   if (loading)
     return (
@@ -272,13 +330,14 @@ const PublisherDetailPage = () => {
                 <TableHead>Category</TableHead>
                 <TableHead className="text-center">Activities</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {!filteredBooks.length ? (
                 <TableRow>
                   <TableCell
-                    colSpan={5}
+                    colSpan={6}
                     className="text-center py-8 text-muted-foreground"
                   >
                     No books found
@@ -301,6 +360,16 @@ const PublisherDetailPage = () => {
                     </TableCell>
                     <TableCell>
                       <Badge variant="outline">{b.status}</Badge>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        onClick={() => setDeleteTarget(b)}
+                      >
+                        <Trash2 className="h-4 w-4 text-destructive" />
+                      </Button>
                     </TableCell>
                   </TableRow>
                 ))
@@ -329,6 +398,25 @@ const PublisherDetailPage = () => {
         tokenType={tt}
         initialPublisherId={publisher.id}
       />
+      <Dialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Book?</DialogTitle>
+            <DialogDescription>
+              Permanently delete &quot;{deleteTarget?.book_title || deleteTarget?.book_name}&quot;?
+              This will remove all files from storage and cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={handleDeleteBook}>
+              Delete Permanently
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

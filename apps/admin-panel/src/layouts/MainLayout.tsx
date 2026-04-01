@@ -6,6 +6,7 @@ import {
 } from 'components/ui/sidebar';
 import { Separator } from 'components/ui/separator';
 import { AppSidebar } from 'components/AppSidebar';
+import ActivityLogPanel from 'components/ActivityLogPanel';
 
 const MainLayout = () => {
   return (
@@ -20,6 +21,7 @@ const MainLayout = () => {
           <Outlet />
         </div>
       </SidebarInset>
+      <ActivityLogPanel />
     </SidebarProvider>
   );
 };

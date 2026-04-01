@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Loader2, Cpu, Trash2, Upload } from 'lucide-react';
+import { Loader2, Cpu } from 'lucide-react';
 
 import { Card, CardContent } from 'components/ui/card';
 import {
@@ -21,18 +21,9 @@ import { Input } from 'components/ui/input';
 import { Button } from 'components/ui/button';
 import { Badge } from 'components/ui/badge';
 import { Alert, AlertDescription } from 'components/ui/alert';
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-} from 'components/ui/dialog';
-import BookUploadDialog from 'components/BookUploadDialog';
 import ProcessingDialog from 'components/ProcessingDialog';
 import { useAuthStore } from 'stores/auth';
-import { fetchBooks, softDeleteBook } from 'lib/books';
+import { fetchBooks } from 'lib/books';
 
 type SortField =
   | 'bookTitle'
@@ -68,8 +59,6 @@ const BooksPage = () => {
     f: 'bookTitle',
     d: 'asc',
   });
-  const [deleteTarget, setDeleteTarget] = useState<BookRow | null>(null);
-  const [uploadOpen, setUploadOpen] = useState(false);
   const [processingBook, setProcessingBook] = useState<BookRow | null>(null);
 
   const load = async () => {
@@ -140,16 +129,6 @@ const BooksPage = () => {
 
   const toggleSort = (f: SortField) =>
     setSort((c) => ({ f, d: c.f === f && c.d === 'asc' ? 'desc' : 'asc' }));
-  const handleDelete = async () => {
-    if (!deleteTarget || !token) return;
-    try {
-      await softDeleteBook(deleteTarget.id, token, tt);
-      setDeleteTarget(null);
-      load();
-    } catch {
-      /* ignored */
-    }
-  };
 
   const SortHead = ({ field, label }: { field: SortField; label: string }) => (
     <TableHead
@@ -171,9 +150,6 @@ const BooksPage = () => {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">All Books</h1>
-        <Button onClick={() => setUploadOpen(true)}>
-          <Upload className="h-4 w-4" /> Upload Books
-        </Button>
       </div>
       {error && (
         <Alert variant="destructive">
@@ -263,24 +239,14 @@ const BooksPage = () => {
                       <Badge variant="secondary">{b.activityCount}</Badge>
                     </TableCell>
                     <TableCell className="text-right">
-                      <div className="flex justify-end gap-1">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7"
-                          onClick={() => setProcessingBook(b)}
-                        >
-                          <Cpu className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7"
-                          onClick={() => setDeleteTarget(b)}
-                        >
-                          <Trash2 className="h-4 w-4 text-destructive" />
-                        </Button>
-                      </div>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        onClick={() => setProcessingBook(b)}
+                      >
+                        <Cpu className="h-4 w-4" />
+                      </Button>
                     </TableCell>
                   </TableRow>
                 ))
@@ -290,13 +256,6 @@ const BooksPage = () => {
         </CardContent>
       </Card>
 
-      <BookUploadDialog
-        open={uploadOpen}
-        onClose={() => setUploadOpen(false)}
-        token={token}
-        tokenType={tt}
-        onSuccess={load}
-      />
       {processingBook && (
         <ProcessingDialog
           open={!!processingBook}
@@ -307,25 +266,6 @@ const BooksPage = () => {
           tokenType={tt}
         />
       )}
-      <Dialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Delete Book?</DialogTitle>
-            <DialogDescription>
-              Soft-delete &quot;{deleteTarget?.bookTitle}&quot;? Files move to
-              trash.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteTarget(null)}>
-              Cancel
-            </Button>
-            <Button variant="destructive" onClick={handleDelete}>
-              Delete
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 };

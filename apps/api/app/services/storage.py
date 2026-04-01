@@ -82,13 +82,21 @@ class TrashEntry:
     eligible_for_deletion: bool = False
 
 
+class DirectDeletionError(Exception):
+    """Raised when direct (hard) deletion of objects fails."""
+
+
 @dataclass(slots=True)
 class DeletionReport:
-    """Summary of a permanent deletion from the trash bucket."""
+    """Summary of a permanent deletion operation."""
 
-    trash_bucket: str
+    bucket: str
     key: str
     objects_removed: int
+    # Legacy alias for trash-based deletions
+    @property
+    def trash_bucket(self) -> str:
+        return self.bucket
 
 
 def _detect_root_folder(archive: zipfile.ZipFile) -> str | None:
@@ -605,6 +613,43 @@ def move_prefix_to_trash(
     return report
 
 
+def delete_prefix_directly(
+    *,
+    client: Minio,
+    bucket: str,
+    prefix: str,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> DeletionReport:
+    """Permanently delete all objects under ``prefix`` from ``bucket``.
+
+    Unlike :func:`move_prefix_to_trash`, this removes objects immediately
+    without copying them to a trash bucket first.
+    """
+
+    normalized_prefix = prefix if prefix.endswith("/") else f"{prefix}/"
+
+    try:
+        objects = list(client.list_objects(bucket, prefix=normalized_prefix, recursive=True))
+    except S3Error as exc:
+        logger.error("Failed listing objects for deletion '%s/%s': %s", bucket, normalized_prefix, exc)
+        raise DirectDeletionError(f"Unable to list objects for prefix '{normalized_prefix}'") from exc
+
+    total = len(objects)
+    removed = 0
+    for obj in objects:
+        try:
+            client.remove_object(bucket, obj.object_name)
+        except S3Error as exc:
+            logger.error("Failed deleting object '%s/%s': %s", bucket, obj.object_name, exc)
+            raise DirectDeletionError(f"Unable to delete object '{obj.object_name}'") from exc
+        removed += 1
+        if on_progress is not None:
+            on_progress(removed, total)
+
+    logger.info("Permanently deleted %d objects from %s/%s", removed, bucket, normalized_prefix)
+    return DeletionReport(bucket=bucket, key=normalized_prefix, objects_removed=removed)
+
+
 def restore_prefix_from_trash(
     *,
     client: Minio,
@@ -746,4 +791,4 @@ def delete_prefix_from_trash(
         override_reason if force else None,
     )
 
-    return DeletionReport(trash_bucket=trash_bucket, key=normalized_key, objects_removed=removed)
+    return DeletionReport(bucket=trash_bucket, key=normalized_key, objects_removed=removed)

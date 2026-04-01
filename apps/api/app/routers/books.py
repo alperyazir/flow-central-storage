@@ -25,8 +25,10 @@ from app.repositories.publisher import PublisherRepository
 from app.repositories.user import UserRepository
 from app.schemas.book import BookCreate, BookRead, BookUpdate
 from app.services import (
+    DirectDeletionError,
     RelocationError,
     UploadError,
+    delete_prefix_directly,
     get_minio_client,
     move_prefix_to_trash,
     upload_book_archive,
@@ -254,74 +256,84 @@ def update_book(
     return BookRead.model_validate(updated)
 
 
-@router.delete("/{book_id}", response_model=BookRead)
-def soft_delete_book(
+@router.delete("/{book_id}", status_code=status.HTTP_202_ACCEPTED)
+def delete_book(
     book_id: int,
     background_tasks: BackgroundTasks,
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
     db: Session = Depends(get_db),
-) -> BookRead:
-    """Soft-delete a book by archiving metadata and moving assets to the trash bucket."""
+):
+    """Permanently delete a book — removes files from R2 and DB record.
+
+    Returns a job_id for tracking deletion progress via /books/delete-status/{job_id}.
+    """
+    import uuid
+
+    from app.services.cache import set_deletion_progress
 
     admin_id = _require_admin(credentials, db)
     book = _book_repository.get_by_id(db, book_id)
     if book is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
 
-    if book.status == BookStatusEnum.ARCHIVED:
-        return BookRead.model_validate(book)
-
     # Capture book info and release DB connection before slow storage operation
     book_publisher_id = book.publisher_id
     book_name = book.book_name
+    book_result = BookRead.model_validate(book)
     db.close()
 
-    settings = get_settings()
-    client = get_minio_client(settings)
-    prefix = f"{book_publisher_id}/books/{book_name}/"
+    job_id = str(uuid.uuid4())
+    set_deletion_progress(job_id, 0, "starting", f"Deleting {book_name}...")
 
-    try:
-        report = move_prefix_to_trash(
-            client=client,
-            source_bucket=settings.minio_publishers_bucket,
-            prefix=prefix,
-            trash_bucket=settings.minio_trash_bucket,
-        )
-    except RelocationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Failed to relocate book assets",
-        ) from exc
+    def _process_deletion():
+        try:
+            set_deletion_progress(job_id, 10, "listing", "Listing files...")
 
-    # Re-open DB session for the archive update
-    db = SessionLocal()
-    try:
-        book = _book_repository.get_by_id(db, book_id)
-        archived = _book_repository.archive(db, book)
-        result = BookRead.model_validate(archived)
-    finally:
-        db.close()
+            settings = get_settings()
+            client = get_minio_client(settings)
+            prefix = f"{book_publisher_id}/books/{book_name}/"
 
-    logger.info(
-        "User %s archived book %s; moved %s objects from %s/%s to %s/%s",
-        admin_id,
-        book_id,
-        report.objects_moved,
-        report.source_bucket,
-        report.source_prefix,
-        report.destination_bucket,
-        report.destination_prefix,
-    )
+            def on_progress(removed: int, total: int):
+                pct = 10 + int((removed / max(total, 1)) * 70)  # 10-80%
+                set_deletion_progress(job_id, pct, "deleting", f"{removed}/{total} files")
 
-    # Trigger webhook in background
-    logger.info(
-        f"[WEBHOOK-TRIGGER] Scheduling BOOK_DELETED webhook for book_id={book_id}, book_name='{book_name}', objects_moved={report.objects_moved}"
-    )
-    background_tasks.add_task(_trigger_webhook, book_id, WebhookEventType.BOOK_DELETED)
-    _invalidate_book_cache()
-    logger.debug(f"[WEBHOOK-TRIGGER] BOOK_DELETED webhook task added to background queue for book_id={book_id}")
+            report = delete_prefix_directly(
+                client=client,
+                bucket=settings.minio_publishers_bucket,
+                prefix=prefix,
+                on_progress=on_progress,
+            )
 
-    return result
+            set_deletion_progress(job_id, 85, "database", "Removing database record...")
+
+            # Delete DB record
+            session = SessionLocal()
+            try:
+                db_book = _book_repository.get_by_id(session, book_id)
+                if db_book is not None:
+                    _book_repository.delete(session, db_book)
+            finally:
+                session.close()
+
+            _invalidate_book_cache()
+
+            # Trigger webhook
+            _trigger_webhook(book_id, WebhookEventType.BOOK_DELETED)
+
+            set_deletion_progress(job_id, 100, "completed", f"{report.objects_removed} files deleted")
+
+            logger.info(
+                "User %s permanently deleted book %s (%s); removed %s objects",
+                admin_id, book_id, book_name, report.objects_removed,
+            )
+
+        except Exception as exc:
+            logger.error("Failed to delete book %s: %s", book_id, exc, exc_info=True)
+            set_deletion_progress(job_id, 0, "error", error=str(exc))
+
+    background_tasks.add_task(_process_deletion)
+
+    return {"job_id": job_id, "status": "accepted", "book": book_result.model_dump()}
 
 
 @router.post("/{book_id}/upload", status_code=status.HTTP_201_CREATED)
@@ -433,6 +445,23 @@ def get_upload_status(
     progress = get_upload_progress(job_id)
     if progress is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Upload job not found")
+    return progress
+
+
+@router.get("/delete-status/{job_id}")
+def get_delete_status(
+    job_id: str,
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+):
+    """Get deletion progress for an async delete job."""
+    _require_admin(credentials, db)
+
+    from app.services.cache import get_deletion_progress
+
+    progress = get_deletion_progress(job_id)
+    if progress is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Delete job not found")
     return progress
 
 

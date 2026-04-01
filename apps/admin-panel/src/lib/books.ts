@@ -27,12 +27,35 @@ export const fetchBooks = (
     headers: buildAuthHeaders(token, tokenType),
   });
 
-export const softDeleteBook = (
+export interface DeleteBookResponse {
+  job_id: string;
+  status: string;
+  book: BookRecord;
+}
+
+export interface DeleteProgressResponse {
+  progress: number;
+  step: string;
+  detail: string;
+  error: string | null;
+}
+
+export const deleteBook = (
   bookId: number,
   token: string,
   tokenType: string = 'Bearer',
   client: ApiClient = apiClient
-): Promise<BookRecord> =>
-  client.delete<BookRecord>(`/books/${bookId}`, undefined, {
+): Promise<DeleteBookResponse> =>
+  client.delete<DeleteBookResponse>(`/books/${bookId}`, undefined, {
+    headers: buildAuthHeaders(token, tokenType),
+  });
+
+export const getDeleteStatus = (
+  jobId: string,
+  token: string,
+  tokenType: string = 'Bearer',
+  client: ApiClient = apiClient
+): Promise<DeleteProgressResponse> =>
+  client.get<DeleteProgressResponse>(`/books/delete-status/${jobId}`, {
     headers: buildAuthHeaders(token, tokenType),
   });

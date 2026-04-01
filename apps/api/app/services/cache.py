@@ -113,3 +113,40 @@ def delete_upload_progress(job_id: str) -> None:
         _get_sync_redis().delete(f"fcs:upload:{job_id}")
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Deletion progress tracking
+# ---------------------------------------------------------------------------
+
+_DELETION_TTL = 3600  # 1 hour
+
+
+def set_deletion_progress(
+    job_id: str, progress: int, step: str, detail: str = "", error: str | None = None
+) -> None:
+    """Update deletion progress in Redis."""
+    try:
+        r = _get_sync_redis()
+        data = {"progress": progress, "step": step, "detail": detail, "error": error}
+        r.setex(f"fcs:deletion:{job_id}", _DELETION_TTL, json.dumps(data, default=str))
+    except Exception:
+        pass
+
+
+def get_deletion_progress(job_id: str) -> dict | None:
+    """Read deletion progress from Redis."""
+    try:
+        r = _get_sync_redis()
+        data = r.get(f"fcs:deletion:{job_id}")
+        return json.loads(data) if data else None
+    except Exception:
+        return None
+
+
+def delete_deletion_progress(job_id: str) -> None:
+    """Clean up deletion progress."""
+    try:
+        _get_sync_redis().delete(f"fcs:deletion:{job_id}")
+    except Exception:
+        pass

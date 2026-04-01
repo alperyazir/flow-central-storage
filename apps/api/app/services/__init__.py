@@ -3,6 +3,7 @@
 from .minio import ensure_buckets, get_minio_client, get_minio_client_external
 from .storage import (
     DeletionReport,
+    DirectDeletionError,
     RelocationError,
     RelocationReport,
     RestorationError,
@@ -12,6 +13,7 @@ from .storage import (
     TrashRetentionError,
     UploadConflictError,
     UploadError,
+    delete_prefix_directly,
     delete_prefix_from_trash,
     ensure_version_target,
     extract_manifest_version,
@@ -35,6 +37,8 @@ __all__ = [
     "UploadError",
     "UploadConflictError",
     "move_prefix_to_trash",
+    "delete_prefix_directly",
+    "DirectDeletionError",
     "RelocationError",
     "RelocationReport",
     "RestorationError",

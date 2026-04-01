@@ -11,7 +11,7 @@ import AppsPage from './pages/Apps';
 import BundlesPage from './pages/Bundles';
 import TeachersPage from './pages/TeachersManagement';
 import LoginPage from './pages/Login';
-import TrashPage from './pages/Trash';
+// Trash page removed — books are now hard-deleted
 import ProcessingPage from './pages/Processing';
 import ApiKeysPage from './pages/ApiKeys';
 import TeacherDetailPage from './pages/TeacherDetail';
@@ -60,7 +60,6 @@ const App = () => {
           <Route path="teachers/:id" element={<TeacherDetailPage />} />
           <Route path="processing" element={<ProcessingPage />} />
           <Route path="api-keys" element={<ApiKeysPage />} />
-          <Route path="trash" element={<TrashPage />} />
         </Route>
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
