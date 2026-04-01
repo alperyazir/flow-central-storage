@@ -613,6 +613,9 @@ def restore_item(
     admin_id = _require_admin(credentials, db)
     bucket, path_parts = _parse_trash_key(payload.key)
 
+    # Release DB connection before slow storage operation
+    db.close()
+
     settings = get_settings()
     client = get_minio_client(settings)
 
@@ -639,16 +642,22 @@ def restore_item(
             pub_id = int(publisher_id_str)
         except (TypeError, ValueError) as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Invalid publisher ID in key") from exc
-        book = _book_repository.get_by_publisher_id_and_book_name(db, pub_id, book_name)
-        if book is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Book not found")
 
+        # Re-open DB session for the restore update
+        db = SessionLocal()
         try:
-            restored_book = _book_repository.restore(db, book)
-        except ValueError as exc:
-            raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+            book = _book_repository.get_by_publisher_id_and_book_name(db, pub_id, book_name)
+            if book is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Book not found")
 
-        book_read = BookRead.model_validate(restored_book)
+            try:
+                restored_book = _book_repository.restore(db, book)
+            except ValueError as exc:
+                raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+            book_read = BookRead.model_validate(restored_book)
+        finally:
+            db.close()
     elif bucket == "apps":
         item_type = "app"
     elif bucket == "teachers":

@@ -42,7 +42,7 @@ def _check_redis() -> str:
 
 
 def _check_minio() -> str:
-    """Check MinIO connectivity."""
+    """Check S3-compatible storage connectivity (works with R2, MinIO, etc.)."""
     try:
         from minio import Minio
 
@@ -53,10 +53,11 @@ def _check_minio() -> str:
             secret_key=settings.minio_secret_key,
             secure=settings.minio_secure,
         )
-        client.list_buckets()
+        # Use bucket_exists instead of list_buckets — R2 doesn't support ListBuckets
+        client.bucket_exists(settings.minio_publishers_bucket)
         return "ok"
     except Exception as exc:
-        logger.warning("Health check: MinIO failed: %s", exc)
+        logger.warning("Health check: S3 storage failed: %s", exc)
         return "error"
 
 
