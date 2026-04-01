@@ -27,11 +27,10 @@ import {
   type Publisher,
 } from 'lib/publishers';
 import {
-  uploadNewBookArchive,
   uploadNewBookWithProgress,
-  type UploadProgress,
 } from 'lib/uploads';
 import { ApiError } from 'lib/api';
+import { useOperationsStore } from 'stores/operations';
 
 interface PublisherUploadDialogProps {
   open: boolean;
@@ -211,65 +210,71 @@ export function PublisherUploadDialog({
     e.target.value = '';
   };
 
-  const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(
-    null
-  );
+  const { addOperation, updateOperation } = useOperationsStore();
 
   const handleUpload = async () => {
     if (!token || !state.publisherId || !state.files.length) return;
-    dispatch({ type: 'SET_STEP', step: 'uploading' });
 
-    const results: UploadResult[] = [];
     const tt = tokenType || 'Bearer';
     const apiBase = import.meta.env?.VITE_API_BASE_URL || '';
 
-    for (const file of state.files) {
-      try {
-        if (effectiveType === 'books') {
-          setUploadProgress({
-            progress: 0,
-            step: 'starting',
-            detail: '',
-            book_id: null,
-            error: null,
-          });
+    if (effectiveType === 'books') {
+      // Close dialog immediately — progress tracked in activity log panel
+      onClose();
+
+      for (const file of state.files) {
+        const opId = `upload-${Date.now()}-${file.name}`;
+        const bookName = file.name.replace(/\.zip$/i, '');
+        addOperation({ id: opId, type: 'upload', bookName });
+        updateOperation(opId, { status: 'in_progress', progress: 0, detail: 'Uploading...' });
+
+        try {
           const { promise } = uploadNewBookWithProgress(
             file,
             token,
             tt,
-            (p) => setUploadProgress(p),
+            (p) => {
+              updateOperation(opId, {
+                status: p.error ? 'failed' : p.progress >= 100 ? 'completed' : 'in_progress',
+                progress: p.progress,
+                detail: p.detail || p.step?.replace(/_/g, ' ') || '',
+                error: p.error || undefined,
+              });
+            },
             { publisherId: state.publisherId! },
             apiBase
           );
           await promise;
-          setUploadProgress(null);
-          results.push({
-            filename: file.name,
-            success: true,
-            path: `books/${file.name}`,
-          });
-        } else {
+          updateOperation(opId, { status: 'completed', progress: 100, detail: 'Upload complete' });
+        } catch (e) {
+          updateOperation(opId, { status: 'failed', error: deriveError(e) });
+        }
+      }
+      onSuccess();
+    } else {
+      // Non-book uploads: keep dialog for results
+      dispatch({ type: 'SET_STEP', step: 'uploading' });
+      const results: UploadResult[] = [];
+
+      for (const file of state.files) {
+        try {
           const r = await uploadPublisherAsset(
-            state.publisherId,
+            state.publisherId!,
             effectiveType,
             file,
             token,
             tt
           );
           results.push({ filename: file.name, success: true, path: r.path });
+        } catch (e) {
+          results.push({ filename: file.name, success: false, error: deriveError(e) });
         }
-      } catch (e) {
-        results.push({
-          filename: file.name,
-          success: false,
-          error: deriveError(e),
-        });
       }
-    }
 
-    dispatch({ type: 'SET_RESULTS', results });
-    onSuccess();
-    if (results.every((r) => r.success)) setTimeout(onClose, 2000);
+      dispatch({ type: 'SET_RESULTS', results });
+      onSuccess();
+      if (results.every((r) => r.success)) setTimeout(onClose, 2000);
+    }
   };
 
   const canProceed = () => {
@@ -473,25 +478,10 @@ export function PublisherUploadDialog({
           {state.step === 'uploading' && (
             <div className="flex flex-col items-center gap-3 py-4">
               <Loader2 className="h-8 w-8 animate-spin text-primary" />
-              {uploadProgress ? (
-                <>
-                  <Progress value={uploadProgress.progress} />
-                  <p className="text-sm font-medium">
-                    {uploadProgress.progress}%
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    {uploadProgress.detail ||
-                      uploadProgress.step.replace(/_/g, ' ')}
-                  </p>
-                </>
-              ) : (
-                <>
-                  <p className="text-sm text-muted-foreground">
-                    Uploading {state.files.length} file(s)...
-                  </p>
-                  <Progress value={undefined} className="animate-pulse" />
-                </>
-              )}
+              <p className="text-sm text-muted-foreground">
+                Uploading {state.files.length} file(s)...
+              </p>
+              <Progress value={undefined} className="animate-pulse" />
             </div>
           )}
 

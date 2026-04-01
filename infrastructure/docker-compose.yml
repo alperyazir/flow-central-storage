@@ -70,8 +70,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      seaweedfs-s3:
-        condition: service_healthy
     volumes:
       - ../apps/api:/app
     command: >
@@ -88,54 +86,9 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      seaweedfs-s3:
-        condition: service_healthy
     volumes:
       - ../apps/api:/app
     command: python -m app.services.queue.worker
-
-  seaweedfs-master:
-    image: chrislusf/seaweedfs:latest
-    command: "master -ip=seaweedfs-master -ip.bind=0.0.0.0 -mdir=/data"
-    ports:
-      - "9333:9333"
-    volumes:
-      - seaweedfs_master_data:/data
-
-  seaweedfs-volume:
-    image: chrislusf/seaweedfs:latest
-    command: "volume -mserver=seaweedfs-master:9333 -ip.bind=0.0.0.0 -port=8080 -dir=/data"
-    depends_on:
-      - seaweedfs-master
-    volumes:
-      - seaweedfs_volume_data:/data
-
-  seaweedfs-filer:
-    image: chrislusf/seaweedfs:latest
-    command: "filer -master=seaweedfs-master:9333 -ip.bind=0.0.0.0"
-    ports:
-      - "8888:8888"
-    depends_on:
-      - seaweedfs-master
-      - seaweedfs-volume
-    volumes:
-      - seaweedfs_filer_data:/data
-
-  seaweedfs-s3:
-    image: chrislusf/seaweedfs:latest
-    command: "s3 -filer=seaweedfs-filer:8888 -ip.bind=0.0.0.0 -port=8333 -config=/etc/seaweedfs/s3.json"
-    volumes:
-      - ./seaweedfs/s3.json:/etc/seaweedfs/s3.json:ro
-    ports:
-      - "8333:8333"
-    depends_on:
-      - seaweedfs-filer
-    healthcheck:
-      test: ["CMD-SHELL", "nc -z localhost 8333 || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-      start_period: 15s
 
   nginx:
     image: nginx:1.27
@@ -201,8 +154,5 @@ services:
 volumes:
   postgres_data:
   redis_data:
-  seaweedfs_master_data:
-  seaweedfs_volume_data:
-  seaweedfs_filer_data:
   grafana_data:
   admin_panel_node_modules:
