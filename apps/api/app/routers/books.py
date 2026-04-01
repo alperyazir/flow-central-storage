@@ -139,16 +139,39 @@ def sync_books_with_r2(
     created = []
     removed = []
 
-    # R2'de var, DB'de yok → oluştur
+    # R2'de var, DB'de yok → config.json'dan metadata oku ve oluştur
     for (pub_id, book_name) in r2_books:
         if (pub_id, book_name) not in db_books:
-            book = _book_repository.create(db, data={
+            book_data: dict[str, object] = {
                 "publisher_id": pub_id,
                 "book_name": book_name,
                 "book_title": book_name,
                 "language": "en",
                 "status": BookStatusEnum.PUBLISHED,
-            })
+            }
+            # Try to read config.json from R2 for metadata
+            config_path = f"{pub_id}/books/{book_name}/config.json"
+            try:
+                response = client.get_object(bucket, config_path)
+                config_data = json.loads(response.read())
+                response.close()
+                response.release_conn()
+                if config_data.get("book_title"):
+                    book_data["book_title"] = config_data["book_title"]
+                if config_data.get("language"):
+                    book_data["language"] = config_data["language"]
+                if config_data.get("category"):
+                    book_data["category"] = config_data["category"]
+                book_data["activity_count"] = _count_activities(config_data)
+                book_data["activity_details"] = _collect_activity_details(config_data)
+                # Get book cover filename
+                cover = config_data.get("book_cover")
+                if cover:
+                    book_data["book_cover"] = os.path.basename(cover)
+            except Exception as exc:
+                logger.warning("Sync: could not read config.json for %s/%s: %s", pub_id, book_name, exc)
+
+            book = _book_repository.create(db, data=book_data)
             created.append({"id": book.id, "publisher_id": pub_id, "book_name": book_name})
             logger.info("Sync: created DB record for R2 book %s/%s (id=%d)", pub_id, book_name, book.id)
 

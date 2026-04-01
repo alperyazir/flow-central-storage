@@ -252,28 +252,28 @@ export function PublisherUploadDialog({
       }
       onSuccess();
     } else {
-      // Non-book uploads: keep dialog for results
-      dispatch({ type: 'SET_STEP', step: 'uploading' });
-      const results: UploadResult[] = [];
+      // Non-book uploads: close dialog, track in activity log
+      onClose();
 
       for (const file of state.files) {
+        const opId = `upload-${Date.now()}-${file.name}`;
+        addOperation({ id: opId, type: 'upload', bookName: `${effectiveType}/${file.name}` });
+        updateOperation(opId, { status: 'in_progress', progress: 50, detail: 'Uploading...' });
+
         try {
-          const r = await uploadPublisherAsset(
+          await uploadPublisherAsset(
             state.publisherId!,
             effectiveType,
             file,
             token,
             tt
           );
-          results.push({ filename: file.name, success: true, path: r.path });
+          updateOperation(opId, { status: 'completed', progress: 100, detail: 'Upload complete' });
         } catch (e) {
-          results.push({ filename: file.name, success: false, error: deriveError(e) });
+          updateOperation(opId, { status: 'failed', error: deriveError(e) });
         }
       }
-
-      dispatch({ type: 'SET_RESULTS', results });
       onSuccess();
-      if (results.every((r) => r.success)) setTimeout(onClose, 2000);
     }
   };
 

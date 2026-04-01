@@ -8,8 +8,8 @@ import {
   type OperationStatus,
 } from 'stores/operations';
 
-const formatTime = (date: Date) =>
-  date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+const formatTime = (iso: string) =>
+  new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
 const statusIcon = (status: OperationStatus, type: Operation['type']) => {
   if (status === 'completed')
