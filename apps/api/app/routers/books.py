@@ -593,6 +593,11 @@ async def upload_new_book_async(
                 logger.info("[UPLOAD:%s] DB record saved — book_id=%d", job_id, book.id)
                 set_upload_progress(job_id, 100, "completed", f"{len(manifest)} files uploaded", book_id=book.id)
 
+                # Trigger webhook for book creation/update
+                event_type = WebhookEventType.BOOK_UPDATED if existing_book else WebhookEventType.BOOK_CREATED
+                logger.info(f"[UPLOAD:{job_id}] Triggering {event_type.value} webhook for book_id={book.id}")
+                _trigger_webhook(book.id, event_type)
+
             finally:
                 session.close()
 
