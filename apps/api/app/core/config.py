@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     """Application configuration loaded from environment variables."""
 
     app_name: str = "Flow Central Storage API"
-    app_version: str = "0.1.0"
+    app_version: str = "1.0.0"
 
     database_scheme: str = "postgresql+psycopg"
     database_host: str = "pgbouncer"

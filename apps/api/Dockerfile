@@ -11,4 +11,7 @@ COPY alembic.ini ./
 COPY alembic ./alembic
 RUN pip install --upgrade pip && pip install '.[dev]'
 
+ARG APP_VERSION=dev
+RUN echo "${APP_VERSION}" > /app/VERSION
+
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

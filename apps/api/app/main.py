@@ -145,6 +145,19 @@ app.include_router(health.router, prefix="/health")
 app.include_router(monitoring_router)
 
 
+def _read_version() -> str:
+    try:
+        with open("/app/VERSION") as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        return "dev"
+
+
+@app.get("/version", tags=["system"])
+def get_version():
+    return {"service": "flow-central-storage", "version": _read_version()}
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
     logger.error("Unhandled exception: %s", exc, exc_info=True)
