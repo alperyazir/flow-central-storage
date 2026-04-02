@@ -1,4 +1,5 @@
 import { ChangeEvent, useEffect, useState } from 'react';
+import { useOperationsStore } from 'stores/operations';
 import {
   Loader2,
   Upload,
@@ -103,29 +104,25 @@ const StandaloneAppsManager = () => {
     load();
   }, [token]);
 
+  const { addOperation, updateOperation } = useOperationsStore();
+
   const handleUpload = async () => {
     if (!uploadFile || !token || !uploadPlat) return;
-    setUploading(true);
-    setUploadFb(null);
+    const opId = `upload-${Date.now()}-${uploadPlat}`;
+    const opName = `App: ${uploadPlat}/${uploadFile.name}`;
+    addOperation({ id: opId, type: 'upload', bookName: opName });
+    updateOperation(opId, { status: 'in_progress', progress: 50, detail: 'Uploading...' });
+    setUploadOpen(false);
+
     try {
       await uploadTemplate(uploadPlat, uploadFile, token, tt);
-      setUploadFb({ type: 'success', message: 'Template uploaded!' });
+      updateOperation(opId, { status: 'completed', progress: 100, detail: 'Upload complete' });
       await load();
-      setTimeout(() => {
-        setUploadOpen(false);
-      }, 1500);
     } catch (e) {
-      setUploadFb({
-        type: 'error',
-        message:
-          e instanceof ApiError
-            ? String((e.body as Record<string, unknown>)?.detail || 'Upload failed')
-            : e instanceof Error
-              ? e.message
-              : 'Upload failed',
-      });
-    } finally {
-      setUploading(false);
+      const msg = e instanceof ApiError
+        ? String((e.body as Record<string, unknown>)?.detail || 'Upload failed')
+        : e instanceof Error ? e.message : 'Upload failed';
+      updateOperation(opId, { status: 'failed', error: msg });
     }
   };
 

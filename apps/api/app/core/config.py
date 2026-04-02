@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     teacher_quota_bytes: int = 524288000  # 500MB default
     teacher_max_file_size_bytes: int = 104857600  # 100MB default
 
+    # Upload size limits
+    app_max_upload_bytes: int = 2147483648  # 2GB default
+    publisher_asset_max_bytes: int = 52428800  # 50MB default
+    standalone_app_max_bytes: int = 2147483648  # 2GB default
+
     # Admin user (created on first startup)
     admin_email: str = "admin@admin.com"
     admin_password: str = "admin"

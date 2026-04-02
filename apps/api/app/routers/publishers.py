@@ -597,6 +597,11 @@ async def upload_asset_file(
     # Read file contents
     contents = await file.read()
     file_size = len(contents)
+    if file_size > settings.publisher_asset_max_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File exceeds max size ({settings.publisher_asset_max_bytes // 1024 // 1024}MB)",
+        )
 
     # Upload to S3
     try:

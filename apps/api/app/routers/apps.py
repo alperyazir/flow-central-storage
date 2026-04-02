@@ -81,6 +81,11 @@ async def upload_application_build(
     client = get_minio_client(settings)
 
     archive_bytes = await file.read()
+    if len(archive_bytes) > settings.app_max_upload_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File exceeds max size ({settings.app_max_upload_bytes // 1024 // 1024}MB)",
+        )
     try:
         version = extract_manifest_version(archive_bytes)
     except UploadError as exc:
@@ -113,16 +118,15 @@ async def upload_application_build(
 
     if existing_prefix and override:
         try:
-            move_prefix_to_trash(
+            delete_prefix_directly(
                 client=client,
-                source_bucket=settings.minio_apps_bucket,
+                bucket=settings.minio_apps_bucket,
                 prefix=prefix,
-                trash_bucket=settings.minio_trash_bucket,
             )
-        except RelocationError as exc:
+        except DirectDeletionError as exc:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="Failed to relocate existing version before override",
+                detail="Failed to delete existing version before override",
             ) from exc
 
     try:

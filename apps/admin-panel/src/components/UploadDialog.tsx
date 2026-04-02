@@ -1,5 +1,6 @@
 import { ChangeEvent, useEffect, useMemo, useState } from 'react';
 import { Loader2, Upload } from 'lucide-react';
+import { useOperationsStore } from 'stores/operations';
 
 import {
   Dialog,
@@ -109,10 +110,19 @@ export function UploadDialog({
     setFeedback(null);
   };
 
+  const { addOperation, updateOperation } = useOperationsStore();
+
   const handleSubmit = async (override = false) => {
     if (!selectedFile || !token || !tokenType) return;
-    setIsSubmitting(true);
-    setFeedback(null);
+
+    const opId = `upload-${Date.now()}-${selectedFile.name}`;
+    const opName = mode === 'book'
+      ? selectedFile.name.replace(/\.zip$/i, '')
+      : `App: ${selectedPlatform}/${selectedFile.name}`;
+
+    addOperation({ id: opId, type: 'upload', bookName: opName });
+    updateOperation(opId, { status: 'in_progress', progress: 50, detail: 'Uploading...' });
+    onClose();
 
     try {
       if (mode === 'book') {
@@ -145,26 +155,14 @@ export function UploadDialog({
           { override }
         );
       }
-      setFeedback({
-        type: 'success',
-        message: 'Upload completed successfully!',
-      });
+      updateOperation(opId, { status: 'completed', progress: 100, detail: 'Upload complete' });
       onSuccess();
     } catch (error) {
       if (error instanceof ApiError && error.status === 409) {
-        setOverrideContext({
-          mode,
-          bookId:
-            bookUploadFlow === 'update' ? Number(selectedBookId) : undefined,
-          platform: selectedPlatform,
-          file: selectedFile,
-        });
-        setIsSubmitting(false);
+        updateOperation(opId, { status: 'failed', error: 'Version conflict — use override' });
         return;
       }
-      setFeedback({ type: 'error', message: deriveErrorMessage(error) });
-    } finally {
-      setIsSubmitting(false);
+      updateOperation(opId, { status: 'failed', error: deriveErrorMessage(error) });
     }
   };
 

@@ -174,6 +174,11 @@ async def upload_template_endpoint(
     client = get_minio_client(settings)
 
     file_data = await file.read()
+    if len(file_data) > settings.standalone_app_max_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File exceeds max size ({settings.standalone_app_max_bytes // 1024 // 1024}MB)",
+        )
 
     try:
         metadata = await asyncio.to_thread(

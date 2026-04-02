@@ -208,80 +208,91 @@ async def upload_teacher_material(
     # Validate MIME type
     _validate_file_type(file.content_type, settings)
 
-    # Read file contents
-    contents = await file.read()
-
-    # Validate file size
-    if len(contents) > settings.teacher_max_file_size_bytes:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"File size exceeds maximum allowed size of {settings.teacher_max_file_size_bytes} bytes",
-        )
-
     import asyncio
+    import os
+    import tempfile
 
-    # Get or create Teacher record in database
-    teacher = _teacher_repository.get_or_create_by_teacher_id(db, teacher_id)
-    teacher_db_id = teacher.id
-    logger.info(
-        "Teacher record: id=%d, teacher_id='%s' (created=%s)",
-        teacher.id,
-        teacher.teacher_id,
-        teacher.created_at,
-    )
-    db.commit()  # Release DB connection before S3 upload
-
-    client = get_minio_client(settings)
-    object_key = _build_teacher_object_key(teacher_id, file.filename)
+    # Stream to temp file instead of loading into memory
+    with tempfile.NamedTemporaryFile(delete=False) as tmp:
+        tmp_path = tmp.name
+        total_bytes = 0
+        while chunk := await file.read(1024 * 1024):  # 1MB chunks
+            tmp.write(chunk)
+            total_bytes += len(chunk)
+            if total_bytes > settings.teacher_max_file_size_bytes:
+                os.unlink(tmp_path)
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=f"File exceeds max size ({settings.teacher_max_file_size_bytes // 1024 // 1024}MB)",
+                )
 
     try:
-        stream = io.BytesIO(contents)
+        # Get or create Teacher record in database
+        teacher = _teacher_repository.get_or_create_by_teacher_id(db, teacher_id)
+        teacher_db_id = teacher.id
+        logger.info(
+            "Teacher record: id=%d, teacher_id='%s'",
+            teacher.id,
+            teacher.teacher_id,
+        )
+        db.commit()  # Release DB connection before S3 upload
+
+        client = get_minio_client(settings)
+        object_key = _build_teacher_object_key(teacher_id, file.filename)
+
+        # Upload from temp file
         await asyncio.to_thread(
-            client.put_object,
+            client.fput_object,
             settings.minio_teachers_bucket,
             object_key,
-            stream,
-            len(contents),
-            content_type=file.content_type,
+            tmp_path,
+            content_type=file.content_type or "application/octet-stream",
         )
+
+        # Extract file extension for file_type
+        file_ext = ""
+        if file.filename and "." in file.filename:
+            file_ext = file.filename.rsplit(".", 1)[-1].lower()
+
+        # Create Material record in database
+        material = _material_repository.create(
+            db,
+            data={
+                "material_name": file.filename,
+                "file_type": file_ext,
+                "content_type": file.content_type or "application/octet-stream",
+                "size": total_bytes,
+                "teacher_id": teacher_db_id,
+                "status": "active",
+            },
+        )
+
+        logger.info(
+            "Uploaded teacher material '%s' (%d bytes) - Material ID: %d",
+            object_key,
+            total_bytes,
+            material.id,
+        )
+    except HTTPException:
+        raise
     except Exception as exc:
-        logger.error("Failed to upload teacher material '%s': %s", object_key, exc)
+        logger.error("Failed to upload teacher material: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Failed to upload file",
         ) from exc
-
-    # Extract file extension for file_type
-    file_ext = ""
-    if file.filename and "." in file.filename:
-        file_ext = file.filename.rsplit(".", 1)[-1].lower()
-
-    # Create Material record in database
-    material = _material_repository.create(
-        db,
-        data={
-            "material_name": file.filename,
-            "file_type": file_ext,
-            "content_type": file.content_type or "application/octet-stream",
-            "size": len(contents),
-            "teacher_id": teacher_db_id,
-            "status": "active",
-        },
-    )
-
-    logger.info(
-        "Uploaded teacher material '%s' (%d bytes) - Material ID: %d",
-        object_key,
-        len(contents),
-        material.id,
-    )
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
 
     return {
         "teacher_id": teacher_id,
         "material_id": material.id,
         "filename": file.filename,
         "path": object_key,
-        "size": len(contents),
+        "size": total_bytes,
         "content_type": file.content_type,
     }
 
