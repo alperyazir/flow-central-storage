@@ -8,6 +8,7 @@ import {
   Package,
   GraduationCap,
   KeyRound,
+  Settings,
   Sun,
   Moon,
   LogOut,
@@ -50,6 +51,7 @@ const navItems = [
   { label: 'Bundles', icon: Package, path: '/bundles' },
   { label: 'Teachers', icon: GraduationCap, path: '/teachers' },
   { label: 'API Keys', icon: KeyRound, path: '/api-keys' },
+  { label: 'System Info', icon: Settings, path: '/system' },
 ];
 
 export function AppSidebar() {
