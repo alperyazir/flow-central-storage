@@ -341,7 +341,7 @@ def create_bundle(
             for obj in existing_bundles:
                 file_name = obj.object_name.split("/")[-1]
                 # Check if this bundle is for the requested platform
-                if f"({normalized_platform})" in file_name.lower():
+                if file_name.lower().startswith(f"({normalized_platform})"):
                     logger.info(
                         "Found existing bundle for %s/%s platform %s: %s",
                         publisher_id,

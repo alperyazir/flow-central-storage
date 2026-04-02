@@ -1910,7 +1910,7 @@ async def create_bundle_task(
                 existing_bundles = list(client.list_objects(apps_bucket, prefix=bundle_prefix, recursive=True))
                 for obj in existing_bundles:
                     file_name = obj.object_name.split("/")[-1]
-                    if f"({normalized_platform})" in file_name.lower():
+                    if file_name.lower().startswith(f"({normalized_platform})"):
                         logger.info(
                             "Found existing bundle for %s/%s platform %s",
                             publisher_id,
