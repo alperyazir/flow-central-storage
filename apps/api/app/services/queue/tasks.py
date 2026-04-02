@@ -1937,11 +1937,18 @@ async def create_bundle_task(
                 logger.warning("Failed to check bundle cache: %s", e)
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            # 1. Download template (5-15%)
-            await update_progress(10, "Downloading template...")
-            template_path = os.path.join(temp_dir, "template.zip")
-            client.fget_object(apps_bucket, template_object_name, template_path)
-            await update_progress(15, "Template downloaded")
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            from app.services.standalone_apps import (
+                ASSET_DOWNLOAD_WORKERS,
+                _download_asset,
+                _get_cached_template,
+            )
+
+            # 1. Get template from local cache (5-15%)
+            await update_progress(10, "Loading template...")
+            template_path = _get_cached_template(client, apps_bucket, template_object_name)
+            await update_progress(15, "Template ready")
 
             # 2. Extract template (15-25%)
             await update_progress(20, "Extracting template...")
@@ -1973,39 +1980,38 @@ async def create_bundle_task(
             book_dir = os.path.join(data_dir, "books", book_name)
             os.makedirs(book_dir, exist_ok=True)
 
-            # 5. Download book assets (25-70%)
+            # 5. Download book assets in parallel (25-70%)
             await update_progress(25, "Downloading book assets...")
             book_prefix = f"{publisher_id}/books/{book_name}/"
-            objects = list(client.list_objects(publishers_bucket, prefix=book_prefix, recursive=True))
+            objects = [
+                obj for obj in client.list_objects(publishers_bucket, prefix=book_prefix, recursive=True)
+                if not obj.is_dir and obj.object_name[len(book_prefix):]
+            ]
+            total_objects = len(objects)
+
+            download_tasks = []
+            for obj in objects:
+                relative_path = obj.object_name[len(book_prefix):]
+                dest_path = os.path.join(book_dir, relative_path)
+                download_tasks.append((publishers_bucket, obj.object_name, dest_path))
 
             asset_count = 0
-            total_objects = len([o for o in objects if not o.is_dir])
+            with ThreadPoolExecutor(max_workers=ASSET_DOWNLOAD_WORKERS) as executor:
+                futures = {
+                    executor.submit(_download_asset, client, bucket, obj_name, dest): obj_name
+                    for bucket, obj_name, dest in download_tasks
+                }
+                for future in as_completed(futures):
+                    future.result()
+                    asset_count += 1
+                    if total_objects > 0:
+                        pct = 25 + int(asset_count / total_objects * 45)
+                        await update_progress(pct, f"Downloaded {asset_count}/{total_objects} assets")
 
-            for i, obj in enumerate(objects):
-                if obj.is_dir:
-                    continue
-
-                relative_path = obj.object_name[len(book_prefix) :]
-                if not relative_path:
-                    continue
-
-                dest_path = os.path.join(book_dir, relative_path)
-                dest_parent = os.path.dirname(dest_path)
-                if dest_parent:
-                    os.makedirs(dest_parent, exist_ok=True)
-
-                client.fget_object(publishers_bucket, obj.object_name, dest_path)
-                asset_count += 1
-
-                # Update progress (25-70%)
-                if total_objects > 0:
-                    pct = 25 + int((i + 1) / total_objects * 45)
-                    await update_progress(pct, f"Downloaded {asset_count}/{total_objects} assets")
-
-            logger.info("Copied %d assets for book %s/%s", asset_count, publisher_id, book_name)
+            logger.info("Downloaded %d assets in parallel for book %s/%s", asset_count, publisher_id, book_name)
             await update_progress(70, f"Downloaded {asset_count} assets")
 
-            # 6. Create bundle zip (70-90%)
+            # 6. Create bundle zip — ZIP_STORED (assets already compressed)
             await update_progress(75, "Creating bundle...")
             if app_folder_name:
                 bundle_name = f"{app_folder_name} - {book_name}"
@@ -2013,7 +2019,7 @@ async def create_bundle_task(
                 bundle_name = f"({normalized_platform}) FlowBook - {book_name}"
             bundle_path = os.path.join(temp_dir, f"{bundle_name}.zip")
 
-            with zipfile.ZipFile(bundle_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            with zipfile.ZipFile(bundle_path, "w", zipfile.ZIP_STORED) as zf:
                 for root, _dirs, files in os.walk(extract_dir):
                     for file in files:
                         file_path = os.path.join(root, file)

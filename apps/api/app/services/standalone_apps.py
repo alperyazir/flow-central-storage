@@ -7,8 +7,10 @@ import logging
 import os
 import tempfile
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from minio import Minio
 from minio.error import S3Error
@@ -18,7 +20,9 @@ logger = logging.getLogger(__name__)
 TEMPLATE_PREFIX = "standalone-templates"
 BUNDLE_PREFIX = "bundles"
 ALLOWED_PLATFORMS = {"mac", "win", "win7-8", "linux"}
-PRESIGNED_URL_EXPIRY_SECONDS = 3600  # 1 hour
+PRESIGNED_URL_EXPIRY_SECONDS = 21600  # 6 hours
+TEMPLATE_CACHE_DIR = Path(tempfile.gettempdir()) / "fcs_template_cache"
+ASSET_DOWNLOAD_WORKERS = 8  # concurrent R2 downloads
 
 
 class TemplateNotFoundError(Exception):
@@ -257,6 +261,36 @@ def template_exists(client: Minio, bucket: str, platform: str) -> bool:
         return False
 
 
+def _get_cached_template(client: Minio, bucket: str, object_name: str) -> str:
+    """Download template to local cache if not already cached. Returns local path."""
+    TEMPLATE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_path = TEMPLATE_CACHE_DIR / object_name.replace("/", "_")
+
+    # Check if cached version is still valid (compare etag/size)
+    if cache_path.exists():
+        try:
+            stat = client.stat_object(bucket, object_name)
+            if cache_path.stat().st_size == stat.size:
+                logger.debug("Template cache hit: %s", cache_path)
+                return str(cache_path)
+        except Exception:
+            pass
+
+    # Download to cache
+    logger.info("Template cache miss, downloading: %s", object_name)
+    client.fget_object(bucket, object_name, str(cache_path))
+    return str(cache_path)
+
+
+def _download_asset(client: Minio, bucket: str, object_name: str, dest_path: str) -> str:
+    """Download a single asset from R2. Used in thread pool."""
+    dest_parent = os.path.dirname(dest_path)
+    if dest_parent:
+        os.makedirs(dest_parent, exist_ok=True)
+    client.fget_object(bucket, object_name, dest_path)
+    return dest_path
+
+
 def create_bundle(
     client: Minio,
     external_client: Minio,
@@ -328,9 +362,8 @@ def create_bundle(
 
     with tempfile.TemporaryDirectory() as temp_dir:
         try:
-            # 1. Download template zip
-            template_path = os.path.join(temp_dir, "template.zip")
-            client.fget_object(apps_bucket, template_object_name, template_path)
+            # 1. Get template from local cache (or download once)
+            template_path = _get_cached_template(client, apps_bucket, template_object_name)
 
             # 2. Extract template
             extract_dir = os.path.join(temp_dir, "app")
@@ -340,16 +373,13 @@ def create_bundle(
                 zf.extractall(extract_dir)
 
             # 3. Find the root app folder (e.g., "(linux) FlowBook v1.4.11")
-            # The template zip contains a version folder with data inside
             root_items = os.listdir(extract_dir)
             app_root = extract_dir
             app_folder_name = None
 
-            # Look for the app folder containing 'data' directory
             for item in root_items:
                 item_path = os.path.join(extract_dir, item)
                 if os.path.isdir(item_path):
-                    # Check if this folder contains a 'data' directory
                     if os.path.isdir(os.path.join(item_path, "data")):
                         app_root = item_path
                         app_folder_name = item
@@ -363,38 +393,39 @@ def create_bundle(
             book_dir = os.path.join(data_dir, "books", book_name)
             os.makedirs(book_dir, exist_ok=True)
 
-            # 5. Download book assets from publishers bucket
+            # 5. Download book assets in parallel
             book_prefix = f"{publisher_id}/books/{book_name}/"
-            objects = client.list_objects(publishers_bucket, prefix=book_prefix, recursive=True)
+            objects = [
+                obj for obj in client.list_objects(publishers_bucket, prefix=book_prefix, recursive=True)
+                if not obj.is_dir and obj.object_name[len(book_prefix):]
+            ]
+
+            download_tasks = []
+            for obj in objects:
+                relative_path = obj.object_name[len(book_prefix):]
+                dest_path = os.path.join(book_dir, relative_path)
+                download_tasks.append((publishers_bucket, obj.object_name, dest_path))
 
             asset_count = 0
-            for obj in objects:
-                if obj.is_dir:
-                    continue
+            with ThreadPoolExecutor(max_workers=ASSET_DOWNLOAD_WORKERS) as executor:
+                futures = {
+                    executor.submit(_download_asset, client, bucket, obj_name, dest): obj_name
+                    for bucket, obj_name, dest in download_tasks
+                }
+                for future in as_completed(futures):
+                    future.result()  # Raise on error
+                    asset_count += 1
 
-                relative_path = obj.object_name[len(book_prefix) :]
-                if not relative_path:
-                    continue
+            logger.info("Downloaded %d assets in parallel for book %s/%s", asset_count, publisher_id, book_name)
 
-                dest_path = os.path.join(book_dir, relative_path)
-                dest_parent = os.path.dirname(dest_path)
-                if dest_parent:
-                    os.makedirs(dest_parent, exist_ok=True)
-
-                client.fget_object(publishers_bucket, obj.object_name, dest_path)
-                asset_count += 1
-
-            logger.info("Copied %d assets for book %s/%s", asset_count, publisher_id, book_name)
-
-            # 6. Create bundle zip
-            # Use format: "(platform) FlowBook v1.4.11 - BookName" or fallback
+            # 6. Create bundle zip (ZIP_STORED — assets already compressed)
             if app_folder_name:
                 bundle_name = f"{app_folder_name} - {book_name}"
             else:
                 bundle_name = f"({normalized_platform}) FlowBook - {book_name}"
             bundle_path = os.path.join(temp_dir, f"{bundle_name}.zip")
 
-            with zipfile.ZipFile(bundle_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            with zipfile.ZipFile(bundle_path, "w", zipfile.ZIP_STORED) as zf:
                 for root, _dirs, files in os.walk(extract_dir):
                     for file in files:
                         file_path = os.path.join(root, file)
