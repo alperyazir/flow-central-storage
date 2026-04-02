@@ -1,13 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import {
-  Loader2,
-  Pencil,
-  Plus,
-  RotateCcw,
-  Trash2,
-  XCircle,
-} from 'lucide-react';
+import { Loader2, Pencil, Plus, Trash2 } from 'lucide-react';
 
 import { Card, CardContent } from 'components/ui/card';
 import {
@@ -18,7 +11,6 @@ import {
   TableHeader,
   TableRow,
 } from 'components/ui/table';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from 'components/ui/tabs';
 import { Input } from 'components/ui/input';
 import { Button } from 'components/ui/button';
 import { Badge } from 'components/ui/badge';
@@ -35,10 +27,7 @@ import TeacherFormDialog from 'components/TeacherFormDialog';
 import { useAuthStore } from 'stores/auth';
 import {
   fetchTeachers,
-  fetchTrashedTeachers,
   deleteTeacher,
-  restoreTeacher,
-  permanentDeleteTeacher,
   formatBytes,
   type TeacherListItem,
 } from 'lib/teacherManagement';
@@ -63,8 +52,6 @@ const TeachersManagementPage = () => {
   const tt = tokenType ?? 'Bearer';
 
   const [teachers, setTeachers] = useState<TeacherListItem[]>([]);
-  const [trashed, setTrashed] = useState<TeacherListItem[]>([]);
-  const [tab, setTab] = useState('active');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
@@ -75,8 +62,6 @@ const TeachersManagementPage = () => {
   const [deleteTarget, setDeleteTarget] = useState<TeacherListItem | null>(
     null
   );
-  const [permDeleteTarget, setPermDeleteTarget] =
-    useState<TeacherListItem | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<TeacherListItem | null>(null);
 
@@ -85,12 +70,8 @@ const TeachersManagementPage = () => {
     setLoading(true);
     setError('');
     try {
-      const [active, trash] = await Promise.all([
-        fetchTeachers(token, tt),
-        fetchTrashedTeachers(token, tt),
-      ]);
+      const active = await fetchTeachers(token, tt);
       setTeachers(active);
-      setTrashed(trash);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load');
     } finally {
@@ -103,8 +84,7 @@ const TeachersManagementPage = () => {
   }, [token]);
 
   const filtered = useMemo(() => {
-    const list = tab === 'active' ? teachers : trashed;
-    let d = list;
+    let d = teachers;
     if (search) {
       const q = search.toLowerCase();
       d = d.filter(
@@ -123,7 +103,7 @@ const TeachersManagementPage = () => {
       if (typeof av === 'number') return (av - (bv as number)) * dir;
       return String(av).localeCompare(String(bv)) * dir;
     });
-  }, [teachers, trashed, tab, search, sort]);
+  }, [teachers, search, sort]);
 
   const toggleSort = (f: SortField) =>
     setSort((c) => ({ f, d: c.f === f && c.d === 'asc' ? 'desc' : 'asc' }));
@@ -133,25 +113,6 @@ const TeachersManagementPage = () => {
     try {
       await deleteTeacher(deleteTarget.id, token, tt);
       setDeleteTarget(null);
-      load();
-    } catch {
-      /* ignored */
-    }
-  };
-  const handleRestore = async (t: TeacherListItem) => {
-    if (!token) return;
-    try {
-      await restoreTeacher(t.id, token, tt);
-      load();
-    } catch {
-      /* ignored */
-    }
-  };
-  const handlePermDelete = async () => {
-    if (!permDeleteTarget || !token) return;
-    try {
-      await permanentDeleteTeacher(permDeleteTarget.id, token, tt);
-      setPermDeleteTarget(null);
       load();
     } catch {
       /* ignored */
@@ -200,115 +161,86 @@ const TeachersManagementPage = () => {
         className="max-w-xs"
       />
 
-      <Tabs value={tab} onValueChange={setTab}>
-        <TabsList>
-          <TabsTrigger value="active">Active ({teachers.length})</TabsTrigger>
-          <TabsTrigger value="trash">Trash ({trashed.length})</TabsTrigger>
-        </TabsList>
-        <TabsContent value={tab}>
-          <Card>
-            <CardContent className="p-0">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <SortHead field="teacher_id" label="Teacher ID" />
-                    <SortHead field="display_name" label="Name" />
-                    <TableHead>Email</TableHead>
-                    <SortHead field="material_count" label="Materials" />
-                    <SortHead field="total_storage_size" label="Storage" />
-                    <SortHead field="status" label="Status" />
-                    <TableHead className="text-right">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {!filtered.length ? (
-                    <TableRow>
-                      <TableCell
-                        colSpan={7}
-                        className="text-center py-8 text-muted-foreground"
-                      >
-                        No teachers found
-                      </TableCell>
-                    </TableRow>
-                  ) : (
-                    filtered.map((t) => (
-                      <TableRow
-                        key={t.id}
-                        className="cursor-pointer"
-                        onClick={() => navigate(`/teachers/${t.id}`)}
-                      >
-                        <TableCell className="font-medium">
-                          {t.teacher_id}
-                        </TableCell>
-                        <TableCell>{t.display_name || '—'}</TableCell>
-                        <TableCell>{t.email || '—'}</TableCell>
-                        <TableCell className="text-center">
-                          <Badge variant="outline">{t.material_count}</Badge>
-                        </TableCell>
-                        <TableCell>
-                          {formatBytes(t.total_storage_size)}
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant={statusVariant(t.status)}>
-                            {t.status}
-                          </Badge>
-                        </TableCell>
-                        <TableCell
-                          className="text-right"
-                          onClick={(e) => e.stopPropagation()}
+      <Card>
+        <CardContent className="p-0">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <SortHead field="teacher_id" label="Teacher ID" />
+                <SortHead field="display_name" label="Name" />
+                <TableHead>Email</TableHead>
+                <SortHead field="material_count" label="Materials" />
+                <SortHead field="total_storage_size" label="Storage" />
+                <SortHead field="status" label="Status" />
+                <TableHead className="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {!filtered.length ? (
+                <TableRow>
+                  <TableCell
+                    colSpan={7}
+                    className="text-center py-8 text-muted-foreground"
+                  >
+                    No teachers found
+                  </TableCell>
+                </TableRow>
+              ) : (
+                filtered.map((t) => (
+                  <TableRow
+                    key={t.id}
+                    className="cursor-pointer"
+                    onClick={() => navigate(`/teachers/${t.id}`)}
+                  >
+                    <TableCell className="font-medium">
+                      {t.teacher_id}
+                    </TableCell>
+                    <TableCell>{t.display_name || '—'}</TableCell>
+                    <TableCell>{t.email || '—'}</TableCell>
+                    <TableCell className="text-center">
+                      <Badge variant="outline">{t.material_count}</Badge>
+                    </TableCell>
+                    <TableCell>
+                      {formatBytes(t.total_storage_size)}
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={statusVariant(t.status)}>
+                        {t.status}
+                      </Badge>
+                    </TableCell>
+                    <TableCell
+                      className="text-right"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <div className="flex justify-end gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7"
+                          onClick={() => {
+                            setEditing(t);
+                            setFormOpen(true);
+                          }}
                         >
-                          {tab === 'active' ? (
-                            <div className="flex justify-end gap-1">
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7"
-                                onClick={() => {
-                                  setEditing(t);
-                                  setFormOpen(true);
-                                }}
-                              >
-                                <Pencil className="h-4 w-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7"
-                                onClick={() => setDeleteTarget(t)}
-                              >
-                                <Trash2 className="h-4 w-4 text-destructive" />
-                              </Button>
-                            </div>
-                          ) : (
-                            <div className="flex justify-end gap-1">
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7"
-                                onClick={() => handleRestore(t)}
-                              >
-                                <RotateCcw className="h-4 w-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7"
-                                onClick={() => setPermDeleteTarget(t)}
-                              >
-                                <XCircle className="h-4 w-4 text-destructive" />
-                              </Button>
-                            </div>
-                          )}
-                        </TableCell>
-                      </TableRow>
-                    ))
-                  )}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
-        </TabsContent>
-      </Tabs>
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7"
+                          onClick={() => setDeleteTarget(t)}
+                        >
+                          <Trash2 className="h-4 w-4 text-destructive" />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
 
       <TeacherFormDialog
         open={formOpen}
@@ -326,7 +258,8 @@ const TeachersManagementPage = () => {
           <DialogHeader>
             <DialogTitle>Delete Teacher?</DialogTitle>
             <DialogDescription>
-              Soft-delete teacher &quot;{deleteTarget?.teacher_id}&quot;?
+              Permanently delete teacher &quot;{deleteTarget?.teacher_id}&quot;
+              and all their materials? This cannot be undone.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -334,29 +267,7 @@ const TeachersManagementPage = () => {
               Cancel
             </Button>
             <Button variant="destructive" onClick={handleDelete}>
-              Delete
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-      <Dialog
-        open={!!permDeleteTarget}
-        onOpenChange={() => setPermDeleteTarget(null)}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Permanently Delete?</DialogTitle>
-            <DialogDescription>
-              Permanently delete &quot;{permDeleteTarget?.teacher_id}&quot;?
-              This cannot be undone.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setPermDeleteTarget(null)}>
-              Cancel
-            </Button>
-            <Button variant="destructive" onClick={handlePermDelete}>
-              Delete Forever
+              Delete Permanently
             </Button>
           </DialogFooter>
         </DialogContent>

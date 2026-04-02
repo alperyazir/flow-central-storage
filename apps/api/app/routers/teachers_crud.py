@@ -27,7 +27,7 @@ from app.schemas.teacher import (
     TeacherRead,
     TeacherUpdate,
 )
-from app.services import get_minio_client
+from app.services import DirectDeletionError, delete_prefix_directly, get_minio_client
 
 router = APIRouter(prefix="/teachers-manage", tags=["Teachers Management"])
 _bearer_scheme = HTTPBearer(auto_error=True)
@@ -250,17 +250,44 @@ def soft_delete_teacher(
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
     db: Session = Depends(get_db),
 ) -> TeacherRead:
-    """Soft-delete a teacher by setting status to inactive (moves to trash)."""
+    """Permanently delete a teacher and all their materials from storage."""
     _require_admin(credentials, db)
-    teacher = _teacher_repository.get(db, teacher_id)
+    teacher = _teacher_repository.get_with_materials(db, teacher_id)
     if teacher is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Teacher not found",
         )
 
-    updated = _teacher_repository.update(db, teacher, data={"status": "inactive"})
-    return TeacherRead.model_validate(updated)
+    result = TeacherRead.model_validate(teacher)
+    teacher_ext_id = teacher.teacher_id
+
+    # Release DB before slow storage operation
+    db.close()
+
+    # Delete all files from R2
+    settings = get_settings()
+    client = get_minio_client(settings)
+    try:
+        delete_prefix_directly(
+            client=client,
+            bucket=settings.minio_teachers_bucket,
+            prefix=f"{teacher_ext_id}/",
+        )
+    except DirectDeletionError as e:
+        logger.error("Error deleting R2 objects for teacher %s: %s", teacher_ext_id, e)
+
+    # Re-open DB to delete record
+    from app.db import SessionLocal
+    db = SessionLocal()
+    try:
+        teacher = _teacher_repository.get_with_materials(db, teacher_id)
+        if teacher:
+            _teacher_repository.delete(db, teacher)
+    finally:
+        db.close()
+
+    return result
 
 
 @router.post("/{teacher_id}/restore", response_model=TeacherRead)
