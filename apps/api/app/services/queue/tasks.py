@@ -1959,18 +1959,23 @@ async def create_bundle_task(
                 zf.extractall(extract_dir)
             await update_progress(25, "Template extracted")
 
-            # 3. Find the app folder containing 'data' directory (may be nested)
+            # 3. Remove __MACOSX metadata folder if present
+            import shutil
+
+            macosx_dir = os.path.join(extract_dir, "__MACOSX")
+            if os.path.isdir(macosx_dir):
+                shutil.rmtree(macosx_dir)
+
+            # 4. Find the app folder containing 'data' directory (may be nested)
             app_root = extract_dir
             app_folder_name = None
 
             for dirpath, dirnames, _files in os.walk(extract_dir):
                 if "data" in dirnames:
-                    data_candidate = os.path.join(dirpath, "data")
-                    if os.path.isdir(data_candidate):
-                        app_root = dirpath
-                        app_folder_name = os.path.basename(dirpath)
-                        extract_dir = os.path.dirname(dirpath)
-                        break
+                    app_root = dirpath
+                    app_folder_name = os.path.basename(dirpath)
+                    extract_dir = os.path.dirname(dirpath)
+                    break
 
             # 4. Create book directory
             data_dir = os.path.join(app_root, "data")

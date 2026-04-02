@@ -372,23 +372,24 @@ def create_bundle(
             with zipfile.ZipFile(template_path, "r") as zf:
                 zf.extractall(extract_dir)
 
-            # 3. Find the app folder containing 'data' directory (may be nested)
-            # Template structures vary:
-            #   mac.zip → mac/(mac) FlowBook v1.5.2/data/
-            #   linux.zip → (linux) FlowBook v1.5.2/data/
-            #   win.zip → (win) FlowBook v1.5.2/data/
+            # 3. Remove __MACOSX metadata folder if present
+            macosx_dir = os.path.join(extract_dir, "__MACOSX")
+            if os.path.isdir(macosx_dir):
+                import shutil
+
+                shutil.rmtree(macosx_dir)
+
+            # 4. Find the app folder containing 'data' directory (may be nested)
+            # Template structures: {platform}/({platform}) FlowBook v1.5.2/data/
             app_root = extract_dir
             app_folder_name = None
 
             for dirpath, dirnames, _files in os.walk(extract_dir):
                 if "data" in dirnames:
-                    data_candidate = os.path.join(dirpath, "data")
-                    if os.path.isdir(os.path.join(data_candidate, "books")) or os.path.isdir(data_candidate):
-                        app_root = dirpath
-                        app_folder_name = os.path.basename(dirpath)
-                        # Reset extract_dir to parent of app_root for correct ZIP arcnames
-                        extract_dir = os.path.dirname(dirpath)
-                        break
+                    app_root = dirpath
+                    app_folder_name = os.path.basename(dirpath)
+                    extract_dir = os.path.dirname(dirpath)
+                    break
 
             # 4. Create book directory structure inside data/books/
             data_dir = os.path.join(app_root, "data")
