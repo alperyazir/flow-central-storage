@@ -70,7 +70,7 @@ const BooksPage = () => {
     try {
       const result = await syncBooksWithR2(token, tt);
       setSyncResult(result);
-      if (result.created.length > 0 || result.removed.length > 0) load();
+      if (result.books.created.length > 0 || result.books.removed.length > 0) load();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Sync failed');
     } finally {
@@ -175,10 +175,15 @@ const BooksPage = () => {
       {syncResult && (
         <Alert>
           <AlertDescription>
-            R2: {syncResult.r2_count} books, DB: {syncResult.db_count} books.
-            {syncResult.created.length > 0 && ` Created ${syncResult.created.length} record(s).`}
-            {syncResult.removed.length > 0 && ` Removed ${syncResult.removed.length} orphan(s).`}
-            {syncResult.created.length === 0 && syncResult.removed.length === 0 && ' Already in sync.'}
+            Books: R2 {syncResult.books.r2_count}, DB {syncResult.books.db_count}.
+            {syncResult.books.created.length > 0 && ` +${syncResult.books.created.length} created.`}
+            {syncResult.books.removed.length > 0 && ` -${syncResult.books.removed.length} removed.`}
+            {syncResult.materials.r2_count > 0 && ` | Materials: R2 ${syncResult.materials.r2_count}.`}
+            {syncResult.materials.created.length > 0 && ` +${syncResult.materials.created.length} created.`}
+            {syncResult.materials.removed.length > 0 && ` -${syncResult.materials.removed.length} removed.`}
+            {syncResult.books.created.length === 0 && syncResult.books.removed.length === 0 &&
+             syncResult.materials.created.length === 0 && syncResult.materials.removed.length === 0 &&
+             ' All in sync.'}
           </AlertDescription>
         </Alert>
       )}

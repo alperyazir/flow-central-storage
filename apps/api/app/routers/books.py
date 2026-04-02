@@ -185,12 +185,83 @@ def sync_books_with_r2(
     if created or removed:
         _invalidate_book_cache()
 
+    # --- Teacher Materials Sync ---
+    from app.models.material import Material
+    from app.models.teacher import Teacher
+
+    teachers_bucket = settings.minio_teachers_bucket
+    r2_materials: dict[tuple[int, str], dict] = {}  # (teacher_id, filename) → metadata
+    materials_created = []
+    materials_removed = []
+
+    try:
+        for teacher_obj in client.list_objects(teachers_bucket, recursive=False):
+            teacher_prefix = teacher_obj.object_name.rstrip("/")
+            try:
+                t_id = int(teacher_prefix)
+            except ValueError:
+                continue
+            mat_prefix = f"{t_id}/materials/"
+            for mat_obj in client.list_objects(teachers_bucket, prefix=mat_prefix, recursive=False):
+                filename = mat_obj.object_name[len(mat_prefix):].rstrip("/")
+                if filename:
+                    r2_materials[(t_id, filename)] = {
+                        "size": mat_obj.size or 0,
+                        "content_type": mat_obj.content_type or "application/octet-stream",
+                    }
+    except Exception as exc:
+        logger.warning("Sync: failed to list R2 teacher materials: %s", exc)
+
+    if r2_materials:
+        all_db_materials = db.execute(select(Material)).scalars().all()
+        db_materials = {(m.teacher_id, m.material_name): m for m in all_db_materials}
+
+        for (t_id, filename), meta in r2_materials.items():
+            if (t_id, filename) not in db_materials:
+                ext = os.path.splitext(filename)[1].lstrip(".").lower() or "bin"
+                try:
+                    mat = Material(
+                        teacher_id=t_id,
+                        material_name=filename,
+                        display_name=filename,
+                        file_type=ext,
+                        content_type=meta["content_type"],
+                        size=meta["size"],
+                        status="active",
+                    )
+                    db.add(mat)
+                    db.commit()
+                    db.refresh(mat)
+                    materials_created.append({"id": mat.id, "teacher_id": t_id, "filename": filename})
+                    logger.info("Sync: created material record for %s/%s", t_id, filename)
+                except Exception as exc:
+                    db.rollback()
+                    logger.warning("Sync: failed to create material %s/%s: %s", t_id, filename, exc)
+
+        for (t_id, filename), mat in db_materials.items():
+            if (t_id, filename) not in r2_materials:
+                try:
+                    db.delete(mat)
+                    db.commit()
+                    materials_removed.append({"id": mat.id, "teacher_id": t_id, "filename": filename})
+                    logger.info("Sync: removed orphan material %s/%s", t_id, filename)
+                except Exception as exc:
+                    db.rollback()
+                    logger.warning("Sync: failed to remove material %s/%s: %s", t_id, filename, exc)
+
     return {
         "synced": True,
-        "created": created,
-        "removed": removed,
-        "r2_count": len(r2_books),
-        "db_count": len(db_books),
+        "books": {
+            "created": created,
+            "removed": removed,
+            "r2_count": len(r2_books),
+            "db_count": len(db_books),
+        },
+        "materials": {
+            "created": materials_created,
+            "removed": materials_removed,
+            "r2_count": len(r2_materials),
+        },
     }
 
 

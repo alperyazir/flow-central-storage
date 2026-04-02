@@ -62,10 +62,17 @@ export const getDeleteStatus = (
 
 export interface SyncR2Response {
   synced: boolean;
-  created: { id: number; publisher_id: number; book_name: string }[];
-  removed: { id: number; publisher_id: number; book_name: string }[];
-  r2_count: number;
-  db_count: number;
+  books: {
+    created: { id: number; publisher_id: number; book_name: string }[];
+    removed: { id: number; publisher_id: number; book_name: string }[];
+    r2_count: number;
+    db_count: number;
+  };
+  materials: {
+    created: { id: number; teacher_id: number; filename: string }[];
+    removed: { id: number; teacher_id: number; filename: string }[];
+    r2_count: number;
+  };
 }
 
 export const syncBooksWithR2 = (
