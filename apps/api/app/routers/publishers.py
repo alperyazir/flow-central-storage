@@ -28,7 +28,7 @@ from app.schemas.publisher import (
     PublisherRead,
     PublisherUpdate,
 )
-from app.services import RelocationError, get_minio_client, move_prefix_to_trash
+from app.services import DirectDeletionError, get_minio_client, delete_prefix_directly
 from app.services.webhook import WebhookService
 
 router = APIRouter(prefix="/publishers", tags=["Publishers"])
@@ -307,30 +307,49 @@ def soft_delete_publisher(
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
     db: Session = Depends(get_db),
 ) -> PublisherRead:
-    """Soft-delete a publisher by setting status to inactive (moves to trash)."""
-    logger.info(f"[DELETE] Publisher {publisher_id} - credentials received: {credentials is not None}")
+    """Permanently delete a publisher, all its books, and storage files."""
     _require_admin(credentials, db)
-    publisher = _publisher_repository.get(db, publisher_id)
+    publisher = _publisher_repository.get_with_books(db, publisher_id)
     if publisher is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Publisher not found",
         )
 
-    # Soft-delete: set status to inactive
-    updated = _publisher_repository.update(db, publisher, data={"status": "inactive"})
+    publisher_name = publisher.name
+    result = PublisherRead.model_validate(publisher)
+
+    # Release DB before slow storage operation
+    db.close()
+
+    # Delete all files from R2 storage
+    settings = get_settings()
+    client = get_minio_client(settings)
+    try:
+        report = delete_prefix_directly(
+            client=client,
+            bucket=settings.minio_publishers_bucket,
+            prefix=f"{publisher_id}/",
+        )
+        logger.info("Deleted %d objects from R2 for publisher %s", report.objects_removed, publisher_name)
+    except DirectDeletionError as e:
+        logger.error("Error deleting R2 objects for publisher %s: %s", publisher_name, e)
+
+    # Re-open DB to delete record
+    from app.db import SessionLocal
+    db = SessionLocal()
+    try:
+        publisher = _publisher_repository.get_with_books(db, publisher_id)
+        if publisher:
+            _publisher_repository.delete(db, publisher)
+    finally:
+        db.close()
 
     # Trigger webhook in background
-    logger.info(
-        f"[WEBHOOK-TRIGGER] Scheduling PUBLISHER_DELETED webhook for publisher_id={updated.id}, name='{updated.name}', status='inactive'"
-    )
-    background_tasks.add_task(_trigger_publisher_webhook, updated.id, WebhookEventType.PUBLISHER_DELETED)
+    background_tasks.add_task(_trigger_publisher_webhook, publisher_id, WebhookEventType.PUBLISHER_DELETED)
     _invalidate_publisher_cache()
-    logger.debug(
-        f"[WEBHOOK-TRIGGER] PUBLISHER_DELETED webhook task added to background queue for publisher_id={updated.id}"
-    )
 
-    return PublisherRead.model_validate(updated)
+    return result
 
 
 @router.post("/{publisher_id}/restore", response_model=PublisherRead)
@@ -732,7 +751,7 @@ def delete_asset_file(
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Soft-delete an asset file by moving it to trash."""
+    """Permanently delete an asset file from storage."""
 
     _require_admin(credentials, db)
     validate_asset_type(asset_type)
@@ -748,15 +767,13 @@ def delete_asset_file(
     client = get_minio_client(settings)
     object_key = f"{publisher.id}/assets/{asset_type}/{filename}"
 
-    # Move to trash
     try:
-        report = move_prefix_to_trash(
+        report = delete_prefix_directly(
             client=client,
-            source_bucket=settings.minio_publishers_bucket,
+            bucket=settings.minio_publishers_bucket,
             prefix=object_key,
-            trash_bucket=settings.minio_trash_bucket,
         )
-    except RelocationError as e:
+    except DirectDeletionError as e:
         logger.error(f"Error deleting asset file: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -764,7 +781,6 @@ def delete_asset_file(
         )
 
     return {
-        "message": "File moved to trash",
-        "objects_moved": report.objects_moved,
-        "trash_key": report.destination_prefix,
+        "message": "File permanently deleted",
+        "objects_removed": report.objects_removed,
     }

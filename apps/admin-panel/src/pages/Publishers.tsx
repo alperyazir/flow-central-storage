@@ -4,9 +4,7 @@ import {
   Loader2,
   Pencil,
   Plus,
-  RotateCcw,
   Trash2,
-  XCircle,
 } from 'lucide-react';
 
 import { Card, CardContent } from 'components/ui/card';
@@ -18,7 +16,7 @@ import {
   TableHeader,
   TableRow,
 } from 'components/ui/table';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from 'components/ui/tabs';
+// Tabs removed — no more trash tab
 import {
   Select,
   SelectContent,
@@ -43,10 +41,7 @@ import AuthenticatedImage from 'components/AuthenticatedImage';
 import { useAuthStore } from 'stores/auth';
 import {
   fetchPublishers,
-  fetchTrashedPublishers,
   deletePublisher,
-  restorePublisher,
-  permanentDeletePublisher,
   fetchPublisherBooks,
   fetchPublisherAssetFiles,
   type Publisher,
@@ -67,8 +62,6 @@ const PublishersPage = () => {
   const tt = tokenType ?? 'Bearer';
 
   const [publishers, setPublishers] = useState<Publisher[]>([]);
-  const [trashed, setTrashed] = useState<Publisher[]>([]);
-  const [tab, setTab] = useState('active');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
@@ -79,9 +72,6 @@ const PublishersPage = () => {
   });
   const [deleteTarget, setDeleteTarget] = useState<Publisher | null>(null);
   const [deleteBookCount, setDeleteBookCount] = useState(0);
-  const [permDeleteTarget, setPermDeleteTarget] = useState<Publisher | null>(
-    null
-  );
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Publisher | null>(null);
   const [bookCounts, setBookCounts] = useState<Record<number, number>>({});
@@ -92,12 +82,8 @@ const PublishersPage = () => {
     setLoading(true);
     setError('');
     try {
-      const [active, trash] = await Promise.all([
-        fetchPublishers(token, tt),
-        fetchTrashedPublishers(token, tt),
-      ]);
+      const active = await fetchPublishers(token, tt);
       setPublishers(active);
-      setTrashed(trash);
       const counts: Record<number, number> = {};
       const logos: Record<number, string | null> = {};
       await Promise.all(
@@ -135,8 +121,7 @@ const PublishersPage = () => {
   }, [token]);
 
   const filtered = useMemo(() => {
-    const list = tab === 'active' ? publishers : trashed;
-    let d = list;
+    let d = publishers;
     if (search) {
       const q = search.toLowerCase();
       d = d.filter(
@@ -155,7 +140,7 @@ const PublishersPage = () => {
       (b as any)[sort.f] ?? '';
       return String(av).localeCompare(String(bv)) * dir;
     });
-  }, [publishers, trashed, tab, search, statusFilter, sort]);
+  }, [publishers, search, statusFilter, sort]);
 
   const toggleSort = (f: SortField) =>
     setSort((c) => ({ f, d: c.f === f && c.d === 'asc' ? 'desc' : 'asc' }));
@@ -165,25 +150,6 @@ const PublishersPage = () => {
     try {
       await deletePublisher(deleteTarget.id, token, tt);
       setDeleteTarget(null);
-      load();
-    } catch {
-      /* ignored */
-    }
-  };
-  const handleRestore = async (p: Publisher) => {
-    if (!token) return;
-    try {
-      await restorePublisher(p.id, token, tt);
-      load();
-    } catch {
-      /* ignored */
-    }
-  };
-  const handlePermDelete = async () => {
-    if (!permDeleteTarget || !token) return;
-    try {
-      await permanentDeletePublisher(permDeleteTarget.id, token, tt);
-      setPermDeleteTarget(null);
       load();
     } catch {
       /* ignored */
@@ -256,13 +222,7 @@ const PublishersPage = () => {
         </Select>
       </div>
 
-      <Tabs value={tab} onValueChange={setTab}>
-        <TabsList>
-          <TabsTrigger value="active">Active ({publishers.length})</TabsTrigger>
-          <TabsTrigger value="trash">Trash ({trashed.length})</TabsTrigger>
-        </TabsList>
-        <TabsContent value={tab}>
-          <Card>
+      <Card>
             <CardContent className="p-0">
               <Table>
                 <TableHeader>
@@ -323,8 +283,7 @@ const PublishersPage = () => {
                           className="text-right"
                           onClick={(e) => e.stopPropagation()}
                         >
-                          {tab === 'active' ? (
-                            <div className="flex justify-end gap-1">
+                          <div className="flex justify-end gap-1">
                               <Button
                                 variant="ghost"
                                 size="icon"
@@ -345,26 +304,6 @@ const PublishersPage = () => {
                                 <Trash2 className="h-4 w-4 text-destructive" />
                               </Button>
                             </div>
-                          ) : (
-                            <div className="flex justify-end gap-1">
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7"
-                                onClick={() => handleRestore(p)}
-                              >
-                                <RotateCcw className="h-4 w-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7"
-                                onClick={() => setPermDeleteTarget(p)}
-                              >
-                                <XCircle className="h-4 w-4 text-destructive" />
-                              </Button>
-                            </div>
-                          )}
                         </TableCell>
                       </TableRow>
                     ))
@@ -372,9 +311,7 @@ const PublishersPage = () => {
                 </TableBody>
               </Table>
             </CardContent>
-          </Card>
-        </TabsContent>
-      </Tabs>
+      </Card>
 
       <PublisherFormDialog
         open={formOpen}
@@ -392,10 +329,10 @@ const PublishersPage = () => {
           <DialogHeader>
             <DialogTitle>Delete Publisher?</DialogTitle>
             <DialogDescription>
-              Soft-delete &quot;{deleteTarget?.name}&quot;?{' '}
+              Permanently delete &quot;{deleteTarget?.name}&quot;?{' '}
               {deleteBookCount > 0 &&
-                `This publisher has ${deleteBookCount} book(s).`}{' '}
-              Files move to trash.
+                `This will also delete ${deleteBookCount} book(s).`}{' '}
+              This cannot be undone.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -404,28 +341,6 @@ const PublishersPage = () => {
             </Button>
             <Button variant="destructive" onClick={handleDelete}>
               Delete
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-      <Dialog
-        open={!!permDeleteTarget}
-        onOpenChange={() => setPermDeleteTarget(null)}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Permanently Delete?</DialogTitle>
-            <DialogDescription>
-              Permanently delete &quot;{permDeleteTarget?.name}&quot;? This
-              cannot be undone.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setPermDeleteTarget(null)}>
-              Cancel
-            </Button>
-            <Button variant="destructive" onClick={handlePermDelete}>
-              Delete Forever
             </Button>
           </DialogFooter>
         </DialogContent>

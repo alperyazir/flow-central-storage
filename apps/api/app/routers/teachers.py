@@ -21,7 +21,7 @@ from app.db import SessionLocal, get_db
 from app.repositories.material import MaterialRepository
 from app.repositories.teacher import TeacherRepository
 from app.repositories.user import UserRepository
-from app.services import RelocationError, get_minio_client, move_prefix_to_trash
+from app.services import DirectDeletionError, get_minio_client, delete_prefix_directly
 
 router = APIRouter(prefix="/teachers", tags=["Teachers"])
 _bearer_scheme = HTTPBearer(auto_error=True)
@@ -440,7 +440,7 @@ async def delete_teacher_material(
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
     db: Session = Depends(get_db),
 ):
-    """Soft-delete a teacher material by moving it to the trash bucket."""
+    """Permanently delete a teacher material from storage."""
     _require_admin(credentials, db)
 
     # Release DB connection before slow storage operation
@@ -449,37 +449,35 @@ async def delete_teacher_material(
     settings = get_settings()
     client = get_minio_client(settings)
 
-    # Build the prefix for the file to delete
     object_key = _build_teacher_object_key(teacher_id, path)
 
     try:
-        report = move_prefix_to_trash(
+        report = delete_prefix_directly(
             client=client,
-            source_bucket=settings.minio_teachers_bucket,
+            bucket=settings.minio_teachers_bucket,
             prefix=object_key,
-            trash_bucket=settings.minio_trash_bucket,
         )
-    except RelocationError as exc:
+    except DirectDeletionError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Failed to move material to trash",
+            detail="Failed to delete material",
         ) from exc
 
-    if report.objects_moved == 0:
+    if report.objects_removed == 0:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="File not found",
         )
 
     logger.info(
-        "Moved teacher material '%s' to trash; %d objects moved",
+        "Permanently deleted teacher material '%s'; %d objects removed",
         object_key,
-        report.objects_moved,
+        report.objects_removed,
     )
 
     return {
         "deleted": True,
         "teacher_id": teacher_id,
         "path": path,
-        "objects_moved": report.objects_moved,
+        "objects_removed": report.objects_removed,
     }

@@ -13,13 +13,13 @@ from app.core.config import get_settings
 from app.core.security import decode_access_token, verify_api_key_from_db
 from app.db import get_db
 from app.services import (
-    RelocationError,
+    DirectDeletionError,
     UploadConflictError,
     UploadError,
+    delete_prefix_directly,
     ensure_version_target,
     extract_manifest_version,
     get_minio_client,
-    move_prefix_to_trash,
     upload_app_archive,
 )
 
@@ -164,7 +164,7 @@ def soft_delete_application_build(
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
     db: Session = Depends(get_db),
 ) -> Response:
-    """Soft-delete an application build by moving its assets into the trash bucket."""
+    """Permanently delete an application build from storage."""
 
     admin_id = _require_admin(credentials, db)
 
@@ -202,25 +202,22 @@ def soft_delete_application_build(
     client = get_minio_client(settings)
 
     try:
-        report = move_prefix_to_trash(
+        report = delete_prefix_directly(
             client=client,
-            source_bucket=settings.minio_apps_bucket,
+            bucket=settings.minio_apps_bucket,
             prefix=prefix,
-            trash_bucket=settings.minio_trash_bucket,
         )
-    except RelocationError as exc:
+    except DirectDeletionError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Failed to relocate application build",
+            detail="Failed to delete application build",
         ) from exc
 
     logger.info(
-        "User %s soft-deleted app build prefix '%s'; moved %s objects to %s/%s",
+        "User %s permanently deleted app build prefix '%s'; %d objects removed",
         admin_id,
-        report.source_prefix,
-        report.objects_moved,
-        report.destination_bucket,
-        report.destination_prefix,
+        prefix,
+        report.objects_removed,
     )
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
