@@ -336,7 +336,7 @@ def create_bundle_endpoint(
             apps_bucket=settings.minio_apps_bucket,
             publishers_bucket=settings.minio_publishers_bucket,
             platform=payload.platform,
-            publisher_name=publisher.name,
+            publisher_id=publisher.id,
             book_name=book.book_name,
             force=payload.force,
         )
@@ -491,7 +491,7 @@ async def create_bundle_async_endpoint(
             job_id=job_id,
             platform=payload.platform,
             book_id=payload.book_id,
-            publisher_name=publisher.name,
+            publisher_id=publisher.id,
             book_name=book.book_name,
             force=payload.force,
             _queue_name=f"{settings.queue_name}:normal",
