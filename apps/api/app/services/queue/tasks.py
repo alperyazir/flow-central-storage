@@ -1959,17 +1959,17 @@ async def create_bundle_task(
                 zf.extractall(extract_dir)
             await update_progress(25, "Template extracted")
 
-            # 3. Find the root app folder
-            root_items = os.listdir(extract_dir)
+            # 3. Find the app folder containing 'data' directory (may be nested)
             app_root = extract_dir
             app_folder_name = None
 
-            for item in root_items:
-                item_path = os.path.join(extract_dir, item)
-                if os.path.isdir(item_path):
-                    if os.path.isdir(os.path.join(item_path, "data")):
-                        app_root = item_path
-                        app_folder_name = item
+            for dirpath, dirnames, _files in os.walk(extract_dir):
+                if "data" in dirnames:
+                    data_candidate = os.path.join(dirpath, "data")
+                    if os.path.isdir(data_candidate):
+                        app_root = dirpath
+                        app_folder_name = os.path.basename(dirpath)
+                        extract_dir = os.path.dirname(dirpath)
                         break
 
             # 4. Create book directory
