@@ -423,11 +423,18 @@ def create_bundle(
 
             logger.info("Downloaded %d assets in parallel for book %s/%s", asset_count, publisher_id, book_name)
 
-            # 6. Create bundle zip (ZIP_STORED — assets already compressed)
+            # 6. Rename app folder to include book name and create ZIP
             if app_folder_name:
                 bundle_name = f"{app_folder_name} - {book_name}"
             else:
                 bundle_name = f"({normalized_platform}) FlowBook - {book_name}"
+
+            # Rename the app folder so ZIP root matches bundle name
+            if app_folder_name and app_folder_name != bundle_name:
+                old_path = os.path.join(extract_dir, app_folder_name)
+                new_path = os.path.join(extract_dir, bundle_name)
+                os.rename(old_path, new_path)
+
             bundle_path = os.path.join(temp_dir, f"{bundle_name}.zip")
 
             with zipfile.ZipFile(bundle_path, "w", zipfile.ZIP_STORED) as zf:
