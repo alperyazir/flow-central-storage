@@ -352,6 +352,41 @@ async def list_teacher_materials(
     return tree
 
 
+@router.get("/{teacher_id}/materials/presigned")
+async def get_teacher_material_presigned_url(
+    teacher_id: str,
+    path: str = Query(..., description="Filename of the material"),
+    expires: int = Query(
+        3600, ge=60, le=86400, description="URL expiry in seconds (default 1h, max 24h)"
+    ),
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+):
+    """Generate a presigned URL for direct browser access to a teacher material."""
+    _require_admin(credentials, db)
+    settings = get_settings()
+    object_key = _build_teacher_object_key(teacher_id, path)
+
+    client = get_minio_client(settings)
+    try:
+        client.stat_object(settings.minio_teachers_bucket, object_key)
+    except S3Error as exc:
+        if exc.code == "NoSuchKey":
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="File not found") from exc
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY, detail="Unable to verify object"
+        ) from exc
+
+    external_client = get_minio_client_external(settings)
+    presigned_url = external_client.presigned_get_object(
+        bucket_name=settings.minio_teachers_bucket,
+        object_name=object_key,
+        expires=timedelta(seconds=expires),
+    )
+
+    return {"url": presigned_url, "expires_in": expires}
+
+
 @router.get("/{teacher_id}/materials/{path:path}")
 async def download_teacher_material(
     teacher_id: str,
@@ -494,38 +529,3 @@ async def delete_teacher_material(
         "path": path,
         "objects_removed": report.objects_removed,
     }
-
-
-@router.get("/{teacher_id}/materials/presigned")
-async def get_teacher_material_presigned_url(
-    teacher_id: str,
-    path: str = Query(..., description="Filename of the material"),
-    expires: int = Query(
-        3600, ge=60, le=86400, description="URL expiry in seconds (default 1h, max 24h)"
-    ),
-    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
-    db: Session = Depends(get_db),
-):
-    """Generate a presigned URL for direct browser access to a teacher material."""
-    _require_admin(credentials, db)
-    settings = get_settings()
-    object_key = _build_teacher_object_key(teacher_id, path)
-
-    client = get_minio_client(settings)
-    try:
-        client.stat_object(settings.minio_teachers_bucket, object_key)
-    except S3Error as exc:
-        if exc.code == "NoSuchKey":
-            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="File not found") from exc
-        raise HTTPException(
-            status.HTTP_502_BAD_GATEWAY, detail="Unable to verify object"
-        ) from exc
-
-    external_client = get_minio_client_external(settings)
-    presigned_url = external_client.presigned_get_object(
-        bucket_name=settings.minio_teachers_bucket,
-        object_name=object_key,
-        expires=timedelta(seconds=expires),
-    )
-
-    return {"url": presigned_url, "expires_in": expires}
