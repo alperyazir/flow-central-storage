@@ -15,6 +15,8 @@ engine = create_engine(
     max_overflow=settings.db_max_overflow,
     pool_timeout=settings.db_pool_timeout,
     pool_recycle=settings.db_pool_recycle,
+    # Disable prepared statements for PgBouncer transaction pooling compatibility
+    connect_args={"prepare_threshold": 0},
 )
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
