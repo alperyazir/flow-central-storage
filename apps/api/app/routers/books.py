@@ -633,6 +633,147 @@ def get_delete_status(
     return progress
 
 
+def _run_book_processing(
+    job_id: str,
+    tmp_path: str,
+    book_name_from_zip: str,
+    override: bool,
+    override_pub_id: int | None,
+    override_pub_name: str | None,
+    cleanup_dir: str | None = None,
+) -> None:
+    """Background task: process a ZIP archive into MinIO + DB.
+
+    Used by both the regular async upload and the chunked upload endpoints.
+    ``cleanup_dir`` is an optional temp directory to remove after processing
+    (used by chunked uploads to clean up the chunk staging area).
+    """
+    import shutil
+    import time as _time
+
+    from app.services.cache import set_upload_progress
+
+    try:
+        logger.info("[UPLOAD:%s] Phase 2 started — processing temp file %s", job_id, tmp_path)
+        set_upload_progress(job_id, 45, "extracting", "Reading metadata...")
+
+        # Extract metadata
+        try:
+            create_payload = _extract_book_metadata(archive_path=tmp_path)
+        except UploadError as exc:
+            set_upload_progress(job_id, 0, "error", error=str(exc))
+            return
+
+        additional_metadata = _extract_additional_metadata(archive_path=tmp_path)
+
+        book_data = create_payload.model_dump()
+        book_data["book_name"] = book_name_from_zip
+        book_data.update(additional_metadata)
+
+        for field in ("publisher", "book_name", "book_title", "language", "category"):
+            value = book_data.get(field)
+            if isinstance(value, str):
+                book_data[field] = value.strip()
+
+        set_upload_progress(job_id, 50, "resolving", "Resolving publisher...")
+
+        # Resolve publisher
+        session = SessionLocal()
+        try:
+            if override_pub_id is not None:
+                book_data["publisher"] = override_pub_name
+                pub_id = override_pub_id
+            else:
+                publisher_name = book_data.get("publisher", "")
+                pub = _publisher_repository.get_or_create_by_name(session, publisher_name)
+                pub_id = pub.id
+                session.commit()
+
+            settings = get_settings()
+            client = get_minio_client(settings)
+            object_prefix = f"{pub_id}/books/{book_data['book_name']}/"
+
+            # Check conflict
+            prefix_exists = _prefix_exists(client, settings.minio_publishers_bucket, object_prefix)
+            if prefix_exists and not override:
+                set_upload_progress(
+                    job_id, 0, "error", error=f"Book '{book_data['book_name']}' already exists. Use override=true."
+                )
+                return
+
+            if prefix_exists and override:
+                set_upload_progress(job_id, 52, "clearing", "Removing existing files...")
+                objects = list(
+                    client.list_objects(settings.minio_publishers_bucket, prefix=object_prefix, recursive=True)
+                )
+                for obj in objects:
+                    client.remove_object(settings.minio_publishers_bucket, obj.object_name)
+
+            logger.info("[UPLOAD:%s] Starting S3 upload — prefix: %s", job_id, object_prefix)
+            _upload_start = _time.time()
+            set_upload_progress(job_id, 55, "uploading", "Uploading files to storage...")
+
+            # Upload with progress callback
+            def on_file_progress(uploaded: int, total: int):
+                pct = 55 + int((uploaded / max(total, 1)) * 40)  # 55-95%
+                set_upload_progress(job_id, pct, "uploading", f"{uploaded}/{total} files")
+
+            manifest = upload_book_archive(
+                client=client,
+                archive_path=tmp_path,
+                bucket=settings.minio_publishers_bucket,
+                object_prefix=object_prefix,
+                content_type="application/octet-stream",
+                strip_root_folder=True,
+                on_progress=on_file_progress,
+            )
+
+            _upload_elapsed = _time.time() - _upload_start
+            logger.info("[UPLOAD:%s] S3 upload complete — %d files in %.1fs", job_id, len(manifest), _upload_elapsed)
+            set_upload_progress(job_id, 96, "saving", "Creating database record...")
+
+            # DB operations
+            book_data.pop("publisher", None)
+            book_data["publisher_id"] = pub_id
+            if book_data.get("status") is None or book_data["status"] == BookStatusEnum.DRAFT:
+                book_data["status"] = BookStatusEnum.PUBLISHED
+
+            existing_book = _book_repository.get_by_publisher_id_and_name(
+                session, publisher_id=pub_id, book_name=book_data["book_name"]
+            )
+            if existing_book:
+                book = _book_repository.update(session, existing_book, data=book_data)
+            else:
+                book = _book_repository.create(session, data=book_data)
+            session.commit()
+
+            _invalidate_book_cache()
+
+            logger.info("[UPLOAD:%s] DB record saved — book_id=%d", job_id, book.id)
+            set_upload_progress(job_id, 100, "completed", f"{len(manifest)} files uploaded", book_id=book.id)
+
+            # Trigger webhook for book creation/update
+            event_type = WebhookEventType.BOOK_UPDATED if existing_book else WebhookEventType.BOOK_CREATED
+            logger.info(f"[UPLOAD:{job_id}] Triggering {event_type.value} webhook for book_id={book.id}")
+            _trigger_webhook(book.id, event_type)
+
+        finally:
+            session.close()
+
+    except Exception as exc:
+        logger.error("[UPLOAD:%s] FAILED: %s", job_id, exc, exc_info=True)
+        from app.services.cache import set_upload_progress as _set_progress
+
+        _set_progress(job_id, 0, "error", error=str(exc))
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        if cleanup_dir:
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
+
+
 @router.post("/upload-async", status_code=status.HTTP_202_ACCEPTED)
 async def upload_new_book_async(
     file: UploadFile,
@@ -646,7 +787,6 @@ async def upload_new_book_async(
 
     Returns a job_id immediately. Poll /books/upload-status/{job_id} for progress.
     """
-    import os
     import tempfile
     import uuid
 
@@ -686,128 +826,250 @@ async def upload_new_book_async(
         override_pub_name = resolved_publisher.name
     db.commit()
 
-    # Run the rest in background
-    def _process_upload():
-        import time as _time
-        from app.db.session import SessionLocal
+    background_tasks.add_task(
+        _run_book_processing,
+        job_id=job_id,
+        tmp_path=tmp_path,
+        book_name_from_zip=book_name_from_zip,
+        override=override,
+        override_pub_id=override_pub_id,
+        override_pub_name=override_pub_name,
+    )
 
-        try:
-            logger.info("[UPLOAD:%s] Phase 2 started — processing temp file %s (%dMB)", job_id, tmp_path, total_bytes // 1024 // 1024)
-            set_upload_progress(job_id, 45, "extracting", "Reading metadata...")
+    return {"job_id": job_id, "status": "accepted"}
 
-            # Extract metadata
-            try:
-                create_payload = _extract_book_metadata(archive_path=tmp_path)
-            except UploadError as exc:
-                set_upload_progress(job_id, 0, "error", error=str(exc))
-                return
 
-            additional_metadata = _extract_additional_metadata(archive_path=tmp_path)
+# ---------------------------------------------------------------------------
+# Chunked upload endpoints (bypass Cloudflare 100MB limit)
+# ---------------------------------------------------------------------------
 
-            book_data = create_payload.model_dump()
-            book_data["book_name"] = book_name_from_zip
-            book_data.update(additional_metadata)
+_MAX_CHUNK_SIZE = 50 * 1024 * 1024  # 50 MB
+_MAX_TOTAL_SIZE = 5 * 1024 * 1024 * 1024  # 5 GB
 
-            for field in ("publisher", "book_name", "book_title", "language", "category"):
-                value = book_data.get(field)
-                if isinstance(value, str):
-                    book_data[field] = value.strip()
 
-            set_upload_progress(job_id, 50, "resolving", "Resolving publisher...")
+class ChunkedUploadInit(BaseModel):
+    filename: str
+    total_size: int = Field(..., gt=0, le=_MAX_TOTAL_SIZE)
+    chunk_size: int = Field(..., gt=0, le=_MAX_CHUNK_SIZE)
+    total_chunks: int = Field(..., gt=0)
+    publisher_id: int | None = None
+    override: bool = False
 
-            # Resolve publisher
-            session = SessionLocal()
-            try:
-                if override_pub_id is not None:
-                    book_data["publisher"] = override_pub_name
-                    pub_id = override_pub_id
-                else:
-                    publisher_name = book_data.get("publisher", "")
-                    pub = _publisher_repository.get_or_create_by_name(session, publisher_name)
-                    pub_id = pub.id
-                    session.commit()
 
-                settings = get_settings()
-                client = get_minio_client(settings)
-                object_prefix = f"{pub_id}/books/{book_data['book_name']}/"
+@router.post("/chunked-upload/init")
+async def chunked_upload_init(
+    body: ChunkedUploadInit,
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+):
+    """Start a chunked upload session. Returns an upload_id."""
+    import math
+    import tempfile
+    import uuid
 
-                # Check conflict
-                prefix_exists = _prefix_exists(client, settings.minio_publishers_bucket, object_prefix)
-                if prefix_exists and not override:
-                    set_upload_progress(
-                        job_id, 0, "error", error=f"Book '{book_data['book_name']}' already exists. Use override=true."
-                    )
-                    return
+    from app.services.cache import set_chunked_session
 
-                if prefix_exists and override:
-                    set_upload_progress(job_id, 52, "clearing", "Removing existing files...")
-                    objects = list(
-                        client.list_objects(settings.minio_publishers_bucket, prefix=object_prefix, recursive=True)
-                    )
-                    for obj in objects:
-                        client.remove_object(settings.minio_publishers_bucket, obj.object_name)
+    _require_admin(credentials, db)
 
-                logger.info("[UPLOAD:%s] Starting S3 upload — prefix: %s", job_id, object_prefix)
-                _upload_start = _time.time()
-                set_upload_progress(job_id, 55, "uploading", "Uploading files to storage...")
+    if not body.filename.lower().endswith(".zip"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="File must be a ZIP archive")
 
-                # Upload with progress callback
-                def on_file_progress(uploaded: int, total: int):
-                    pct = 55 + int((uploaded / max(total, 1)) * 40)  # 55-95%
-                    set_upload_progress(job_id, pct, "uploading", f"{uploaded}/{total} files")
+    expected_chunks = math.ceil(body.total_size / body.chunk_size)
+    if body.total_chunks != expected_chunks:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail=f"total_chunks must be {expected_chunks} for the given size/chunk_size",
+        )
 
-                manifest = upload_book_archive(
-                    client=client,
-                    archive_path=tmp_path,
-                    bucket=settings.minio_publishers_bucket,
-                    object_prefix=object_prefix,
-                    content_type="application/octet-stream",
-                    strip_root_folder=True,
-                    on_progress=on_file_progress,
-                )
+    # Resolve publisher early so we can fail fast
+    override_pub_id: int | None = None
+    override_pub_name: str | None = None
+    if body.publisher_id is not None:
+        resolved = _publisher_repository.get(db, body.publisher_id)
+        if resolved is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"Publisher {body.publisher_id} not found")
+        override_pub_id = resolved.id
+        override_pub_name = resolved.name
 
-                _upload_elapsed = _time.time() - _upload_start
-                logger.info("[UPLOAD:%s] S3 upload complete — %d files in %.1fs", job_id, len(manifest), _upload_elapsed)
-                set_upload_progress(job_id, 96, "saving", "Creating database record...")
+    upload_id = str(uuid.uuid4())
+    temp_dir = tempfile.mkdtemp(prefix=f"chunked_{upload_id[:8]}_")
 
-                # DB operations
-                book_data.pop("publisher", None)
-                book_data["publisher_id"] = pub_id
-                if book_data.get("status") is None or book_data["status"] == BookStatusEnum.DRAFT:
-                    book_data["status"] = BookStatusEnum.PUBLISHED
+    session_data = {
+        "filename": body.filename,
+        "total_size": body.total_size,
+        "chunk_size": body.chunk_size,
+        "total_chunks": body.total_chunks,
+        "temp_dir": temp_dir,
+        "override": body.override,
+        "override_pub_id": override_pub_id,
+        "override_pub_name": override_pub_name,
+        "status": "uploading",
+    }
+    set_chunked_session(upload_id, session_data)
 
-                existing_book = _book_repository.get_by_publisher_id_and_name(
-                    session, publisher_id=pub_id, book_name=book_data["book_name"]
-                )
-                if existing_book:
-                    book = _book_repository.update(session, existing_book, data=book_data)
-                else:
-                    book = _book_repository.create(session, data=book_data)
-                session.commit()
+    return {"upload_id": upload_id}
 
-                _invalidate_book_cache()
 
-                logger.info("[UPLOAD:%s] DB record saved — book_id=%d", job_id, book.id)
-                set_upload_progress(job_id, 100, "completed", f"{len(manifest)} files uploaded", book_id=book.id)
+@router.post("/chunked-upload/{upload_id}/chunk")
+async def chunked_upload_chunk(
+    upload_id: str,
+    chunk_index: int = Query(..., ge=0),
+    chunk: UploadFile = ...,
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+):
+    """Upload a single chunk. Idempotent — re-uploading the same index overwrites it."""
+    from app.services.cache import add_received_chunk, get_chunked_session
 
-                # Trigger webhook for book creation/update
-                event_type = WebhookEventType.BOOK_UPDATED if existing_book else WebhookEventType.BOOK_CREATED
-                logger.info(f"[UPLOAD:{job_id}] Triggering {event_type.value} webhook for book_id={book.id}")
-                _trigger_webhook(book.id, event_type)
+    _require_admin(credentials, db)
 
-            finally:
-                session.close()
+    session_data = get_chunked_session(upload_id)
+    if session_data is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Upload session not found or expired")
 
-        except Exception as exc:
-            logger.error("[UPLOAD:%s] FAILED: %s", job_id, exc, exc_info=True)
-            set_upload_progress(job_id, 0, "error", error=str(exc))
-        finally:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+    if session_data.get("status") != "uploading":
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="Upload session is no longer accepting chunks")
 
-    background_tasks.add_task(_process_upload)
+    total_chunks = session_data["total_chunks"]
+    if chunk_index >= total_chunks:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"chunk_index must be < {total_chunks}")
+
+    temp_dir = session_data["temp_dir"]
+    chunk_path = os.path.join(temp_dir, f"chunk_{chunk_index:06d}")
+
+    # Stream chunk to disk in 1MB pieces
+    written = 0
+    with open(chunk_path, "wb") as f:
+        while data := await chunk.read(1024 * 1024):
+            f.write(data)
+            written += len(data)
+
+    # Validate chunk size
+    chunk_size = session_data["chunk_size"]
+    is_last = chunk_index == total_chunks - 1
+    if is_last:
+        expected = session_data["total_size"] - chunk_size * (total_chunks - 1)
+    else:
+        expected = chunk_size
+
+    if written != expected:
+        os.unlink(chunk_path)
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail=f"Chunk {chunk_index} size mismatch: got {written}, expected {expected}",
+        )
+
+    received = add_received_chunk(upload_id, chunk_index)
+    return {"chunk_index": chunk_index, "received": received, "total_chunks": total_chunks}
+
+
+@router.get("/chunked-upload/{upload_id}/status")
+async def chunked_upload_status(
+    upload_id: str,
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+):
+    """Check which chunks have been received (useful for resume)."""
+    from app.services.cache import get_chunked_session, get_received_chunks
+
+    _require_admin(credentials, db)
+
+    session_data = get_chunked_session(upload_id)
+    if session_data is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Upload session not found or expired")
+
+    received = get_received_chunks(upload_id)
+    return {
+        "upload_id": upload_id,
+        "status": session_data.get("status", "uploading"),
+        "received_chunks": sorted(received),
+        "total_chunks": session_data["total_chunks"],
+    }
+
+
+@router.post("/chunked-upload/{upload_id}/complete", status_code=status.HTTP_202_ACCEPTED)
+async def chunked_upload_complete(
+    upload_id: str,
+    background_tasks: BackgroundTasks,
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+):
+    """Reassemble chunks and trigger processing. Returns a job_id for progress polling."""
+    import uuid
+    import zipfile
+
+    from app.services.cache import (
+        count_received_chunks,
+        delete_chunked_session,
+        get_chunked_session,
+        set_chunked_session,
+        set_upload_progress,
+    )
+
+    _require_admin(credentials, db)
+
+    session_data = get_chunked_session(upload_id)
+    if session_data is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Upload session not found or expired")
+
+    if session_data.get("status") != "uploading":
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="Upload session is not in uploading state")
+
+    total_chunks = session_data["total_chunks"]
+    received = count_received_chunks(upload_id)
+    if received < total_chunks:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail=f"Missing chunks: received {received}/{total_chunks}",
+        )
+
+    # Mark session as assembling so no more chunks are accepted
+    session_data["status"] = "assembling"
+    set_chunked_session(upload_id, session_data)
+
+    temp_dir = session_data["temp_dir"]
+    final_path = os.path.join(temp_dir, "final.zip")
+    job_id = str(uuid.uuid4())
+
+    set_upload_progress(job_id, 5, "assembling", "Reassembling chunks...")
+
+    # Reassemble chunks into a single file
+    with open(final_path, "wb") as out:
+        for i in range(total_chunks):
+            chunk_path = os.path.join(temp_dir, f"chunk_{i:06d}")
+            with open(chunk_path, "rb") as inp:
+                while block := inp.read(1024 * 1024):
+                    out.write(block)
+            os.unlink(chunk_path)
+
+    # Validate ZIP
+    if not zipfile.is_zipfile(final_path):
+        import shutil
+
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        delete_chunked_session(upload_id)
+        set_upload_progress(job_id, 0, "error", error="Reassembled file is not a valid ZIP archive")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Reassembled file is not a valid ZIP archive")
+
+    set_upload_progress(job_id, 40, "received", f"File assembled ({session_data['total_size'] // 1024 // 1024}MB)")
+
+    book_name_from_zip = session_data["filename"]
+    if book_name_from_zip.lower().endswith(".zip"):
+        book_name_from_zip = book_name_from_zip[:-4]
+
+    # Clean up Redis session (temp dir cleaned by _run_book_processing)
+    delete_chunked_session(upload_id)
+
+    background_tasks.add_task(
+        _run_book_processing,
+        job_id=job_id,
+        tmp_path=final_path,
+        book_name_from_zip=book_name_from_zip,
+        override=session_data.get("override", False),
+        override_pub_id=session_data.get("override_pub_id"),
+        override_pub_name=session_data.get("override_pub_name"),
+        cleanup_dir=temp_dir,
+    )
 
     return {"job_id": job_id, "status": "accepted"}
 

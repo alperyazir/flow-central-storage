@@ -27,7 +27,7 @@ import {
   type Publisher,
 } from 'lib/publishers';
 import {
-  uploadNewBookWithProgress,
+  uploadNewBookChunked,
 } from 'lib/uploads';
 import { ApiError } from 'lib/api';
 import { useOperationsStore } from 'stores/operations';
@@ -229,7 +229,7 @@ export function PublisherUploadDialog({
         updateOperation(opId, { status: 'in_progress', progress: 0, detail: 'Uploading...' });
 
         try {
-          const { promise } = uploadNewBookWithProgress(
+          const { promise } = uploadNewBookChunked(
             file,
             token,
             tt,

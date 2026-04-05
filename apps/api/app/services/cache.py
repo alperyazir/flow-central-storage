@@ -150,3 +150,69 @@ def delete_deletion_progress(job_id: str) -> None:
         _get_sync_redis().delete(f"fcs:deletion:{job_id}")
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Chunked upload session tracking
+# ---------------------------------------------------------------------------
+
+_CHUNKED_UPLOAD_TTL = 7200  # 2 hours
+
+
+def set_chunked_session(upload_id: str, data: dict) -> None:
+    """Store a chunked upload session in Redis."""
+    try:
+        r = _get_sync_redis()
+        r.setex(f"fcs:chunked:{upload_id}", _CHUNKED_UPLOAD_TTL, json.dumps(data, default=str))
+    except Exception:
+        pass
+
+
+def get_chunked_session(upload_id: str) -> dict | None:
+    """Read a chunked upload session from Redis."""
+    try:
+        r = _get_sync_redis()
+        data = r.get(f"fcs:chunked:{upload_id}")
+        return json.loads(data) if data else None
+    except Exception:
+        return None
+
+
+def delete_chunked_session(upload_id: str) -> None:
+    """Remove a chunked upload session and its chunk set."""
+    try:
+        r = _get_sync_redis()
+        r.delete(f"fcs:chunked:{upload_id}", f"fcs:chunked:{upload_id}:chunks")
+    except Exception:
+        pass
+
+
+def add_received_chunk(upload_id: str, chunk_index: int) -> int:
+    """Record a received chunk index. Returns the new count of received chunks."""
+    try:
+        r = _get_sync_redis()
+        r.sadd(f"fcs:chunked:{upload_id}:chunks", chunk_index)
+        r.expire(f"fcs:chunked:{upload_id}", _CHUNKED_UPLOAD_TTL)
+        r.expire(f"fcs:chunked:{upload_id}:chunks", _CHUNKED_UPLOAD_TTL)
+        return r.scard(f"fcs:chunked:{upload_id}:chunks")
+    except Exception:
+        return 0
+
+
+def get_received_chunks(upload_id: str) -> set[int]:
+    """Return the set of chunk indices received so far."""
+    try:
+        r = _get_sync_redis()
+        members = r.smembers(f"fcs:chunked:{upload_id}:chunks")
+        return {int(m) for m in members} if members else set()
+    except Exception:
+        return set()
+
+
+def count_received_chunks(upload_id: str) -> int:
+    """Return the number of chunks received so far."""
+    try:
+        r = _get_sync_redis()
+        return r.scard(f"fcs:chunked:{upload_id}:chunks")
+    except Exception:
+        return 0
