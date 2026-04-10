@@ -111,7 +111,7 @@ def _detect_root_folder(archive: zipfile.ZipFile) -> str | None:
         if "/__MACOSX/" in normalized_path or normalized_path.startswith("__MACOSX/"):
             continue
         basename = os.path.basename(normalized_path)
-        if basename == ".DS_Store" or basename.lower() == "desktop.ini":
+        if basename == ".DS_Store" or basename.lower() in ("desktop.ini", ".keep", ".gitkeep"):
             continue
         if basename.startswith("._"):
             continue
@@ -153,9 +153,9 @@ def iter_zip_entries(archive: zipfile.ZipFile, strip_root: str | None = None) ->
         if "/__MACOSX/" in normalized_path or normalized_path.startswith("__MACOSX/"):
             continue
 
-        # Skip .DS_Store and desktop.ini metadata files
+        # Skip OS metadata and placeholder files
         basename = os.path.basename(normalized_path)
-        if basename == ".DS_Store" or basename.lower() == "desktop.ini":
+        if basename == ".DS_Store" or basename.lower() in ("desktop.ini", ".keep", ".gitkeep"):
             continue
 
         # Skip macOS resource fork files (._*)
