@@ -110,9 +110,12 @@ def _detect_root_folder(archive: zipfile.ZipFile) -> str | None:
         # Skip macOS metadata
         if "/__MACOSX/" in normalized_path or normalized_path.startswith("__MACOSX/"):
             continue
-        if os.path.basename(normalized_path) == ".DS_Store":
+        basename = os.path.basename(normalized_path)
+        if basename == ".DS_Store" or basename.lower() == "desktop.ini":
             continue
-        if os.path.basename(normalized_path).startswith("._"):
+        if basename.startswith("._"):
+            continue
+        if basename.lower().endswith(".bak"):
             continue
 
         # Get root folder
@@ -150,16 +153,17 @@ def iter_zip_entries(archive: zipfile.ZipFile, strip_root: str | None = None) ->
         if "/__MACOSX/" in normalized_path or normalized_path.startswith("__MACOSX/"):
             continue
 
-        # Skip .DS_Store files (macOS folder metadata)
-        if os.path.basename(normalized_path) == ".DS_Store":
+        # Skip .DS_Store and desktop.ini metadata files
+        basename = os.path.basename(normalized_path)
+        if basename == ".DS_Store" or basename.lower() == "desktop.ini":
             continue
 
         # Skip macOS resource fork files (._*)
-        if os.path.basename(normalized_path).startswith("._"):
+        if basename.startswith("._"):
             continue
 
         # Skip backup and temporary files
-        basename_lower = os.path.basename(normalized_path).lower()
+        basename_lower = basename.lower()
         if basename_lower.endswith((".fbinf", ".bak", ".tmp")):
             logger.debug("Skipping backup/temp file: %s", entry.filename)
             continue
