@@ -21,6 +21,7 @@ import { Label } from 'components/ui/label';
 import { Alert, AlertDescription } from 'components/ui/alert';
 import { Progress } from 'components/ui/progress';
 import { Badge } from 'components/ui/badge';
+import { Checkbox } from 'components/ui/checkbox';
 import {
   fetchPublishers,
   uploadPublisherAsset,
@@ -161,6 +162,7 @@ export function PublisherUploadDialog({
   const [publishers, setPublishers] = useState<Publisher[]>([]);
   const [loadingPubs, setLoadingPubs] = useState(false);
   const [fileError, setFileError] = useState('');
+  const [overrideExisting, setOverrideExisting] = useState(false);
 
   useEffect(() => {
     if (open && token) {
@@ -176,6 +178,7 @@ export function PublisherUploadDialog({
     if (!open) {
       dispatch({ type: 'RESET', initialPublisherId });
       setFileError('');
+      setOverrideExisting(false);
     }
   }, [open, initialPublisherId]);
 
@@ -241,7 +244,7 @@ export function PublisherUploadDialog({
                 error: p.error || undefined,
               });
             },
-            { publisherId: state.publisherId! },
+            { publisherId: state.publisherId!, override: overrideExisting },
             apiBase
           );
           await promise;
@@ -471,6 +474,18 @@ export function PublisherUploadDialog({
               )}
               {fileError && (
                 <p className="text-xs text-destructive">{fileError}</p>
+              )}
+              {effectiveType === 'books' && (
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="override"
+                    checked={overrideExisting}
+                    onCheckedChange={(v) => setOverrideExisting(v === true)}
+                  />
+                  <Label htmlFor="override" className="text-sm font-normal">
+                    Override if book already exists
+                  </Label>
+                </div>
               )}
             </div>
           )}
