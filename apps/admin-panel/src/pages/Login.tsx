@@ -1,6 +1,6 @@
 import { useState, FormEvent, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Loader2, AlertCircle, BookOpenCheck } from 'lucide-react';
+import { Loader2, AlertCircle } from 'lucide-react';
 
 import { Button } from 'components/ui/button';
 import {
@@ -53,10 +53,9 @@ const LoginPage = () => {
     <div className="flex min-h-screen items-center justify-center bg-muted p-4">
       <Card className="w-full max-w-sm">
         <CardHeader className="text-center">
-          <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-            <BookOpenCheck className="h-6 w-6" />
+          <div className="mx-auto mb-4 flex justify-center">
+            <img src="/logo.svg" alt="Flow Central Storage" className="h-8" />
           </div>
-          <CardTitle className="text-2xl">Flow Central Storage</CardTitle>
           <CardDescription>Sign in to your account</CardDescription>
         </CardHeader>
         <CardContent>

@@ -14,7 +14,6 @@ import {
   LogOut,
   ChevronsUpDown,
   User,
-  BookOpenCheck,
 } from 'lucide-react';
 
 import {
@@ -80,12 +79,7 @@ export function AppSidebar() {
           to="/dashboard"
           className="flex items-center gap-2 text-sidebar-foreground hover:text-sidebar-foreground/80 transition-colors"
         >
-          <BookOpenCheck className="h-6 w-6 shrink-0 text-primary" />
-          {!isCollapsed && (
-            <span className="text-base font-semibold truncate">
-              Flow Central Storage
-            </span>
-          )}
+          <img src="/logo.svg" alt="Flow Central Storage" className="h-6" />
         </Link>
       </SidebarHeader>
 

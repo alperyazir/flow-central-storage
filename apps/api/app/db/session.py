@@ -16,7 +16,8 @@ engine = create_engine(
     pool_timeout=settings.db_pool_timeout,
     pool_recycle=settings.db_pool_recycle,
     # Disable prepared statements for PgBouncer transaction pooling compatibility
-    connect_args={"prepare_threshold": 0},
+    # None = never prepare; 0 would mean "prepare immediately" (the opposite!)
+    connect_args={"prepare_threshold": None},
 )
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
