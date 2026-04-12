@@ -6,7 +6,7 @@ import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
@@ -290,51 +290,10 @@ def download_template(
     }
 
 
-def _run_bundle_creation(
-    job_id: str,
-    platform: str,
-    publisher_id: int,
-    book_name: str,
-    force: bool,
-) -> None:
-    """Background task: create bundle with progress tracking."""
-    from app.services.cache import set_upload_progress
-
-    try:
-        settings = get_settings()
-        client = get_minio_client(settings)
-        external_client = get_minio_client_external(settings)
-
-        def on_progress(pct: int, step: str, detail: str = "") -> None:
-            set_upload_progress(job_id, pct, step, detail=detail)
-
-        download_url, file_name, file_size, expires_at = create_bundle(
-            client=client,
-            external_client=external_client,
-            apps_bucket=settings.minio_apps_bucket,
-            publishers_bucket=settings.minio_publishers_bucket,
-            platform=platform,
-            publisher_id=publisher_id,
-            book_name=book_name,
-            force=force,
-            on_progress=on_progress,
-        )
-
-        set_upload_progress(
-            job_id, 100, "completed",
-            detail=f"{file_name} ({file_size // 1024 // 1024}MB)",
-            download_url=download_url,
-        )
-
-    except Exception as exc:
-        logger.error("[BUNDLE:%s] FAILED: %s", job_id, exc, exc_info=True)
-        set_upload_progress(job_id, 0, "error", error=str(exc))
-
 
 @router.post("/bundle")
-def create_bundle_endpoint(
+async def create_bundle_endpoint(
     payload: BundleRequest,
-    background_tasks: BackgroundTasks,
     response: Response,
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
     db: Session = Depends(get_db),
@@ -342,7 +301,7 @@ def create_bundle_endpoint(
     """Create a bundled standalone app.
 
     If bundle already exists and force=False, returns 200 with download_url immediately.
-    Otherwise returns 202 with job_id for tracking progress via /bundle-status/{job_id}.
+    Otherwise queues a worker job and returns 202 with job_id for tracking via /bundle-status/{job_id}.
     """
     _require_api_key_or_admin(credentials, db)
 
@@ -360,12 +319,12 @@ def create_bundle_endpoint(
             detail=f"Publisher for book ID {payload.book_id} not found",
         )
 
+    settings = get_settings()
+    client = get_minio_client(settings)
+    external_client = get_minio_client_external(settings)
+
     # Check for existing bundle — return immediately if found
     if not payload.force:
-        settings = get_settings()
-        client = get_minio_client(settings)
-        external_client = get_minio_client_external(settings)
-
         normalized_platform = payload.platform.lower()
         bundle_prefix = f"bundles/{publisher.id}/{book.book_name}/"
         try:
@@ -389,55 +348,155 @@ def create_bundle_endpoint(
         except Exception as exc:
             logger.warning("Failed to check existing bundle: %s", exc)
 
+    # Verify template exists before queuing
+    if not template_exists(client, settings.minio_apps_bucket, payload.platform):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Template for platform '{payload.platform}' not found",
+        )
+
+    # Queue bundle creation on worker (not API BackgroundTask)
     job_id = str(uuid.uuid4())
 
-    from app.services.cache import set_upload_progress
-    set_upload_progress(job_id, 0, "queued", detail="Bundle creation queued...")
+    try:
+        from arq import create_pool
+        from arq.connections import RedisSettings
 
-    background_tasks.add_task(
-        _run_bundle_creation,
-        job_id=job_id,
-        platform=payload.platform,
-        publisher_id=publisher.id,
-        book_name=book.book_name,
-        force=payload.force,
-    )
+        from app.services.queue.models import JobPriority, ProcessingJob, ProcessingJobType
+        from app.services.queue.redis import get_redis_connection
+        from app.services.queue.repository import JobRepository
+
+        redis_conn = await get_redis_connection(url=settings.redis_url)
+        repository = JobRepository(
+            redis_client=redis_conn.client,
+            job_ttl_seconds=settings.queue_job_ttl_seconds,
+        )
+
+        job = ProcessingJob(
+            job_id=job_id,
+            book_id=str(payload.book_id),
+            publisher_id=publisher.name,
+            job_type=ProcessingJobType.BUNDLE,
+            priority=JobPriority.NORMAL,
+            metadata={
+                "platform": payload.platform,
+                "book_name": book.book_name,
+                "force": payload.force,
+            },
+        )
+        await repository.create_job(job, check_duplicate=False)
+
+        redis_settings = RedisSettings.from_dsn(settings.redis_url)
+        pool = await create_pool(redis_settings)
+
+        await pool.enqueue_job(
+            "create_bundle_task",
+            job_id=job_id,
+            platform=payload.platform,
+            book_id=payload.book_id,
+            publisher_id=publisher.id,
+            book_name=book.book_name,
+            force=payload.force,
+            _queue_name=f"{settings.queue_name}:normal",
+        )
+
+        await pool.close()
+
+    except Exception as exc:
+        logger.error("Failed to queue bundle creation: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to queue bundle creation",
+        ) from exc
 
     response.status_code = status.HTTP_202_ACCEPTED
     return AsyncBundleResponse(
         job_id=job_id,
         status="queued",
-        message=f"Bundle creation started for {book.book_name} ({payload.platform})",
+        message=f"Bundle creation queued for {book.book_name} ({payload.platform})",
     )
 
 
 @router.get("/bundle-status/{job_id}", response_model=BundleJobResult)
-def get_bundle_status(
+async def get_bundle_status(
     job_id: str,
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
     db: Session = Depends(get_db),
 ) -> BundleJobResult:
-    """Get the status of an async bundle creation job."""
+    """Get the status of a bundle creation job.
+
+    Checks both legacy cache (fcs:upload:) and worker job repository (dcs:job:).
+    """
     _require_api_key_or_admin(credentials, db)
 
+    # Try legacy cache first (BackgroundTask-based)
     from app.services.cache import get_upload_progress
 
     progress = get_upload_progress(job_id)
-    if progress is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Bundle job not found or expired",
+    if progress is not None:
+        return BundleJobResult(
+            job_id=job_id,
+            status=progress.get("step", "unknown"),
+            progress=progress.get("progress", 0),
+            current_step=progress.get("detail", ""),
+            download_url=progress.get("download_url"),
+            error_message=progress.get("error"),
+            created_at=datetime.now(timezone.utc),
         )
 
-    return BundleJobResult(
-        job_id=job_id,
-        status=progress.get("step", "unknown"),
-        progress=progress.get("progress", 0),
-        current_step=progress.get("detail", ""),
-        download_url=progress.get("download_url"),
-        error_message=progress.get("error"),
-        created_at=datetime.now(timezone.utc),
-    )
+    # Try worker job repository
+    settings = get_settings()
+    try:
+        from arq import create_pool
+        from arq.connections import RedisSettings
+        from arq.jobs import Job
+
+        from app.services.queue.redis import get_redis_connection
+        from app.services.queue.repository import JobRepository
+
+        redis_conn = await get_redis_connection(url=settings.redis_url)
+        repository = JobRepository(
+            redis_client=redis_conn.client,
+            job_ttl_seconds=settings.queue_job_ttl_seconds,
+        )
+
+        job = await repository.get_job(job_id)
+
+        # Try to get download_url from arq result if completed
+        download_url = None
+        if job.status.value in ("completed", "failed"):
+            try:
+                redis_settings = RedisSettings.from_dsn(settings.redis_url)
+                pool = await create_pool(redis_settings)
+                arq_job = Job(job_id, pool)
+                result = await arq_job.result(timeout=1)
+                if result and isinstance(result, dict):
+                    download_url = result.get("download_url")
+                await pool.close()
+            except Exception:
+                pass
+
+        return BundleJobResult(
+            job_id=job.job_id,
+            status=job.status.value,
+            progress=job.progress,
+            current_step=job.current_step,
+            download_url=download_url,
+            error_message=job.error_message,
+            created_at=job.created_at,
+            completed_at=job.completed_at,
+        )
+
+    except Exception as exc:
+        if "not found" in str(exc).lower():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Bundle job not found or expired",
+            ) from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get job status",
+        ) from exc
 
 
 @router.get("/bundles", response_model=BundleListResponse)
