@@ -5,15 +5,22 @@ from __future__ import annotations
 import io
 import logging
 import os
+import json
 import re
+import unicodedata
 import zipfile
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Callable, Iterable
 
+from pathlib import Path
+
 from minio import Minio
 from minio.commonconfig import CopySource
 from minio.error import S3Error
+
+# Shared cache directory for book assets (visible to both API and worker containers)
+BOOK_CACHE_DIR = Path("/app/data/book_cache")
 
 
 class UploadError(Exception):
@@ -111,7 +118,7 @@ def _detect_root_folder(archive: zipfile.ZipFile) -> str | None:
         if "/__MACOSX/" in normalized_path or normalized_path.startswith("__MACOSX/"):
             continue
         basename = os.path.basename(normalized_path)
-        if basename == ".DS_Store" or basename.lower() in ("desktop.ini", ".keep", ".gitkeep"):
+        if basename == ".DS_Store" or basename.lower() in ("desktop.ini", ".keep", ".gitkeep", "settings.json"):
             continue
         if basename.startswith("._"):
             continue
@@ -155,7 +162,7 @@ def iter_zip_entries(archive: zipfile.ZipFile, strip_root: str | None = None) ->
 
         # Skip OS metadata and placeholder files
         basename = os.path.basename(normalized_path)
-        if basename == ".DS_Store" or basename.lower() in ("desktop.ini", ".keep", ".gitkeep"):
+        if basename == ".DS_Store" or basename.lower() in ("desktop.ini", ".keep", ".gitkeep", "settings.json"):
             continue
 
         # Skip macOS resource fork files (._*)
@@ -185,6 +192,135 @@ def iter_zip_entries(archive: zipfile.ZipFile, strip_root: str | None = None) ->
         yield entry, final_path
 
 
+_TR_MAP = str.maketrans("çğıöşüÇĞİÖŞÜ", "cgiosuCGIOSU")
+
+
+def normalize_book_name(name: str) -> str:
+    """Normalize a book folder name.
+
+    - Insert underscores at camelCase and number boundaries
+    - Turkish chars → ASCII, special chars → underscore
+    - Each word: first letter uppercase, rest lowercase
+    Examples:
+        BRAINS → Brains
+        Glory5Trio → Glory_5_Trio
+        Countdown 2 SB → Countdown_2_Sb
+        (a)Glory3PB → A_Glory_3_Pb
+    """
+    # Turkish chars → ASCII
+    s = name.translate(_TR_MAP)
+    # Remaining non-ASCII
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode()
+
+    # Insert underscore at boundaries:
+    # lowercase→uppercase: abC → ab_C
+    s = re.sub(r"([a-z])([A-Z])", r"\1_\2", s)
+    # letter→digit: abc5 → abc_5
+    s = re.sub(r"([a-zA-Z])(\d)", r"\1_\2", s)
+    # digit→letter: 5abc → 5_abc
+    s = re.sub(r"(\d)([a-zA-Z])", r"\1_\2", s)
+
+    # Replace spaces, hyphens, and other special chars with underscore
+    s = re.sub(r"[^\w]", "_", s)
+    # Collapse multiple underscores
+    s = re.sub(r"_+", "_", s).strip("_")
+
+    # Title case each part (first upper, rest lower)
+    parts = s.split("_")
+    parts = [p[0].upper() + p[1:].lower() if p else p for p in parts]
+
+    return "_".join(parts)
+
+
+def _normalize_part(part: str) -> str:
+    """Normalize a single path segment (file or directory name)."""
+    if not part:
+        return part
+
+    # Split name and extension (directories won't have meaningful extensions)
+    root, ext = os.path.splitext(part)
+
+    # Turkish characters → ASCII
+    root = root.translate(_TR_MAP)
+    ext = ext.translate(_TR_MAP)
+
+    # Remaining non-ASCII → closest ASCII via NFKD decomposition
+    root = unicodedata.normalize("NFKD", root).encode("ascii", "ignore").decode()
+    ext = unicodedata.normalize("NFKD", ext).encode("ascii", "ignore").decode()
+
+    # Spaces and special chars → underscore (keep - _ .)
+    root = re.sub(r"[^\w\-.]", "_", root)
+    # Collapse multiple underscores
+    root = re.sub(r"_+", "_", root).strip("_")
+
+    # Lowercase extension
+    ext = ext.lower()
+
+    return root + ext
+
+
+def _normalize_filename(name: str) -> str:
+    """Normalize full path: each directory and the filename are cleaned.
+
+    Turkish chars → ASCII, spaces/special chars → _, uppercase extensions → lowercase.
+    """
+    parts = name.split("/")
+    normalized_parts = [_normalize_part(p) for p in parts]
+    return "/".join(normalized_parts)
+
+
+def _build_rename_map(entries: list[tuple[zipfile.ZipInfo, str]]) -> dict[str, str]:
+    """Build old_path → new_path mapping for files that need renaming."""
+    rename_map: dict[str, str] = {}
+    for _entry, final_path in entries:
+        normalized = _normalize_filename(final_path)
+        if normalized != final_path:
+            rename_map[final_path] = normalized
+    return rename_map
+
+
+def _update_config_paths(config_bytes: bytes, rename_map: dict[str, str], book_name: str | None = None) -> bytes:
+    """Replace file references in config.json / games.json using the rename map.
+
+    Normalizes every path-like string value by applying _normalize_part
+    to each segment. The book folder segment (after ./books/) is replaced
+    with the normalized book_name if provided.
+    """
+    config_text = config_bytes.decode("utf-8")
+    config_data = json.loads(config_text)
+
+    # Path pattern: starts with ./ or contains / with a file extension
+    _path_re = re.compile(r"^\./|/.*\.\w+$")
+
+    def normalize_path_value(val: str) -> str:
+        """Normalize a config path like ./books/Countdown 2 SB/images/1.PNG"""
+        if not _path_re.search(val):
+            return val
+        parts = val.split("/")
+        normalized = []
+        for i, part in enumerate(parts):
+            if part in (".", "..") or not part:
+                normalized.append(part)
+            # Replace the book folder name (segment after "books")
+            elif book_name and i > 0 and normalized and normalized[-1] == "books":
+                normalized.append(book_name)
+            else:
+                normalized.append(_normalize_part(part))
+        return "/".join(normalized)
+
+    def replace_paths(obj):
+        if isinstance(obj, str):
+            return normalize_path_value(obj)
+        if isinstance(obj, dict):
+            return {k: replace_paths(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [replace_paths(item) for item in obj]
+        return obj
+
+    updated = replace_paths(config_data)
+    return json.dumps(updated, ensure_ascii=False, indent=4).encode("utf-8")
+
+
 def upload_book_archive(
     *,
     client: Minio,
@@ -195,6 +331,8 @@ def upload_book_archive(
     content_type: str | None = None,
     strip_root_folder: bool = True,
     on_progress: Callable[[int, int], None] | None = None,
+    book_name: str | None = None,
+    local_cache_dir: str | None = None,
 ) -> list[dict[str, object]]:
     """Upload a ZIP archive into S3 under the given prefix.
 
@@ -227,11 +365,29 @@ def upload_book_archive(
         entries = list(iter_zip_entries(archive, strip_root=root_to_strip))
         total_files = len(entries)
 
+        # Build rename map for filename normalization
+        rename_map = _build_rename_map(entries)
+        if rename_map:
+            logger.info("Normalizing %d filenames during upload", len(rename_map))
+
         manifest: list[dict[str, object]] = []
         for idx, (entry, final_path) in enumerate(entries):
-            file_path = f"{object_prefix}{final_path}"
+            # Normalize the filename
+            upload_path = rename_map.get(final_path, final_path)
+            file_path = f"{object_prefix}{upload_path}"
+
             with archive.open(entry) as file_obj:
                 data = file_obj.read()
+
+                # Update JSON file paths if files were renamed
+                lower_name = final_path.lower()
+                if lower_name.endswith("config.json") or lower_name.endswith("games.json"):
+                    try:
+                        data = _update_config_paths(data, rename_map, book_name=book_name)
+                        logger.info("Updated file references in %s", os.path.basename(final_path))
+                    except Exception as exc:
+                        logger.warning("Failed to update %s paths: %s", os.path.basename(final_path), exc)
+
                 stream = io.BytesIO(data)
                 client.put_object(
                     bucket,
@@ -240,6 +396,14 @@ def upload_book_archive(
                     length=len(data),
                     content_type=content_type or "application/octet-stream",
                 )
+
+                # Write to local cache alongside R2 upload
+                if local_cache_dir:
+                    cache_file = os.path.join(local_cache_dir, upload_path)
+                    os.makedirs(os.path.dirname(cache_file), exist_ok=True)
+                    with open(cache_file, "wb") as f:
+                        f.write(data)
+
                 del data
             manifest.append({"path": file_path, "size": entry.file_size})
             if on_progress:

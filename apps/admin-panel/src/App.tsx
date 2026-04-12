@@ -14,6 +14,7 @@ import LoginPage from './pages/Login';
 import SystemInfoPage from './pages/SystemInfo';
 import ProcessingPage from './pages/Processing';
 import ApiKeysPage from './pages/ApiKeys';
+import CalculatePage from './pages/Calculate';
 import TeacherDetailPage from './pages/TeacherDetail';
 import ProtectedRoute from './routes/ProtectedRoute';
 import { useAuthStore } from './stores/auth';
@@ -60,6 +61,7 @@ const App = () => {
           <Route path="teachers/:id" element={<TeacherDetailPage />} />
           <Route path="processing" element={<ProcessingPage />} />
           <Route path="api-keys" element={<ApiKeysPage />} />
+          <Route path="calculate" element={<CalculatePage />} />
           <Route path="system" element={<SystemInfoPage />} />
         </Route>
       </Route>

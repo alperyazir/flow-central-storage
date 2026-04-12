@@ -25,9 +25,10 @@ export interface AppUploadResponse {
   files: UploadManifestEntry[];
 }
 
-interface UploadOptions {
+export interface UploadOptions {
   override?: boolean;
   publisherId?: number;
+  autoBundle?: boolean;
 }
 
 const appendQueryParams = (
@@ -40,6 +41,9 @@ const appendQueryParams = (
   }
   if (options.publisherId !== undefined) {
     params.push(`publisher_id=${options.publisherId}`);
+  }
+  if (options.autoBundle === false) {
+    params.push('auto_bundle=false');
   }
   if (params.length === 0) return path;
   const separator = path.includes('?') ? '&' : '?';
@@ -152,6 +156,7 @@ export const uploadNewBookWithProgress = (
     if (options.override) params.push('override=true');
     if (options.publisherId !== undefined)
       params.push(`publisher_id=${options.publisherId}`);
+    if (options.autoBundle === false) params.push('auto_bundle=false');
     if (params.length) url += `?${params.join('&')}`;
 
     const authHeader = `${tokenType === 'bearer' ? 'Bearer' : tokenType} ${token}`;
@@ -346,6 +351,7 @@ export const uploadNewBookChunked = (
         total_chunks: totalChunks,
         publisher_id: options.publisherId ?? null,
         override: options.override ?? false,
+        auto_bundle: options.autoBundle ?? true,
       }),
     });
 

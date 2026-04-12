@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import logging
 import re
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -789,3 +791,165 @@ def delete_asset_file(
         "message": "File permanently deleted",
         "objects_removed": report.objects_removed,
     }
+
+
+# ---------------------------------------------------------------------------
+# Book cost calculation
+# ---------------------------------------------------------------------------
+
+
+class BookStats(BaseModel):
+    book_id: int
+    book_name: str
+    total_pages: int = 0
+    no_activity_pages: int = 0
+    activity_types: dict[str, int] = {}
+    total_activities: int = 0
+    games_count: int = 0
+
+
+class CalculateRequest(BaseModel):
+    book_ids: list[int]
+
+
+def _analyze_config(config_data: dict) -> dict:
+    """Analyze config.json and return page/activity breakdown."""
+    total_pages = 0
+    no_activity_pages = 0
+    activity_types: dict[str, int] = {}
+
+    # Structure: books[0].modules[].pages[].sections[]
+    # or directly: modules[].pages[].sections[]
+    modules = config_data.get("modules", [])
+    if not modules:
+        books_list = config_data.get("books", [])
+        if isinstance(books_list, list) and books_list:
+            modules = books_list[0].get("modules", []) if isinstance(books_list[0], dict) else []
+
+    for module in modules:
+        if not isinstance(module, dict):
+            continue
+        pages = module.get("pages", [])
+        for page in pages:
+            if not isinstance(page, dict):
+                continue
+            total_pages += 1
+            sections = page.get("sections", [])
+            has_activity = False
+            has_real_activity = False
+            if isinstance(sections, list) and sections:
+                for section in sections:
+                    if not isinstance(section, dict):
+                        continue
+                    section_type = section.get("type", "")
+
+                    # audio/video section types count as activities but
+                    # do NOT count towards "has real activity" for the page
+                    if section_type in ("audio", "video"):
+                        activity_types[section_type] = activity_types.get(section_type, 0) + 1
+                        has_activity = True
+
+                    # activity.type counts as an activity (e.g. matchTheWords, circle, etc.)
+                    activity_obj = section.get("activity")
+                    if isinstance(activity_obj, dict) and "type" in activity_obj:
+                        act_type = activity_obj["type"]
+                        if isinstance(act_type, str) and act_type:
+                            activity_types[act_type] = activity_types.get(act_type, 0) + 1
+                            has_activity = True
+                            has_real_activity = True
+            if not has_real_activity:
+                no_activity_pages += 1
+
+    return {
+        "total_pages": total_pages,
+        "no_activity_pages": no_activity_pages,
+        "activity_types": activity_types,
+        "total_activities": sum(activity_types.values()),
+    }
+
+
+def _count_games(games_data: dict | list) -> int:
+    """Count games in games.json.
+
+    Supports structures:
+      - {"levels": [{"games": [...], ...}, ...]}  → sum of all games across levels
+      - {"games": [...]}  → length of games list
+      - [...]  → length of list
+    """
+    if isinstance(games_data, list):
+        return len(games_data)
+    if isinstance(games_data, dict):
+        # levels[].games[] structure
+        levels = games_data.get("levels", [])
+        if isinstance(levels, list) and levels:
+            return sum(
+                len(lv.get("games", [])) for lv in levels if isinstance(lv, dict)
+            )
+        # flat games[] structure
+        games = games_data.get("games", [])
+        if isinstance(games, list):
+            return len(games)
+    return 0
+
+
+@router.post(
+    "/{publisher_id}/calculate",
+    response_model=list[BookStats],
+)
+def calculate_books(
+    publisher_id: int,
+    payload: CalculateRequest,
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+):
+    """Analyze selected books and return activity/page/game statistics."""
+    _require_admin(credentials, db)
+
+    from app.repositories.book import BookRepository
+    from app.services import get_minio_client
+
+    book_repo = BookRepository()
+    settings = get_settings()
+    client = get_minio_client(settings)
+    bucket = settings.minio_publishers_bucket
+
+    results: list[BookStats] = []
+
+    for book_id in payload.book_ids:
+        book = book_repo.get(db, book_id)
+        if not book or book.publisher_id != publisher_id:
+            continue
+
+        stats = BookStats(book_id=book.id, book_name=book.book_name)
+
+        # Read config.json from S3
+        config_path = f"{publisher_id}/books/{book.book_name}/config.json"
+        try:
+            response = client.get_object(bucket, config_path)
+            config_data = json.loads(response.read())
+            response.close()
+            response.release_conn()
+
+            analysis = _analyze_config(config_data)
+            stats.total_pages = analysis["total_pages"]
+            stats.no_activity_pages = analysis["no_activity_pages"]
+            stats.activity_types = analysis["activity_types"]
+            stats.total_activities = analysis["total_activities"]
+        except Exception as exc:
+            logger.warning("Could not read config.json for book %s: %s", book.book_name, exc)
+
+        # Read games.json from S3
+        games_path = f"{publisher_id}/books/{book.book_name}/games.json"
+        try:
+            response = client.get_object(bucket, games_path)
+            games_data = json.loads(response.read())
+            response.close()
+            response.release_conn()
+            stats.games_count = _count_games(games_data)
+        except Exception:
+            # games.json is optional
+            pass
+
+        results.append(stats)
+
+    return results

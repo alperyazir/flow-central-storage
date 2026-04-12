@@ -163,6 +163,7 @@ export function PublisherUploadDialog({
   const [loadingPubs, setLoadingPubs] = useState(false);
   const [fileError, setFileError] = useState('');
   const [overrideExisting, setOverrideExisting] = useState(false);
+  const [autoBundle, setAutoBundle] = useState(true);
 
   useEffect(() => {
     if (open && token) {
@@ -179,6 +180,7 @@ export function PublisherUploadDialog({
       dispatch({ type: 'RESET', initialPublisherId });
       setFileError('');
       setOverrideExisting(false);
+      setAutoBundle(true);
     }
   }, [open, initialPublisherId]);
 
@@ -244,7 +246,7 @@ export function PublisherUploadDialog({
                 error: p.error || undefined,
               });
             },
-            { publisherId: state.publisherId!, override: overrideExisting },
+            { publisherId: state.publisherId!, override: overrideExisting, autoBundle },
             apiBase
           );
           await promise;
@@ -476,16 +478,28 @@ export function PublisherUploadDialog({
                 <p className="text-xs text-destructive">{fileError}</p>
               )}
               {effectiveType === 'books' && (
-                <div className="flex items-center gap-2">
-                  <Checkbox
-                    id="override"
-                    checked={overrideExisting}
-                    onCheckedChange={(v) => setOverrideExisting(v === true)}
-                  />
-                  <Label htmlFor="override" className="text-sm font-normal">
-                    Override if book already exists
-                  </Label>
-                </div>
+                <>
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      id="override"
+                      checked={overrideExisting}
+                      onCheckedChange={(v) => setOverrideExisting(v === true)}
+                    />
+                    <Label htmlFor="override" className="text-sm font-normal">
+                      Override if book already exists
+                    </Label>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      id="auto-bundle"
+                      checked={autoBundle}
+                      onCheckedChange={(v) => setAutoBundle(v === true)}
+                    />
+                    <Label htmlFor="auto-bundle" className="text-sm font-normal">
+                      Auto-create bundles after upload
+                    </Label>
+                  </div>
+                </>
               )}
             </div>
           )}

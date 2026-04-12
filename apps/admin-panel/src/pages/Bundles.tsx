@@ -1,5 +1,15 @@
-import { useEffect, useState } from 'react';
-import { Loader2, Download, Trash2, Plus, Monitor, Apple } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Loader2,
+  Download,
+  Trash2,
+  Plus,
+  Monitor,
+  Apple,
+  RefreshCw,
+  XCircle,
+  Eraser,
+} from 'lucide-react';
 
 import { Card, CardContent } from 'components/ui/card';
 import {
@@ -17,6 +27,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from 'components/ui/select';
+import { Input } from 'components/ui/input';
 import { Checkbox } from 'components/ui/checkbox';
 import { Label } from 'components/ui/label';
 import { Button } from 'components/ui/button';
@@ -36,14 +47,19 @@ import { fetchBooks, type BookRecord } from 'lib/books';
 import {
   listBundles,
   listTemplates,
+  listBundleJobs,
   createBundleAsync,
   getBundleJobStatus,
   deleteBundle,
+  cancelBundleJob,
+  deleteBundleJob,
+  clearBundleJobs,
   PLATFORM_LABELS,
   type StandalonePlatform,
   type BundleInfo,
   type TemplateInfo,
   type BundleJobResult,
+  type BundleJobStatus,
 } from 'lib/standaloneApps';
 
 const fmtBytes = (n: number) => {
@@ -66,9 +82,14 @@ const BundlesPage = () => {
 
   const [bundles, setBundles] = useState<BundleInfo[]>([]);
   const [templates, setTemplates] = useState<TemplateInfo[]>([]);
+  const [bundleJobs, setBundleJobs] = useState<BundleJobStatus[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [platformFilter, setPlatformFilter] = useState('all');
+  const [publisherFilter, setPublisherFilter] = useState('all');
   const [createOpen, setCreateOpen] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [platform, setPlatform] = useState('');
   const [books, setBooks] = useState<BookRecord[]>([]);
   const [selectedBookId, setSelectedBookId] = useState('');
@@ -86,12 +107,14 @@ const BundlesPage = () => {
     setLoading(true);
     setError(null);
     try {
-      const [b, t] = await Promise.all([
+      const [b, t, j] = await Promise.all([
         listBundles(token, tt),
         listTemplates(token, tt),
+        listBundleJobs(token, tt),
       ]);
       setBundles(b.bundles);
       setTemplates(t.templates);
+      setBundleJobs(j.jobs);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load');
     } finally {
@@ -99,9 +122,77 @@ const BundlesPage = () => {
     }
   };
 
+  const fetchJobs = useCallback(async () => {
+    if (!token) return;
+    try {
+      const j = await listBundleJobs(token, tt);
+      setBundleJobs(j.jobs);
+      // If all active jobs finished, reload bundles list too
+      const hasActive = j.jobs.some(
+        (job) => job.status === 'queued' || job.status === 'processing'
+      );
+      if (!hasActive && pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+        // Refresh bundles since new ones may have been created
+        const b = await listBundles(token, tt);
+        setBundles(b.bundles);
+      }
+    } catch {
+      /* ignore polling errors */
+    }
+  }, [token, tt]);
+
   useEffect(() => {
     load();
   }, [token]);
+
+  // Auto-poll when there are active jobs
+  useEffect(() => {
+    const hasActive = bundleJobs.some(
+      (j) => j.status === 'queued' || j.status === 'processing'
+    );
+    if (hasActive && !pollRef.current) {
+      pollRef.current = setInterval(fetchJobs, 5000);
+    }
+    if (!hasActive && pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    };
+  }, [bundleJobs, fetchJobs]);
+
+  const platforms = useMemo(
+    () => [...new Set(bundles.map((b) => b.platform))].sort(),
+    [bundles]
+  );
+  const publishers = useMemo(
+    () => [...new Set(bundles.map((b) => b.publisher_name))].sort(),
+    [bundles]
+  );
+
+  const filtered = useMemo(() => {
+    let d = bundles;
+    if (search) {
+      const q = search.toLowerCase();
+      d = d.filter(
+        (b) =>
+          b.book_name.toLowerCase().includes(q) ||
+          b.file_name.toLowerCase().includes(q) ||
+          b.publisher_name.toLowerCase().includes(q)
+      );
+    }
+    if (platformFilter !== 'all')
+      d = d.filter((b) => b.platform === platformFilter);
+    if (publisherFilter !== 'all')
+      d = d.filter((b) => b.publisher_name === publisherFilter);
+    return d;
+  }, [bundles, search, platformFilter, publisherFilter]);
 
   const openCreate = async () => {
     setPlatform('');
@@ -195,15 +286,166 @@ const BundlesPage = () => {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Bundles</h1>
-        <Button onClick={openCreate}>
-          <Plus className="h-4 w-4" /> Create Bundle
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            onClick={() => {
+              setLoading(true);
+              load().finally(() => setLoading(false));
+            }}
+          >
+            <RefreshCw className="h-4 w-4" /> Refresh
+          </Button>
+          <Button onClick={openCreate}>
+            <Plus className="h-4 w-4" /> Create Bundle
+          </Button>
+        </div>
       </div>
       {error && (
         <Alert variant="destructive">
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
+
+      {bundleJobs.length > 0 && (
+        <Card>
+          <CardContent className="p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="font-semibold text-sm">
+                Bundle Queue (
+                {bundleJobs.filter((j) => j.status === 'queued').length} queued,{' '}
+                {bundleJobs.filter((j) => j.status === 'processing').length}{' '}
+                processing,{' '}
+                {bundleJobs.filter((j) => j.status === 'failed').length} failed,{' '}
+                {bundleJobs.filter((j) => j.status === 'completed').length}{' '}
+                completed)
+              </h3>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={async () => {
+                  if (!token) return;
+                  await clearBundleJobs(token, tt);
+                  fetchJobs();
+                }}
+              >
+                <Eraser className="h-3 w-3" /> Clear All
+              </Button>
+            </div>
+            {bundleJobs.map((j) => (
+              <div key={j.job_id} className="flex items-center gap-3 text-sm">
+                <Badge
+                  variant={
+                    j.status === 'completed'
+                      ? 'success'
+                      : j.status === 'failed'
+                        ? 'destructive'
+                        : j.status === 'cancelled'
+                          ? 'secondary'
+                          : 'default'
+                  }
+                  className="w-20 justify-center"
+                >
+                  {j.status}
+                </Badge>
+                <span className="flex-1 truncate font-medium">
+                  {j.book_name || j.book_id || j.job_id}
+                </span>
+                {j.platform && (
+                  <div className="flex items-center gap-1">
+                    {j.platform === 'mac' ? (
+                      <Apple className="h-3 w-3" />
+                    ) : (
+                      <Monitor className="h-3 w-3" />
+                    )}
+                    <span className="text-xs">
+                      {PLATFORM_LABELS[j.platform as StandalonePlatform] ||
+                        j.platform}
+                    </span>
+                  </div>
+                )}
+                <div className="w-24">
+                  <Progress value={j.progress} />
+                </div>
+                <span className="text-xs text-muted-foreground w-28 truncate">
+                  {j.status === 'failed'
+                    ? j.error_message || 'Failed'
+                    : `${j.progress}% — ${j.current_step}`}
+                </span>
+                <div className="flex gap-1">
+                  {(j.status === 'queued' || j.status === 'processing') && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-6 w-6"
+                      title="Cancel"
+                      onClick={async () => {
+                        if (!token) return;
+                        await cancelBundleJob(j.job_id, token, tt);
+                        fetchJobs();
+                      }}
+                    >
+                      <XCircle className="h-3 w-3 text-destructive" />
+                    </Button>
+                  )}
+                  {(j.status === 'failed' ||
+                    j.status === 'completed' ||
+                    j.status === 'cancelled') && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-6 w-6"
+                      title="Remove"
+                      onClick={async () => {
+                        if (!token) return;
+                        await deleteBundleJob(j.job_id, token, tt);
+                        fetchJobs();
+                      }}
+                    >
+                      <Trash2 className="h-3 w-3 text-muted-foreground" />
+                    </Button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
+      <div className="flex flex-wrap items-center gap-3">
+        <Input
+          placeholder="Search book, file, publisher..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="max-w-xs"
+        />
+        <Select value={platformFilter} onValueChange={setPlatformFilter}>
+          <SelectTrigger className="w-40">
+            <SelectValue placeholder="All Platforms" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Platforms</SelectItem>
+            {platforms.map((p) => (
+              <SelectItem key={p} value={p}>
+                {PLATFORM_LABELS[p as StandalonePlatform] || p}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={publisherFilter} onValueChange={setPublisherFilter}>
+          <SelectTrigger className="w-44">
+            <SelectValue placeholder="All Publishers" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Publishers</SelectItem>
+            {publishers.map((p) => (
+              <SelectItem key={p} value={p}>
+                {p}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
 
       <Card>
         <CardContent className="p-0">
@@ -219,7 +461,7 @@ const BundlesPage = () => {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {!bundles.length ? (
+              {!filtered.length ? (
                 <TableRow>
                   <TableCell
                     colSpan={6}
@@ -229,7 +471,7 @@ const BundlesPage = () => {
                   </TableCell>
                 </TableRow>
               ) : (
-                bundles.map((b) => (
+                filtered.map((b) => (
                   <TableRow key={b.object_name}>
                     <TableCell>
                       <div>

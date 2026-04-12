@@ -102,6 +102,16 @@ class BundleJobStatus(BaseModel):
     created_at: datetime = Field(..., description="When job was created")
     started_at: datetime | None = Field(None, description="When processing started")
     completed_at: datetime | None = Field(None, description="When job completed")
+    platform: str | None = Field(None, description="Target platform")
+    book_name: str | None = Field(None, description="Book name")
+    book_id: str | None = Field(None, description="Book ID")
+
+
+class BundleJobListResponse(BaseModel):
+    """Response containing list of bundle jobs."""
+
+    jobs: list[BundleJobStatus] = Field(default_factory=list)
+    total: int = Field(default=0, description="Total number of jobs")
 
 
 class BundleJobResult(BaseModel):

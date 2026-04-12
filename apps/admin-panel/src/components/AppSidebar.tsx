@@ -8,6 +8,7 @@ import {
   Package,
   GraduationCap,
   KeyRound,
+  Calculator,
   Settings,
   Sun,
   Moon,
@@ -50,6 +51,7 @@ const navItems = [
   { label: 'Bundles', icon: Package, path: '/bundles' },
   { label: 'Teachers', icon: GraduationCap, path: '/teachers' },
   { label: 'API Keys', icon: KeyRound, path: '/api-keys' },
+  { label: 'Calculate', icon: Calculator, path: '/calculate' },
   { label: 'System Info', icon: Settings, path: '/system' },
 ];
 

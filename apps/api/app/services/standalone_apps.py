@@ -117,6 +117,12 @@ def upload_template(
         content_type="application/zip",
     )
 
+    # Update local cache
+    TEMPLATE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_path = TEMPLATE_CACHE_DIR / object_name.replace("/", "_")
+    cache_path.write_bytes(file_data)
+    logger.info("Updated local template cache: %s", cache_path)
+
     logger.info(
         "Uploaded template for platform %s: %s (%d bytes)",
         normalized_platform,
@@ -300,6 +306,7 @@ def create_bundle(
     publisher_id: int,
     book_name: str,
     force: bool = False,
+    on_progress: "Callable[[int, str, str], None] | None" = None,
 ) -> tuple[str, str, int, datetime]:
     """Create a bundle by combining app template with book assets.
 
@@ -360,12 +367,18 @@ def create_bundle(
         except S3Error:
             pass  # No existing bundle, continue to create
 
+    def _progress(pct: int, step: str, detail: str = "") -> None:
+        if on_progress:
+            on_progress(pct, step, detail)
+
     with tempfile.TemporaryDirectory() as temp_dir:
         try:
             # 1. Get template from local cache (or download once)
+            _progress(10, "template", "Loading app template...")
             template_path = _get_cached_template(client, apps_bucket, template_object_name)
 
             # 2. Extract template
+            _progress(20, "extracting", "Extracting template...")
             extract_dir = os.path.join(temp_dir, "app")
             os.makedirs(extract_dir, exist_ok=True)
 
@@ -400,6 +413,7 @@ def create_bundle(
             os.makedirs(book_dir, exist_ok=True)
 
             # 5. Download book assets in parallel
+            _progress(30, "downloading", "Downloading book assets...")
             book_prefix = f"{publisher_id}/books/{book_name}/"
             objects = [
                 obj for obj in client.list_objects(publishers_bucket, prefix=book_prefix, recursive=True)
@@ -413,6 +427,7 @@ def create_bundle(
                 download_tasks.append((publishers_bucket, obj.object_name, dest_path))
 
             asset_count = 0
+            total_assets = len(download_tasks)
             with ThreadPoolExecutor(max_workers=ASSET_DOWNLOAD_WORKERS) as executor:
                 futures = {
                     executor.submit(_download_asset, client, bucket, obj_name, dest): obj_name
@@ -421,6 +436,10 @@ def create_bundle(
                 for future in as_completed(futures):
                     future.result()  # Raise on error
                     asset_count += 1
+                    # Progress: 30-70% for downloads
+                    if total_assets > 0:
+                        pct = 30 + int((asset_count / total_assets) * 40)
+                        _progress(pct, "downloading", f"{asset_count}/{total_assets} assets")
 
             logger.info("Downloaded %d assets in parallel for book %s/%s", asset_count, publisher_id, book_name)
 
@@ -436,6 +455,7 @@ def create_bundle(
                 new_path = os.path.join(extract_dir, bundle_name)
                 os.rename(old_path, new_path)
 
+            _progress(75, "zipping", "Creating bundle archive...")
             bundle_path = os.path.join(temp_dir, f"{bundle_name}.zip")
 
             with zipfile.ZipFile(bundle_path, "w", zipfile.ZIP_STORED) as zf:
@@ -445,7 +465,8 @@ def create_bundle(
                         arcname = os.path.relpath(file_path, extract_dir)
                         zf.write(file_path, arcname)
 
-            # 6. Upload bundle to MinIO
+            # 6. Upload bundle to R2
+            _progress(85, "uploading", "Uploading bundle...")
             bundle_object_name = f"{BUNDLE_PREFIX}/{publisher_id}/{book_name}/{bundle_name}.zip"
             bundle_size = os.path.getsize(bundle_path)
 

@@ -45,6 +45,25 @@ export interface AsyncBundleResponse {
   message: string;
 }
 
+export interface BundleJobStatus {
+  job_id: string;
+  status: string;
+  progress: number;
+  current_step: string;
+  error_message: string | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  platform: string | null;
+  book_name: string | null;
+  book_id: string | null;
+}
+
+export interface BundleJobListResponse {
+  jobs: BundleJobStatus[];
+  total: number;
+}
+
 export interface BundleJobResult {
   job_id: string;
   status: string;
@@ -142,15 +161,15 @@ export const getTemplateDownloadUrl = (
   );
 
 /**
- * Create a bundled standalone app with book assets
+ * Create a bundled standalone app with book assets (async)
  */
 export const createBundle = (
   request: BundleRequest,
   token: string,
   tokenType: string = 'Bearer',
   client: ApiClient = apiClient
-): Promise<BundleResponse> =>
-  client.post<BundleResponse, BundleRequest>(
+): Promise<AsyncBundleResponse> =>
+  client.post<AsyncBundleResponse, BundleRequest>(
     '/standalone-apps/bundle',
     request,
     {
@@ -184,21 +203,9 @@ export const deleteBundle = (
   });
 
 /**
- * Create a bundle asynchronously (returns job ID for polling)
+ * @deprecated Use createBundle instead — /bundle is now async by default.
  */
-export const createBundleAsync = (
-  request: AsyncBundleRequest,
-  token: string,
-  tokenType: string = 'Bearer',
-  client: ApiClient = apiClient
-): Promise<AsyncBundleResponse> =>
-  client.post<AsyncBundleResponse, AsyncBundleRequest>(
-    '/standalone-apps/bundle/async',
-    request,
-    {
-      headers: buildAuthHeaders(token, tokenType),
-    }
-  );
+export const createBundleAsync = createBundle;
 
 /**
  * Get the status/result of an async bundle creation job
@@ -209,9 +216,68 @@ export const getBundleJobStatus = (
   tokenType: string = 'Bearer',
   client: ApiClient = apiClient
 ): Promise<BundleJobResult> =>
-  client.get<BundleJobResult>(`/standalone-apps/bundle/jobs/${jobId}`, {
+  client.get<BundleJobResult>(`/standalone-apps/bundle-status/${jobId}`, {
     headers: buildAuthHeaders(token, tokenType),
   });
+
+/**
+ * List all bundle creation jobs (for progress tracking)
+ */
+export const listBundleJobs = (
+  token: string,
+  tokenType: string = 'Bearer',
+  statusFilter?: string,
+  client: ApiClient = apiClient
+): Promise<BundleJobListResponse> => {
+  const params = statusFilter ? `?status_filter=${statusFilter}` : '';
+  return client.get<BundleJobListResponse>(
+    `/standalone-apps/bundle/jobs${params}`,
+    {
+      headers: buildAuthHeaders(token, tokenType),
+    }
+  );
+};
+
+/**
+ * Cancel a bundle job
+ */
+export const cancelBundleJob = (
+  jobId: string,
+  token: string,
+  tokenType: string = 'Bearer',
+  client: ApiClient = apiClient
+): Promise<{ job_id: string; status: string }> =>
+  client.post(`/standalone-apps/bundle/jobs/${jobId}/cancel`, undefined, {
+    headers: buildAuthHeaders(token, tokenType),
+  });
+
+/**
+ * Delete a bundle job record
+ */
+export const deleteBundleJob = (
+  jobId: string,
+  token: string,
+  tokenType: string = 'Bearer',
+  client: ApiClient = apiClient
+): Promise<{ deleted: boolean; job_id: string }> =>
+  client.delete(`/standalone-apps/bundle/jobs/${jobId}`, undefined, {
+    headers: buildAuthHeaders(token, tokenType),
+  });
+
+/**
+ * Clear all bundle jobs (optionally by status)
+ */
+export const clearBundleJobs = (
+  token: string,
+  tokenType: string = 'Bearer',
+  statusFilter?: string,
+  client: ApiClient = apiClient
+): Promise<{ deleted: number }> => {
+  const params = statusFilter ? `?status_filter=${statusFilter}` : '';
+  return client.delete(`/standalone-apps/bundle/jobs${params}`, undefined, {
+    headers: buildAuthHeaders(token, tokenType),
+  });
+};
 
 /**
  * Supported platforms for standalone apps

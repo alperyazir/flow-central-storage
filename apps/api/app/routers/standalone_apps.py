@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, UploadFile, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
@@ -18,7 +19,9 @@ from app.schemas.standalone_app import (
     AsyncBundleRequest,
     AsyncBundleResponse,
     BundleInfo,
+    BundleJobListResponse,
     BundleJobResult,
+    BundleJobStatus,
     BundleListResponse,
     BundleRequest,
     BundleResponse,
@@ -287,29 +290,59 @@ def download_template(
     }
 
 
-@router.post("/bundle", response_model=BundleResponse)
+def _run_bundle_creation(
+    job_id: str,
+    platform: str,
+    publisher_id: int,
+    book_name: str,
+    force: bool,
+) -> None:
+    """Background task: create bundle with progress tracking."""
+    from app.services.cache import set_upload_progress
+
+    try:
+        settings = get_settings()
+        client = get_minio_client(settings)
+        external_client = get_minio_client_external(settings)
+
+        def on_progress(pct: int, step: str, detail: str = "") -> None:
+            set_upload_progress(job_id, pct, step, detail=detail)
+
+        download_url, file_name, file_size, expires_at = create_bundle(
+            client=client,
+            external_client=external_client,
+            apps_bucket=settings.minio_apps_bucket,
+            publishers_bucket=settings.minio_publishers_bucket,
+            platform=platform,
+            publisher_id=publisher_id,
+            book_name=book_name,
+            force=force,
+            on_progress=on_progress,
+        )
+
+        set_upload_progress(
+            job_id, 100, "completed",
+            detail=f"{file_name} ({file_size // 1024 // 1024}MB)",
+        )
+
+    except Exception as exc:
+        logger.error("[BUNDLE:%s] FAILED: %s", job_id, exc, exc_info=True)
+        set_upload_progress(job_id, 0, "error", error=str(exc))
+
+
+@router.post("/bundle", response_model=AsyncBundleResponse, status_code=status.HTTP_202_ACCEPTED)
 def create_bundle_endpoint(
     payload: BundleRequest,
+    background_tasks: BackgroundTasks,
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
     db: Session = Depends(get_db),
-) -> BundleResponse:
-    """Create a bundled standalone app with book assets.
+) -> AsyncBundleResponse:
+    """Create a bundled standalone app asynchronously.
 
-    Requires API key or admin authentication.
-
-    This endpoint:
-    1. Downloads the app template for the specified platform
-    2. Extracts the template
-    3. Copies all book assets into data/books/{book_name}/
-    4. Creates a new zip file with the combined contents
-    5. Returns a presigned download URL for the bundle
-
-    - **platform**: Target platform (mac, win, linux)
-    - **book_id**: ID of the book to bundle
+    Returns a job_id for tracking progress via /bundle-status/{job_id}.
     """
     _require_api_key_or_admin(credentials, db)
 
-    # Get book information
     book = _book_repository.get_by_id(db, payload.book_id)
     if book is None:
         raise HTTPException(
@@ -317,7 +350,6 @@ def create_bundle_endpoint(
             detail=f"Book with ID {payload.book_id} not found",
         )
 
-    # Get publisher information
     publisher = _publisher_repository.get(db, book.publisher_id)
     if publisher is None:
         raise HTTPException(
@@ -325,39 +357,52 @@ def create_bundle_endpoint(
             detail=f"Publisher for book ID {payload.book_id} not found",
         )
 
-    settings = get_settings()
-    client = get_minio_client(settings)
-    external_client = get_minio_client_external(settings)
+    job_id = str(uuid.uuid4())
 
-    try:
-        download_url, file_name, file_size, expires_at = create_bundle(
-            client=client,
-            external_client=external_client,
-            apps_bucket=settings.minio_apps_bucket,
-            publishers_bucket=settings.minio_publishers_bucket,
-            platform=payload.platform,
-            publisher_id=publisher.id,
-            book_name=book.book_name,
-            force=payload.force,
-        )
-    except InvalidPlatformError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    except TemplateNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    except BundleCreationError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
-    except Exception as exc:
-        logger.error("Unexpected error creating bundle: %s", exc)
+    from app.services.cache import set_upload_progress
+    set_upload_progress(job_id, 0, "queued", detail="Bundle creation queued...")
+
+    background_tasks.add_task(
+        _run_bundle_creation,
+        job_id=job_id,
+        platform=payload.platform,
+        publisher_id=publisher.id,
+        book_name=book.book_name,
+        force=payload.force,
+    )
+
+    return AsyncBundleResponse(
+        job_id=job_id,
+        status="queued",
+        message=f"Bundle creation started for {book.book_name} ({payload.platform})",
+    )
+
+
+@router.get("/bundle-status/{job_id}", response_model=BundleJobResult)
+def get_bundle_status(
+    job_id: str,
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+) -> BundleJobResult:
+    """Get the status of an async bundle creation job."""
+    _require_api_key_or_admin(credentials, db)
+
+    from app.services.cache import get_upload_progress
+
+    progress = get_upload_progress(job_id)
+    if progress is None:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An unexpected error occurred while creating the bundle",
-        ) from exc
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Bundle job not found or expired",
+        )
 
-    return BundleResponse(
-        download_url=download_url,
-        file_name=file_name,
-        file_size=file_size,
-        expires_at=expires_at,
+    return BundleJobResult(
+        job_id=job_id,
+        status=progress.get("step", "unknown"),
+        progress=progress.get("progress", 0),
+        current_step=progress.get("detail", ""),
+        error_message=progress.get("error"),
+        created_at=datetime.now(timezone.utc),
     )
 
 
@@ -400,6 +445,160 @@ def list_bundles_endpoint(
     ]
 
     return BundleListResponse(bundles=bundles)
+
+
+@router.get("/bundle/jobs", response_model=BundleJobListResponse)
+async def list_bundle_jobs(
+    status_filter: str | None = None,
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+) -> BundleJobListResponse:
+    """List all bundle creation jobs.
+
+    Requires admin authentication.
+    Optional status_filter: queued, processing, completed, failed.
+    """
+    _require_admin(credentials, db)
+
+    settings = get_settings()
+
+    try:
+        from app.services.queue.models import ProcessingJobType, ProcessingStatus
+        from app.services.queue.redis import get_redis_connection
+        from app.services.queue.repository import JobRepository
+
+        redis_conn = await get_redis_connection(url=settings.redis_url)
+        repository = JobRepository(
+            redis_client=redis_conn.client,
+            job_ttl_seconds=settings.queue_job_ttl_seconds,
+        )
+
+        status_enum = None
+        if status_filter:
+            try:
+                status_enum = ProcessingStatus(status_filter)
+            except ValueError:
+                pass
+
+        all_jobs = await repository.list_jobs(status=status_enum, limit=200)
+        bundle_jobs = [j for j in all_jobs if j.job_type == ProcessingJobType.BUNDLE]
+
+        items = [
+            BundleJobStatus(
+                job_id=j.job_id,
+                status=j.status.value,
+                progress=j.progress,
+                current_step=j.current_step,
+                error_message=j.error_message,
+                created_at=j.created_at,
+                started_at=j.started_at,
+                completed_at=j.completed_at,
+                platform=j.metadata.get("platform"),
+                book_name=j.metadata.get("book_name"),
+                book_id=j.book_id,
+            )
+            for j in bundle_jobs
+        ]
+
+        return BundleJobListResponse(jobs=items, total=len(items))
+
+    except Exception as exc:
+        logger.error("Failed to list bundle jobs: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to list bundle jobs",
+        ) from exc
+
+
+@router.post("/bundle/jobs/{job_id}/cancel")
+async def cancel_bundle_job(
+    job_id: str,
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Cancel a queued or in-progress bundle job."""
+    _require_admin(credentials, db)
+
+    settings = get_settings()
+    try:
+        from app.services.queue.redis import get_redis_connection
+        from app.services.queue.service import QueueService
+
+        redis_conn = await get_redis_connection(url=settings.redis_url)
+        service = QueueService(redis_conn.client, settings)
+        job = await service.cancel_job(job_id)
+        return {"job_id": job.job_id, "status": job.status.value}
+    except Exception as exc:
+        detail = str(exc)
+        if "not found" in detail.lower():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail) from exc
+        if "Cannot cancel" in detail:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail) from exc
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=detail) from exc
+
+
+@router.delete("/bundle/jobs/{job_id}")
+async def delete_bundle_job(
+    job_id: str,
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Delete a bundle job record from Redis."""
+    _require_admin(credentials, db)
+
+    settings = get_settings()
+    from app.services.queue.redis import get_redis_connection
+    from app.services.queue.repository import JobRepository
+
+    try:
+        redis_conn = await get_redis_connection(url=settings.redis_url)
+        repository = JobRepository(redis_client=redis_conn.client, job_ttl_seconds=settings.queue_job_ttl_seconds)
+        deleted = await repository.delete_job(job_id)
+        if not deleted:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+        return {"deleted": True, "job_id": job_id}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+
+
+@router.delete("/bundle/jobs")
+async def clear_bundle_jobs(
+    status_filter: str | None = None,
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Clear bundle jobs. If status_filter provided, only clear jobs with that status."""
+    _require_admin(credentials, db)
+
+    settings = get_settings()
+    try:
+        from app.services.queue.models import ProcessingJobType, ProcessingStatus
+        from app.services.queue.redis import get_redis_connection
+        from app.services.queue.repository import JobRepository
+
+        redis_conn = await get_redis_connection(url=settings.redis_url)
+        repository = JobRepository(redis_client=redis_conn.client, job_ttl_seconds=settings.queue_job_ttl_seconds)
+
+        status_enum = None
+        if status_filter:
+            try:
+                status_enum = ProcessingStatus(status_filter)
+            except ValueError:
+                pass
+
+        all_jobs = await repository.list_jobs(status=status_enum, limit=500)
+        bundle_jobs = [j for j in all_jobs if j.job_type == ProcessingJobType.BUNDLE]
+
+        deleted = 0
+        for job in bundle_jobs:
+            if await repository.delete_job(job.job_id):
+                deleted += 1
+
+        return {"deleted": deleted}
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
 
 
 @router.post("/bundle/async", response_model=AsyncBundleResponse, status_code=status.HTTP_202_ACCEPTED)

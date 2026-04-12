@@ -1,6 +1,8 @@
 """Worker task definitions for arq."""
 
+import fcntl
 import logging
+import shutil
 from typing import Any
 
 from app.core.config import get_settings
@@ -1818,13 +1820,14 @@ async def create_bundle_task(
     book_name: str,
     force: bool = False,
     metadata: dict[str, Any] | None = None,
+    local_book_path: str | None = None,
 ) -> dict[str, Any]:
     """Create a standalone app bundle asynchronously.
 
     This task orchestrates bundle creation including:
     - Downloading the app template
     - Extracting the template
-    - Downloading book assets
+    - Downloading book assets (or copying from local cache)
     - Creating the bundle zip
     - Uploading to MinIO
 
@@ -1837,6 +1840,7 @@ async def create_bundle_task(
         book_name: Book name
         force: If True, recreate bundle even if it exists
         metadata: Additional job metadata
+        local_book_path: Local cache dir with book assets (skips R2 download)
 
     Returns:
         Result dict with download_url, file_name, file_size
@@ -1960,8 +1964,6 @@ async def create_bundle_task(
             await update_progress(25, "Template extracted")
 
             # 3. Remove __MACOSX metadata folder if present
-            import shutil
-
             macosx_dir = os.path.join(extract_dir, "__MACOSX")
             if os.path.isdir(macosx_dir):
                 shutil.rmtree(macosx_dir)
@@ -1985,36 +1987,62 @@ async def create_bundle_task(
             book_dir = os.path.join(data_dir, "books", book_name)
             os.makedirs(book_dir, exist_ok=True)
 
-            # 5. Download book assets in parallel (25-70%)
-            await update_progress(25, "Downloading book assets...")
-            book_prefix = f"{publisher_id}/books/{book_name}/"
-            objects = [
-                obj for obj in client.list_objects(publishers_bucket, prefix=book_prefix, recursive=True)
-                if not obj.is_dir and obj.object_name[len(book_prefix):]
-            ]
-            total_objects = len(objects)
+            # 5. Get book assets: local cache (fast) or R2 download (fallback)
+            use_local_cache = local_book_path and os.path.isdir(local_book_path)
 
-            download_tasks = []
-            for obj in objects:
-                relative_path = obj.object_name[len(book_prefix):]
-                dest_path = os.path.join(book_dir, relative_path)
-                download_tasks.append((publishers_bucket, obj.object_name, dest_path))
+            if use_local_cache:
+                await update_progress(25, "Copying from local cache...")
 
-            asset_count = 0
-            with ThreadPoolExecutor(max_workers=ASSET_DOWNLOAD_WORKERS) as executor:
-                futures = {
-                    executor.submit(_download_asset, client, bucket, obj_name, dest): obj_name
-                    for bucket, obj_name, dest in download_tasks
-                }
-                for future in as_completed(futures):
-                    future.result()
-                    asset_count += 1
-                    if total_objects > 0:
-                        pct = 25 + int(asset_count / total_objects * 45)
-                        await update_progress(pct, f"Downloaded {asset_count}/{total_objects} assets")
+                # Copy all files from local cache to book_dir
+                asset_count = 0
+                for root, _dirs, files in os.walk(local_book_path):
+                    for file in files:
+                        if file.startswith("."):  # Skip .platform_count etc.
+                            continue
+                        src = os.path.join(root, file)
+                        rel = os.path.relpath(src, local_book_path)
+                        dst = os.path.join(book_dir, rel)
+                        os.makedirs(os.path.dirname(dst), exist_ok=True)
+                        shutil.copy2(src, dst)
+                        asset_count += 1
 
-            logger.info("Downloaded %d assets in parallel for book %s/%s", asset_count, publisher_id, book_name)
-            await update_progress(70, f"Downloaded {asset_count} assets")
+                if asset_count == 0:
+                    logger.warning("Local cache empty for %s, falling back to R2 download", local_book_path)
+                    use_local_cache = False
+                else:
+                    logger.info("Copied %d assets from local cache for book %s/%s", asset_count, publisher_id, book_name)
+                    await update_progress(70, f"Copied {asset_count} assets from cache")
+
+            if not use_local_cache:
+                await update_progress(25, "Downloading book assets...")
+                book_prefix = f"{publisher_id}/books/{book_name}/"
+                objects = [
+                    obj for obj in client.list_objects(publishers_bucket, prefix=book_prefix, recursive=True)
+                    if not obj.is_dir and obj.object_name[len(book_prefix):]
+                ]
+                total_objects = len(objects)
+
+                download_tasks = []
+                for obj in objects:
+                    relative_path = obj.object_name[len(book_prefix):]
+                    dest_path = os.path.join(book_dir, relative_path)
+                    download_tasks.append((publishers_bucket, obj.object_name, dest_path))
+
+                asset_count = 0
+                with ThreadPoolExecutor(max_workers=ASSET_DOWNLOAD_WORKERS) as executor:
+                    futures = {
+                        executor.submit(_download_asset, client, bucket, obj_name, dest): obj_name
+                        for bucket, obj_name, dest in download_tasks
+                    }
+                    for future in as_completed(futures):
+                        future.result()
+                        asset_count += 1
+                        if total_objects > 0:
+                            pct = 25 + int(asset_count / total_objects * 45)
+                            await update_progress(pct, f"Downloaded {asset_count}/{total_objects} assets")
+
+                logger.info("Downloaded %d assets in parallel for book %s/%s", asset_count, publisher_id, book_name)
+                await update_progress(70, f"Downloaded {asset_count} assets")
 
             # 6. Rename app folder and create bundle ZIP
             await update_progress(75, "Creating bundle...")
@@ -2084,3 +2112,25 @@ async def create_bundle_task(
             error_message=str(e),
         )
         raise QueueError(f"Bundle creation failed: {e}") from e
+    finally:
+        # Decrement platform counter and clean up local cache when last platform finishes
+        if local_book_path and os.path.isdir(local_book_path):
+            count_file = os.path.join(local_book_path, ".platform_count")
+            try:
+                with open(count_file, "r+") as f:
+                    fcntl.flock(f, fcntl.LOCK_EX)
+                    count = int(f.read().strip()) - 1
+                    if count <= 0:
+                        fcntl.flock(f, fcntl.LOCK_UN)
+                        f.close()
+                        shutil.rmtree(local_book_path, ignore_errors=True)
+                        logger.info("Cleaned up local book cache: %s", local_book_path)
+                    else:
+                        f.seek(0)
+                        f.write(str(count))
+                        f.truncate()
+                        fcntl.flock(f, fcntl.LOCK_UN)
+            except FileNotFoundError:
+                logger.debug("Cache already cleaned up: %s", local_book_path)
+            except Exception as cleanup_err:
+                logger.warning("Failed to clean up book cache %s: %s", local_book_path, cleanup_err)

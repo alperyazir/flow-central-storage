@@ -755,3 +755,82 @@ def delete_trash_entry(
         objects_removed=report.objects_removed,
         item_type=item_type,
     )
+
+
+@router.get("/incomplete-uploads")
+def list_incomplete_uploads_endpoint(
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+) -> dict:
+    """List incomplete multipart uploads across all buckets.
+
+    Requires admin authentication.
+    """
+    _require_admin(credentials, db)
+    db.close()
+
+    settings = get_settings()
+    client = get_minio_client(settings)
+
+    buckets = [
+        settings.minio_publishers_bucket,
+        settings.minio_apps_bucket,
+        settings.minio_trash_bucket,
+        settings.minio_teachers_bucket,
+    ]
+
+    results = []
+    for bucket in buckets:
+        try:
+            result = client._list_multipart_uploads(bucket)
+            for upload in result.uploads:
+                results.append({
+                    "bucket": bucket,
+                    "object_name": upload.object_name,
+                    "upload_id": upload.upload_id,
+                    "initiated": upload.initiated.isoformat() if upload.initiated else None,
+                })
+        except Exception as exc:
+            logger.warning("Failed to list incomplete uploads for %s: %s", bucket, exc)
+
+    return {"incomplete_uploads": results, "total": len(results)}
+
+
+@router.delete("/incomplete-uploads")
+def abort_incomplete_uploads_endpoint(
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Abort all incomplete multipart uploads across all buckets.
+
+    Requires admin authentication.
+    """
+    _require_admin(credentials, db)
+    db.close()
+
+    settings = get_settings()
+    client = get_minio_client(settings)
+
+    buckets = [
+        settings.minio_publishers_bucket,
+        settings.minio_apps_bucket,
+        settings.minio_trash_bucket,
+        settings.minio_teachers_bucket,
+    ]
+
+    aborted = 0
+    errors = []
+    for bucket in buckets:
+        try:
+            result = client._list_multipart_uploads(bucket)
+            for upload in result.uploads:
+                try:
+                    client._abort_multipart_upload(bucket, upload.object_name, upload.upload_id)
+                    aborted += 1
+                    logger.info("Aborted incomplete upload: %s/%s (id: %s)", bucket, upload.object_name, upload.upload_id)
+                except Exception as exc:
+                    errors.append(f"{bucket}/{upload.object_name}: {exc}")
+        except Exception as exc:
+            errors.append(f"{bucket}: {exc}")
+
+    return {"aborted": aborted, "errors": errors}

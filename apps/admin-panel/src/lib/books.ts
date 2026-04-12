@@ -44,11 +44,16 @@ export const deleteBook = (
   bookId: number,
   token: string,
   tokenType: string = 'Bearer',
+  deleteBundles: boolean = false,
   client: ApiClient = apiClient
 ): Promise<DeleteBookResponse> =>
-  client.delete<DeleteBookResponse>(`/books/${bookId}`, undefined, {
-    headers: buildAuthHeaders(token, tokenType),
-  });
+  client.delete<DeleteBookResponse>(
+    `/books/${bookId}?delete_bundles=${deleteBundles}`,
+    undefined,
+    {
+      headers: buildAuthHeaders(token, tokenType),
+    }
+  );
 
 export const getDeleteStatus = (
   jobId: string,
@@ -81,5 +86,41 @@ export const syncBooksWithR2 = (
   client: ApiClient = apiClient
 ): Promise<SyncR2Response> =>
   client.post<SyncR2Response, undefined>('/books/sync-r2', undefined, {
+    headers: buildAuthHeaders(token, tokenType),
+  });
+
+export interface DownloadJobResponse {
+  job_id: string;
+  status: string;
+}
+
+export interface DownloadStatusResponse {
+  job_id: string;
+  progress: number;
+  step: string;
+  error: string | null;
+  detail?: string;
+  ready: boolean;
+}
+
+export const startBookDownload = (
+  bookId: number,
+  token: string,
+  tokenType: string = 'Bearer',
+  client: ApiClient = apiClient
+): Promise<DownloadJobResponse> =>
+  client.post<DownloadJobResponse, undefined>(
+    `/books/${bookId}/download`,
+    undefined,
+    { headers: buildAuthHeaders(token, tokenType) }
+  );
+
+export const getDownloadStatus = (
+  jobId: string,
+  token: string,
+  tokenType: string = 'Bearer',
+  client: ApiClient = apiClient
+): Promise<DownloadStatusResponse> =>
+  client.get<DownloadStatusResponse>(`/books/download-status/${jobId}`, {
     headers: buildAuthHeaders(token, tokenType),
   });

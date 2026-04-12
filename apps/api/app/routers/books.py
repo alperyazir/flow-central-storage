@@ -35,7 +35,7 @@ from app.services import (
     upload_book_archive,
 )
 from app.services.ai_processing import trigger_auto_processing
-from app.services.storage import _prefix_exists
+from app.services.storage import BOOK_CACHE_DIR, _normalize_filename, _prefix_exists, normalize_book_name
 from app.services.webhook import WebhookService
 
 # TODO [PERF-C3/C4]: Upload endpoints buffer full archives in memory.
@@ -52,6 +52,96 @@ _publisher_repository = PublisherRepository()
 _user_repository = UserRepository()
 _webhook_service = WebhookService()
 logger = logging.getLogger(__name__)
+
+
+def _trigger_auto_bundles(book_id: int, publisher_id: int, book_name: str, local_book_path: str | None = None) -> None:
+    """Enqueue bundle creation for all platforms after book upload.
+
+    Creates a fresh event loop to run async arq enqueue from a sync thread.
+    """
+    import asyncio
+
+    from app.services.standalone_apps import ALLOWED_PLATFORMS, template_exists
+
+    settings = get_settings()
+    client = get_minio_client(settings)
+    apps_bucket = settings.minio_apps_bucket
+
+    platforms_with_templates = [
+        p for p in ALLOWED_PLATFORMS
+        if template_exists(client, apps_bucket, p)
+    ]
+
+    if not platforms_with_templates:
+        logger.info("[AUTO-BUNDLE] No templates found, skipping auto-bundle for book %s", book_name)
+        # Clean up cache dir if no bundles to create
+        if local_book_path:
+            import shutil
+            shutil.rmtree(local_book_path, ignore_errors=True)
+        return
+
+    # Write platform count so bundle tasks know when to clean up cache
+    if local_book_path:
+        count_file = os.path.join(local_book_path, ".platform_count")
+        with open(count_file, "w") as f:
+            f.write(str(len(platforms_with_templates)))
+
+    async def _enqueue() -> None:
+        from arq import create_pool
+        from arq.connections import RedisSettings
+
+        from app.services.queue import JobRepository, ProcessingJob, ProcessingJobType, get_redis_connection
+
+        # Create job records in repository so task can update progress
+        redis_conn = await get_redis_connection(url=settings.redis_url)
+        repository = JobRepository(
+            redis_client=redis_conn.client,
+            job_ttl_seconds=settings.queue_job_ttl_seconds,
+        )
+
+        pool = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+        queue_name = f"{settings.queue_name}:normal"
+
+        for platform in platforms_with_templates:
+            job_id = f"auto-bundle-{book_id}-{platform}"
+
+            # Create job record so task can track progress
+            job = ProcessingJob(
+                job_id=job_id,
+                book_id=str(book_id),
+                publisher_id=str(publisher_id),
+                job_type=ProcessingJobType.BUNDLE,
+                metadata={"platform": platform, "book_name": book_name, "auto": True},
+            )
+            try:
+                await repository.create_job(job, check_duplicate=False)
+            except Exception:
+                # Job may exist from a previous upload, update it
+                try:
+                    await repository.update_job_status(job_id, ProcessingJob.Status.QUEUED if hasattr(ProcessingJob, 'Status') else "queued")
+                except Exception:
+                    pass
+
+            await pool.enqueue_job(
+                "create_bundle_task",
+                job_id=job_id,
+                platform=platform,
+                book_id=book_id,
+                publisher_id=publisher_id,
+                book_name=book_name,
+                force=True,
+                local_book_path=local_book_path,
+                _queue_name=queue_name,
+            )
+            logger.info("[AUTO-BUNDLE] Enqueued %s bundle for book %s (id=%d)", platform, book_name, book_id)
+        await pool.close()
+
+    try:
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(_enqueue())
+        loop.close()
+    except Exception as exc:
+        logger.error("[AUTO-BUNDLE] Failed to enqueue bundles: %s", exc, exc_info=True)
 
 
 def _invalidate_book_cache() -> None:
@@ -428,6 +518,7 @@ def update_book(
 def delete_book(
     book_id: int,
     background_tasks: BackgroundTasks,
+    delete_bundles: bool = Query(default=False, description="Also delete associated bundles"),
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
     db: Session = Depends(get_db),
 ):
@@ -462,7 +553,7 @@ def delete_book(
             prefix = f"{book_publisher_id}/books/{book_name}/"
 
             def on_progress(removed: int, total: int):
-                pct = 10 + int((removed / max(total, 1)) * 70)  # 10-80%
+                pct = 10 + int((removed / max(total, 1)) * 60)  # 10-70%
                 set_deletion_progress(job_id, pct, "deleting", f"{removed}/{total} files")
 
             report = delete_prefix_directly(
@@ -471,6 +562,23 @@ def delete_book(
                 prefix=prefix,
                 on_progress=on_progress,
             )
+
+            total_removed = report.objects_removed
+
+            # Delete bundles if requested
+            if delete_bundles:
+                set_deletion_progress(job_id, 75, "deleting_bundles", "Deleting bundles...")
+                bundle_prefix = f"bundles/{book_publisher_id}/{book_name}/"
+                try:
+                    bundle_report = delete_prefix_directly(
+                        client=client,
+                        bucket=settings.minio_apps_bucket,
+                        prefix=bundle_prefix,
+                    )
+                    total_removed += bundle_report.objects_removed
+                    logger.info("Deleted %d bundle objects for book %s", bundle_report.objects_removed, book_name)
+                except Exception as exc:
+                    logger.warning("Failed to delete bundles for book %s: %s", book_name, exc)
 
             set_deletion_progress(job_id, 85, "database", "Removing database record...")
 
@@ -488,11 +596,11 @@ def delete_book(
             # Trigger webhook
             _trigger_webhook(book_id, WebhookEventType.BOOK_DELETED)
 
-            set_deletion_progress(job_id, 100, "completed", f"{report.objects_removed} files deleted")
+            set_deletion_progress(job_id, 100, "completed", f"{total_removed} files deleted")
 
             logger.info(
-                "User %s permanently deleted book %s (%s); removed %s objects",
-                admin_id, book_id, book_name, report.objects_removed,
+                "User %s permanently deleted book %s (%s); removed %s objects (bundles=%s)",
+                admin_id, book_id, book_name, total_removed, delete_bundles,
             )
 
         except Exception as exc:
@@ -556,6 +664,7 @@ async def upload_book(
 
         # Upload from temp file (disk-based, low memory)
         try:
+            _bn = book_name
             manifest = await asyncio.to_thread(
                 lambda: upload_book_archive(
                     client=client,
@@ -564,6 +673,7 @@ async def upload_book(
                     object_prefix=prefix,
                     content_type="application/octet-stream",
                     strip_root_folder=True,
+                    book_name=_bn,
                 )
             )
         except UploadError as exc:
@@ -641,6 +751,7 @@ def _run_book_processing(
     override_pub_id: int | None,
     override_pub_name: str | None,
     cleanup_dir: str | None = None,
+    auto_bundle: bool = True,
 ) -> None:
     """Background task: process a ZIP archive into MinIO + DB.
 
@@ -703,11 +814,15 @@ def _run_book_processing(
 
             if prefix_exists and override:
                 set_upload_progress(job_id, 52, "clearing", "Removing existing files...")
-                objects = list(
-                    client.list_objects(settings.minio_publishers_bucket, prefix=object_prefix, recursive=True)
-                )
-                for obj in objects:
-                    client.remove_object(settings.minio_publishers_bucket, obj.object_name)
+                from minio.deleteobjects import DeleteObject
+                delete_list = [
+                    DeleteObject(obj.object_name)
+                    for obj in client.list_objects(settings.minio_publishers_bucket, prefix=object_prefix, recursive=True)
+                ]
+                if delete_list:
+                    errors = list(client.remove_objects(settings.minio_publishers_bucket, delete_list))
+                    if errors:
+                        logger.warning("[UPLOAD:%s] Some objects failed to delete: %s", job_id, errors)
 
             logger.info("[UPLOAD:%s] Starting S3 upload — prefix: %s", job_id, object_prefix)
             _upload_start = _time.time()
@@ -718,6 +833,10 @@ def _run_book_processing(
                 pct = 55 + int((uploaded / max(total, 1)) * 40)  # 55-95%
                 set_upload_progress(job_id, pct, "uploading", f"{uploaded}/{total} files")
 
+            # Create local cache dir for bundle task to use instead of re-downloading from R2
+            book_cache_dir = BOOK_CACHE_DIR / f"{pub_id}_{book_data['book_name']}"
+            book_cache_dir.mkdir(parents=True, exist_ok=True)
+
             manifest = upload_book_archive(
                 client=client,
                 archive_path=tmp_path,
@@ -726,6 +845,8 @@ def _run_book_processing(
                 content_type="application/octet-stream",
                 strip_root_folder=True,
                 on_progress=on_file_progress,
+                book_name=book_data["book_name"],
+                local_cache_dir=str(book_cache_dir),
             )
 
             _upload_elapsed = _time.time() - _upload_start
@@ -751,6 +872,14 @@ def _run_book_processing(
 
             logger.info("[UPLOAD:%s] DB record saved — book_id=%d", job_id, book.id)
             set_upload_progress(job_id, 100, "completed", f"{len(manifest)} files uploaded", book_id=book.id)
+
+            # Auto-create bundles for all platforms (before webhook to avoid timeout blocking)
+            if auto_bundle:
+                _trigger_auto_bundles(book.id, pub_id, book_data["book_name"], local_book_path=str(book_cache_dir))
+            else:
+                import shutil
+                shutil.rmtree(book_cache_dir, ignore_errors=True)
+                logger.info("[UPLOAD:%s] Auto-bundle disabled, skipping", job_id)
 
             # Trigger webhook for book creation/update
             event_type = WebhookEventType.BOOK_UPDATED if existing_book else WebhookEventType.BOOK_CREATED
@@ -780,6 +909,7 @@ async def upload_new_book_async(
     background_tasks: BackgroundTasks,
     publisher_id: int | None = Query(default=None, description="Override publisher from config.json"),
     override: bool = Query(default=False, description="If true, replace existing book"),
+    auto_bundle: bool = Query(default=True, description="Auto-create bundles after upload"),
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
     db: Session = Depends(get_db),
 ):
@@ -798,7 +928,7 @@ async def upload_new_book_async(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File must be a ZIP archive")
 
     job_id = str(uuid.uuid4())
-    book_name_from_zip = file.filename[:-4]
+    book_name_from_zip = normalize_book_name(file.filename[:-4])
 
     set_upload_progress(job_id, 0, "receiving", "Uploading file to server...")
 
@@ -834,6 +964,7 @@ async def upload_new_book_async(
         override=override,
         override_pub_id=override_pub_id,
         override_pub_name=override_pub_name,
+        auto_bundle=auto_bundle,
     )
 
     return {"job_id": job_id, "status": "accepted"}
@@ -854,6 +985,7 @@ class ChunkedUploadInit(BaseModel):
     total_chunks: int = Field(..., gt=0)
     publisher_id: int | None = None
     override: bool = False
+    auto_bundle: bool = True
 
 
 @router.post("/chunked-upload/init")
@@ -903,6 +1035,7 @@ async def chunked_upload_init(
         "override": body.override,
         "override_pub_id": override_pub_id,
         "override_pub_name": override_pub_name,
+        "auto_bundle": body.auto_bundle,
         "status": "uploading",
     }
     set_chunked_session(upload_id, session_data)
@@ -1056,6 +1189,7 @@ async def chunked_upload_complete(
     book_name_from_zip = session_data["filename"]
     if book_name_from_zip.lower().endswith(".zip"):
         book_name_from_zip = book_name_from_zip[:-4]
+    book_name_from_zip = normalize_book_name(book_name_from_zip)
 
     # Clean up Redis session (temp dir cleaned by _run_book_processing)
     delete_chunked_session(upload_id)
@@ -1069,6 +1203,7 @@ async def chunked_upload_complete(
         override_pub_id=session_data.get("override_pub_id"),
         override_pub_name=session_data.get("override_pub_name"),
         cleanup_dir=temp_dir,
+        auto_bundle=session_data.get("auto_bundle", True),
     )
 
     return {"job_id": job_id, "status": "accepted"}
@@ -1109,7 +1244,7 @@ async def upload_new_book(
     import asyncio
     import tempfile
 
-    book_name_from_zip = zip_filename[:-4]  # Remove .zip extension
+    book_name_from_zip = normalize_book_name(zip_filename[:-4])
 
     # Stream upload to temp file (never load entire ZIP into memory)
     with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
@@ -1203,18 +1338,24 @@ async def upload_new_book(
         # Delete existing book if override is true
         if prefix_exists and override:
             try:
-                # Delete all objects at this prefix
-                objects = await asyncio.to_thread(
-                    lambda: list(
-                        client.list_objects(settings.minio_publishers_bucket, prefix=object_prefix, recursive=True)
-                    )
+                # Delete all objects at this prefix (batch)
+                from minio.deleteobjects import DeleteObject
+                delete_list = await asyncio.to_thread(
+                    lambda: [
+                        DeleteObject(obj.object_name)
+                        for obj in client.list_objects(settings.minio_publishers_bucket, prefix=object_prefix, recursive=True)
+                    ]
                 )
-                for obj in objects:
-                    await asyncio.to_thread(client.remove_object, settings.minio_publishers_bucket, obj.object_name)
+                if delete_list:
+                    errors = await asyncio.to_thread(
+                        lambda: list(client.remove_objects(settings.minio_publishers_bucket, delete_list))
+                    )
+                    if errors:
+                        logger.warning("Some objects failed to delete: %s", errors)
 
                 logger.info(
                     "Deleted %d existing objects for book %s/%s",
-                    len(objects),
+                    len(delete_list),
                     book_data["publisher"],
                     book_data["book_name"],
                 )
@@ -1227,6 +1368,7 @@ async def upload_new_book(
 
         # Upload the book archive from temp file (disk-based, low memory)
         try:
+            _bn2 = book_data["book_name"]
             manifest = await asyncio.to_thread(
                 lambda: upload_book_archive(
                     client=client,
@@ -1235,6 +1377,7 @@ async def upload_new_book(
                     object_prefix=object_prefix,
                     content_type="application/octet-stream",
                     strip_root_folder=True,
+                    book_name=_bn2,
                 )
             )
         except UploadError as exc:
@@ -1354,7 +1497,7 @@ async def upload_bulk_books(
                 failed_count += 1
                 continue
 
-            book_name_from_zip = zip_filename[:-4]
+            book_name_from_zip = normalize_book_name(zip_filename[:-4])
             contents = await file.read()
 
             # Extract metadata
@@ -1403,18 +1546,22 @@ async def upload_bulk_books(
                 failed_count += 1
                 continue
 
-            # Delete existing book if override is true
+            # Delete existing book if override is true (batch)
             if prefix_exists and override:
                 try:
-                    objects = list(
-                        client.list_objects(settings.minio_publishers_bucket, prefix=object_prefix, recursive=True)
-                    )
-                    for obj in objects:
-                        client.remove_object(settings.minio_publishers_bucket, obj.object_name)
+                    from minio.deleteobjects import DeleteObject
+                    delete_list = [
+                        DeleteObject(obj.object_name)
+                        for obj in client.list_objects(settings.minio_publishers_bucket, prefix=object_prefix, recursive=True)
+                    ]
+                    if delete_list:
+                        errors = list(client.remove_objects(settings.minio_publishers_bucket, delete_list))
+                        if errors:
+                            logger.warning("Some objects failed to delete: %s", errors)
 
                     logger.info(
                         "Deleted %d existing objects for book %s/%s",
-                        len(objects),
+                        len(delete_list),
                         book_data["publisher"],
                         book_data["book_name"],
                     )
@@ -1434,6 +1581,7 @@ async def upload_bulk_books(
                     object_prefix=object_prefix,
                     content_type="application/octet-stream",
                     strip_root_folder=True,
+                    book_name=book_data["book_name"],
                 )
             except UploadError as exc:
                 result["error"] = str(exc)
@@ -1597,7 +1745,7 @@ def _extract_additional_metadata(
             book_cover_filename = None
             if book_cover_path:
                 # Extract just the filename from paths like "./books/BRAINS/images/book_cover.png"
-                book_cover_filename = os.path.basename(book_cover_path)
+                book_cover_filename = _normalize_filename(os.path.basename(book_cover_path))
 
             # Collect activity details
             activity_details = _collect_activity_details(config_data)
@@ -1755,3 +1903,163 @@ def _first_non_empty(payload: dict[str, object], aliases: Iterable[str]) -> obje
             elif candidate is not None:
                 return candidate
     return None
+
+
+# ---------------------------------------------------------------------------
+# Book download (ZIP)
+# ---------------------------------------------------------------------------
+
+
+_download_temp_files: dict[str, tuple[str, str]] = {}  # job_id → (tmp_path, book_name)
+
+
+def _run_book_download(job_id: str, publisher_id: int, book_name: str) -> None:
+    """Background task: zip book assets from S3 into a temp file."""
+    import tempfile
+
+    from app.services.cache import set_upload_progress
+
+    try:
+        settings = get_settings()
+        client = get_minio_client(settings)
+        bucket = settings.minio_publishers_bucket
+        prefix = f"{publisher_id}/books/{book_name}/"
+
+        set_upload_progress(job_id, 10, "listing", "Listing book files...")
+
+        objects = [
+            obj for obj in client.list_objects(bucket, prefix=prefix, recursive=True)
+            if not obj.is_dir
+        ]
+        total = len(objects)
+
+        if total == 0:
+            set_upload_progress(job_id, 0, "error", error="No files found for this book")
+            return
+
+        set_upload_progress(job_id, 20, "zipping", f"Zipping {total} files...")
+
+        tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
+        tmp_path = tmp.name
+        tmp.close()
+
+        with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for idx, obj in enumerate(objects):
+                relative = obj.object_name[len(prefix):]
+                response = client.get_object(bucket, obj.object_name)
+                zf.writestr(f"{book_name}/{relative}", response.read())
+                response.close()
+                response.release_conn()
+                pct = 20 + int((idx + 1) / total * 70)
+                set_upload_progress(job_id, pct, "zipping", f"{idx + 1}/{total} files")
+
+        _download_temp_files[job_id] = (tmp_path, book_name)
+
+        zip_size = os.path.getsize(tmp_path)
+        set_upload_progress(
+            job_id, 100, "completed",
+            detail=f"{book_name}.zip ({zip_size // 1024 // 1024}MB)",
+        )
+
+    except Exception as exc:
+        logger.error("[DOWNLOAD:%s] FAILED: %s", job_id, exc, exc_info=True)
+        set_upload_progress(job_id, 0, "error", error=str(exc))
+
+
+@router.post("/{book_id}/download", status_code=status.HTTP_202_ACCEPTED)
+def download_book(
+    book_id: int,
+    background_tasks: BackgroundTasks,
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+):
+    """Start async ZIP creation for downloading a book's assets."""
+    _require_admin(credentials, db)
+
+    book = _book_repository.get_by_id(db, book_id)
+    if book is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+
+    import uuid
+
+    job_id = str(uuid.uuid4())
+
+    from app.services.cache import set_upload_progress
+
+    set_upload_progress(job_id, 0, "queued", detail="Download queued...")
+
+    background_tasks.add_task(
+        _run_book_download,
+        job_id=job_id,
+        publisher_id=book.publisher_id,
+        book_name=book.book_name,
+    )
+
+    return {"job_id": job_id, "status": "queued"}
+
+
+@router.get("/download-status/{job_id}")
+def get_download_status(
+    job_id: str,
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+):
+    """Get download job status."""
+    _require_admin(credentials, db)
+
+    from app.services.cache import get_upload_progress
+
+    progress = get_upload_progress(job_id)
+    if progress is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+
+    return {
+        "job_id": job_id,
+        "progress": progress.get("progress", 0),
+        "step": progress.get("step", "unknown"),
+        "detail": progress.get("detail", ""),
+        "error": progress.get("error"),
+        "ready": progress.get("step") == "completed",
+    }
+
+
+@router.get("/download-file/{job_id}")
+def download_file(
+    job_id: str,
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+):
+    """Stream the completed ZIP file and clean up temp file after."""
+    _require_admin(credentials, db)
+
+    entry = _download_temp_files.get(job_id)
+    if entry is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Download not ready or expired")
+
+    tmp_path, book_name = entry
+
+    if not os.path.exists(tmp_path):
+        _download_temp_files.pop(job_id, None)
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail="File expired")
+
+    from fastapi.responses import FileResponse
+
+    from app.services.cache import delete_upload_progress
+
+    def cleanup() -> None:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        _download_temp_files.pop(job_id, None)
+        delete_upload_progress(job_id)
+
+    # Use background task for cleanup after response is sent
+    from starlette.background import BackgroundTask
+
+    return FileResponse(
+        path=tmp_path,
+        filename=f"{book_name}.zip",
+        media_type="application/zip",
+        background=BackgroundTask(cleanup),
+    )

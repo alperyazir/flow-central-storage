@@ -22,6 +22,8 @@ import {
 import { Input } from 'components/ui/input';
 import { Button } from 'components/ui/button';
 import { Badge } from 'components/ui/badge';
+import { Checkbox } from 'components/ui/checkbox';
+import { Label } from 'components/ui/label';
 import { Alert, AlertDescription } from 'components/ui/alert';
 import AuthenticatedImage from 'components/AuthenticatedImage';
 import {
@@ -71,6 +73,7 @@ const PublisherDetailPage = () => {
   const [uploadOpen, setUploadOpen] = useState(false);
   const [bookSearch, setBookSearch] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<PublisherBook | null>(null);
+  const [delBundles, setDelBundles] = useState(true);
   const [expandedAssets, setExpandedAssets] = useState<Set<string>>(new Set());
   const [assetFiles, setAssetFiles] = useState<Record<string, AssetFileInfo[]>>(
     {}
@@ -141,10 +144,11 @@ const PublisherDetailPage = () => {
   const handleDeleteBook = useCallback(async () => {
     if (!deleteTarget || !token) return;
     const bookName = deleteTarget.book_title || deleteTarget.book_name;
+    const shouldDeleteBundles = delBundles;
     setDeleteTarget(null);
 
     try {
-      const res = await deleteBook(deleteTarget.id, token, tt);
+      const res = await deleteBook(deleteTarget.id, token, tt, shouldDeleteBundles);
       const jobId = res.job_id;
       addOperation({ id: jobId, type: 'delete', bookName });
       updateOperation(jobId, { status: 'in_progress', progress: 5 });
@@ -177,7 +181,7 @@ const PublisherDetailPage = () => {
       addOperation({ id: `err-${Date.now()}`, type: 'delete', bookName });
       updateOperation(`err-${Date.now()}`, { status: 'failed', error: errMsg });
     }
-  }, [deleteTarget, token, tt, addOperation, updateOperation, load]);
+  }, [deleteTarget, token, tt, delBundles, addOperation, updateOperation, load]);
 
   useEffect(() => () => clearInterval(pollRef.current), []);
 
@@ -366,7 +370,10 @@ const PublisherDetailPage = () => {
                         variant="ghost"
                         size="icon"
                         className="h-7 w-7"
-                        onClick={() => setDeleteTarget(b)}
+                        onClick={() => {
+                          setDeleteTarget(b);
+                          setDelBundles(true);
+                        }}
                       >
                         <Trash2 className="h-4 w-4 text-destructive" />
                       </Button>
@@ -407,6 +414,16 @@ const PublisherDetailPage = () => {
               This will remove all files from storage and cannot be undone.
             </DialogDescription>
           </DialogHeader>
+          <div className="flex items-center space-x-2 py-2">
+            <Checkbox
+              id="del-bundles-pub"
+              checked={delBundles}
+              onCheckedChange={(c) => setDelBundles(c === true)}
+            />
+            <Label htmlFor="del-bundles-pub" className="text-sm font-normal">
+              Also delete bundles (standalone app builds)
+            </Label>
+          </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>
               Cancel
