@@ -582,6 +582,9 @@ def delete_book(
 
             set_deletion_progress(job_id, 85, "database", "Removing database record...")
 
+            # Trigger webhook BEFORE deleting DB record (webhook needs the book data)
+            _trigger_webhook(book_id, WebhookEventType.BOOK_DELETED)
+
             # Delete DB record
             session = SessionLocal()
             try:
@@ -592,9 +595,6 @@ def delete_book(
                 session.close()
 
             _invalidate_book_cache()
-
-            # Trigger webhook
-            _trigger_webhook(book_id, WebhookEventType.BOOK_DELETED)
 
             set_deletion_progress(job_id, 100, "completed", f"{total_removed} files deleted")
 
