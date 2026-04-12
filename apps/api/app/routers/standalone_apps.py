@@ -330,16 +330,17 @@ def _run_bundle_creation(
         set_upload_progress(job_id, 0, "error", error=str(exc))
 
 
-@router.post("/bundle", response_model=AsyncBundleResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post("/bundle", status_code=status.HTTP_202_ACCEPTED)
 def create_bundle_endpoint(
     payload: BundleRequest,
     background_tasks: BackgroundTasks,
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
     db: Session = Depends(get_db),
-) -> AsyncBundleResponse:
-    """Create a bundled standalone app asynchronously.
+) -> AsyncBundleResponse | BundleResponse:
+    """Create a bundled standalone app.
 
-    Returns a job_id for tracking progress via /bundle-status/{job_id}.
+    If bundle already exists and force=False, returns 200 with download_url immediately.
+    Otherwise returns 202 with job_id for tracking progress via /bundle-status/{job_id}.
     """
     _require_api_key_or_admin(credentials, db)
 
@@ -356,6 +357,33 @@ def create_bundle_endpoint(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Publisher for book ID {payload.book_id} not found",
         )
+
+    # If not forcing, check for existing bundle — return immediately if found
+    if not payload.force:
+        settings = get_settings()
+        client = get_minio_client(settings)
+        external_client = get_minio_client_external(settings)
+
+        normalized_platform = payload.platform.lower()
+        bundle_prefix = f"bundles/{publisher.id}/{book.book_name}/"
+        try:
+            for obj in client.list_objects(settings.minio_apps_bucket, prefix=bundle_prefix, recursive=True):
+                file_name = obj.object_name.split("/")[-1]
+                if file_name.lower().startswith(f"({normalized_platform})"):
+                    download_url = external_client.presigned_get_object(
+                        bucket_name=settings.minio_apps_bucket,
+                        object_name=obj.object_name,
+                        expires=timedelta(seconds=PRESIGNED_URL_EXPIRY_SECONDS),
+                    )
+                    expires_at = datetime.now(timezone.utc) + timedelta(seconds=PRESIGNED_URL_EXPIRY_SECONDS)
+                    return BundleResponse(
+                        download_url=download_url,
+                        file_name=file_name,
+                        file_size=obj.size or 0,
+                        expires_at=expires_at,
+                    )
+        except Exception as exc:
+            logger.warning("Failed to check existing bundle: %s", exc)
 
     job_id = str(uuid.uuid4())
 
