@@ -447,10 +447,6 @@ async def get_bundle_status(
     # Try worker job repository
     settings = get_settings()
     try:
-        from arq import create_pool
-        from arq.connections import RedisSettings
-        from arq.jobs import Job
-
         from app.services.queue.redis import get_redis_connection
         from app.services.queue.repository import JobRepository
 
@@ -462,19 +458,8 @@ async def get_bundle_status(
 
         job = await repository.get_job(job_id)
 
-        # Try to get download_url from arq result if completed
-        download_url = None
-        if job.status.value in ("completed", "failed"):
-            try:
-                redis_settings = RedisSettings.from_dsn(settings.redis_url)
-                pool = await create_pool(redis_settings)
-                arq_job = Job(job_id, pool)
-                result = await arq_job.result(timeout=1)
-                if result and isinstance(result, dict):
-                    download_url = result.get("download_url")
-                await pool.close()
-            except Exception:
-                pass
+        # Read download_url directly from job hash
+        download_url = await redis_conn.client.hget(f"dcs:job:{job_id}", "download_url")
 
         return BundleJobResult(
             job_id=job.job_id,

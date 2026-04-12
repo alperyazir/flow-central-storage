@@ -2088,6 +2088,11 @@ async def create_bundle_task(
             )
 
             await update_progress(100, "Bundle ready")
+
+            # Store download_url in job hash so bundle-status can return it
+            job_key = f"dcs:job:{job_id}"
+            await repository._redis.hset(job_key, "download_url", download_url)
+
             await repository.update_job_status(job_id, ProcessingStatus.COMPLETED)
 
             logger.info(
