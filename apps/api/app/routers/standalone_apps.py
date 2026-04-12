@@ -323,6 +323,7 @@ def _run_bundle_creation(
         set_upload_progress(
             job_id, 100, "completed",
             detail=f"{file_name} ({file_size // 1024 // 1024}MB)",
+            download_url=download_url,
         )
 
     except Exception as exc:
@@ -330,10 +331,11 @@ def _run_bundle_creation(
         set_upload_progress(job_id, 0, "error", error=str(exc))
 
 
-@router.post("/bundle", status_code=status.HTTP_202_ACCEPTED)
+@router.post("/bundle")
 def create_bundle_endpoint(
     payload: BundleRequest,
     background_tasks: BackgroundTasks,
+    response: Response,
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
     db: Session = Depends(get_db),
 ) -> AsyncBundleResponse | BundleResponse:
@@ -358,7 +360,7 @@ def create_bundle_endpoint(
             detail=f"Publisher for book ID {payload.book_id} not found",
         )
 
-    # If not forcing, check for existing bundle — return immediately if found
+    # Check for existing bundle — return immediately if found
     if not payload.force:
         settings = get_settings()
         client = get_minio_client(settings)
@@ -367,7 +369,8 @@ def create_bundle_endpoint(
         normalized_platform = payload.platform.lower()
         bundle_prefix = f"bundles/{publisher.id}/{book.book_name}/"
         try:
-            for obj in client.list_objects(settings.minio_apps_bucket, prefix=bundle_prefix, recursive=True):
+            found_objects = list(client.list_objects(settings.minio_apps_bucket, prefix=bundle_prefix, recursive=True))
+            for obj in found_objects:
                 file_name = obj.object_name.split("/")[-1]
                 if file_name.lower().startswith(f"({normalized_platform})"):
                     download_url = external_client.presigned_get_object(
@@ -376,6 +379,7 @@ def create_bundle_endpoint(
                         expires=timedelta(seconds=PRESIGNED_URL_EXPIRY_SECONDS),
                     )
                     expires_at = datetime.now(timezone.utc) + timedelta(seconds=PRESIGNED_URL_EXPIRY_SECONDS)
+                    response.status_code = status.HTTP_200_OK
                     return BundleResponse(
                         download_url=download_url,
                         file_name=file_name,
@@ -399,6 +403,7 @@ def create_bundle_endpoint(
         force=payload.force,
     )
 
+    response.status_code = status.HTTP_202_ACCEPTED
     return AsyncBundleResponse(
         job_id=job_id,
         status="queued",
@@ -429,6 +434,7 @@ def get_bundle_status(
         status=progress.get("step", "unknown"),
         progress=progress.get("progress", 0),
         current_step=progress.get("detail", ""),
+        download_url=progress.get("download_url"),
         error_message=progress.get("error"),
         created_at=datetime.now(timezone.utc),
     )

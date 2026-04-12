@@ -86,12 +86,14 @@ _UPLOAD_TTL = 3600  # 1 hour
 
 
 def set_upload_progress(
-    job_id: str, progress: int, step: str, detail: str = "", book_id: int | None = None, error: str | None = None
+    job_id: str, progress: int, step: str, detail: str = "", book_id: int | None = None, error: str | None = None,
+    download_url: str | None = None,
 ) -> None:
     """Update upload progress in Redis."""
     try:
         r = _get_sync_redis()
-        data = {"progress": progress, "step": step, "detail": detail, "book_id": book_id, "error": error}
+        data = {"progress": progress, "step": step, "detail": detail, "book_id": book_id, "error": error,
+                "download_url": download_url}
         r.setex(f"fcs:upload:{job_id}", _UPLOAD_TTL, json.dumps(data, default=str))
     except Exception:
         pass
