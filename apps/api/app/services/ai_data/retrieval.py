@@ -46,7 +46,7 @@ class AIDataRetrievalService:
 
     def get_metadata(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
     ) -> ProcessingMetadata | None:
@@ -61,11 +61,11 @@ class AIDataRetrievalService:
         Returns:
             ProcessingMetadata instance or None if not found.
         """
-        return self._metadata_service.get_metadata(publisher_id, book_id, book_name)
+        return self._metadata_service.get_metadata(publisher_slug, book_id, book_name)
 
     def list_modules(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
     ) -> list[dict[str, Any]] | None:
@@ -81,7 +81,7 @@ class AIDataRetrievalService:
             List of module summary dictionaries, or None if not found.
         """
         try:
-            modules = self._module_storage.list_modules(publisher_id, book_id, book_name)
+            modules = self._module_storage.list_modules(publisher_slug, book_id, book_name)
             if not modules:
                 return None
             return modules
@@ -93,7 +93,7 @@ class AIDataRetrievalService:
 
     def get_module(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
         module_id: int,
@@ -110,11 +110,11 @@ class AIDataRetrievalService:
         Returns:
             Module dictionary or None if not found.
         """
-        return self._module_storage.get_module(publisher_id, book_id, book_name, module_id)
+        return self._module_storage.get_module(publisher_slug, book_id, book_name, module_id)
 
     def get_vocabulary(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
         module_id: int | None = None,
@@ -131,7 +131,7 @@ class AIDataRetrievalService:
         Returns:
             Vocabulary dictionary or None if not found.
         """
-        vocabulary = self._vocabulary_storage.load_vocabulary(publisher_id, book_id, book_name)
+        vocabulary = self._vocabulary_storage.load_vocabulary(publisher_slug, book_id, book_name)
         if vocabulary is None:
             return None
 
@@ -144,7 +144,7 @@ class AIDataRetrievalService:
 
     def get_audio_url(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
         language: str,
@@ -170,7 +170,7 @@ class AIDataRetrievalService:
 
         # Build audio file path
         # Path: {publisher_id}/books/{book_name}/ai-data/audio/vocabulary/{lang}/{word}.mp3
-        audio_path = f"{publisher_id}/books/{book_name}/ai-data/audio/vocabulary/{language}/{word}.mp3"
+        audio_path = f"{publisher_slug}/books/{book_name}/ai-data/audio/vocabulary/{language}/{word}.mp3"
 
         # Check if file exists
         try:
@@ -197,7 +197,7 @@ class AIDataRetrievalService:
 
     def audio_exists(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
         language: str,
@@ -219,7 +219,7 @@ class AIDataRetrievalService:
         client = get_minio_client(self.settings)
         bucket = self.settings.minio_publishers_bucket
 
-        audio_path = f"{publisher_id}/books/{book_name}/ai-data/audio/vocabulary/{language}/{word}.mp3"
+        audio_path = f"{publisher_slug}/books/{book_name}/ai-data/audio/vocabulary/{language}/{word}.mp3"
 
         try:
             client.stat_object(bucket, audio_path)
@@ -231,7 +231,7 @@ class AIDataRetrievalService:
 
     def get_modules_metadata(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
     ) -> dict[str, Any] | None:
@@ -252,7 +252,7 @@ class AIDataRetrievalService:
         bucket = self.settings.minio_publishers_bucket
 
         # Path: {publisher_id}/books/{book_name}/ai-data/modules/metadata.json
-        metadata_path = f"{publisher_id}/books/{book_name}/ai-data/modules/metadata.json"
+        metadata_path = f"{publisher_slug}/books/{book_name}/ai-data/modules/metadata.json"
 
         try:
             response = client.get_object(bucket, metadata_path)

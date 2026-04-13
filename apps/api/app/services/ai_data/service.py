@@ -45,18 +45,18 @@ class AIDataMetadataService:
 
     def _build_metadata_path(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
     ) -> str:
         """Build path for metadata.json file."""
         # Path: {publisher_id}/books/{book_name}/ai-data (book_id not in path)
-        return f"{publisher_id}/books/{book_name}/ai-data/metadata.json"
+        return f"{publisher_slug}/books/{book_name}/ai-data/metadata.json"
 
     def create_metadata(
         self,
         book_id: str,
-        publisher_id: int,
+        publisher_slug: str,
         book_name: str,
     ) -> ProcessingMetadata:
         """
@@ -79,7 +79,7 @@ class AIDataMetadataService:
         # Create initial metadata
         metadata = ProcessingMetadata(
             book_id=book_id,
-            publisher_id=publisher_id,
+            publisher_id=publisher_slug,
             book_name=book_name,
             processing_status=ProcessingStatus.PROCESSING,
             processing_started_at=datetime.now(timezone.utc),
@@ -95,7 +95,7 @@ class AIDataMetadataService:
             },
         )
 
-        path = self._build_metadata_path(publisher_id, book_id, book_name)
+        path = self._build_metadata_path(publisher_slug, book_id, book_name)
 
         try:
             self._save_metadata(client, bucket, path, metadata)
@@ -111,7 +111,7 @@ class AIDataMetadataService:
 
     def update_metadata(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
         stage_name: str,
@@ -139,13 +139,13 @@ class AIDataMetadataService:
         """
         client = get_minio_client(self.settings)
         bucket = self.settings.minio_publishers_bucket
-        path = self._build_metadata_path(publisher_id, book_id, book_name)
+        path = self._build_metadata_path(publisher_slug, book_id, book_name)
 
         # Load existing metadata
-        metadata = self.get_metadata(publisher_id, book_id, book_name)
+        metadata = self.get_metadata(publisher_slug, book_id, book_name)
         if metadata is None:
             # Create if doesn't exist
-            metadata = self.create_metadata(book_id, publisher_id, book_name)
+            metadata = self.create_metadata(book_id, publisher_slug, book_name)
 
         # Update stage result
         stage = StageResult(
@@ -231,7 +231,7 @@ class AIDataMetadataService:
 
     def finalize_metadata(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
         final_status: ProcessingStatus,
@@ -255,10 +255,10 @@ class AIDataMetadataService:
         """
         client = get_minio_client(self.settings)
         bucket = self.settings.minio_publishers_bucket
-        path = self._build_metadata_path(publisher_id, book_id, book_name)
+        path = self._build_metadata_path(publisher_slug, book_id, book_name)
 
         # Load existing metadata
-        metadata = self.get_metadata(publisher_id, book_id, book_name)
+        metadata = self.get_metadata(publisher_slug, book_id, book_name)
         if metadata is None:
             raise MetadataError(book_id, "finalize", "Metadata not found")
 
@@ -289,7 +289,7 @@ class AIDataMetadataService:
 
     def get_metadata(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
     ) -> ProcessingMetadata | None:
@@ -306,7 +306,7 @@ class AIDataMetadataService:
         """
         client = get_minio_client(self.settings)
         bucket = self.settings.minio_publishers_bucket
-        path = self._build_metadata_path(publisher_id, book_id, book_name)
+        path = self._build_metadata_path(publisher_slug, book_id, book_name)
 
         try:
             response = client.get_object(bucket, path)
@@ -323,7 +323,7 @@ class AIDataMetadataService:
 
     def metadata_exists(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
     ) -> bool:
@@ -340,7 +340,7 @@ class AIDataMetadataService:
         """
         client = get_minio_client(self.settings)
         bucket = self.settings.minio_publishers_bucket
-        path = self._build_metadata_path(publisher_id, book_id, book_name)
+        path = self._build_metadata_path(publisher_slug, book_id, book_name)
 
         try:
             client.stat_object(bucket, path)

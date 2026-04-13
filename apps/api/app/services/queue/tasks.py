@@ -98,12 +98,25 @@ async def process_book_task(
     elif "book_name" in job_metadata:
         book_name = job_metadata["book_name"]
 
-    # Use publisher_id (int) directly for storage paths
-    # The publisher_id parameter is the actual numeric publisher ID
+    # Use publisher_id (int) directly for DB lookups
     pub_id = int(publisher_id) if isinstance(publisher_id, str) and publisher_id.isdigit() else publisher_id
 
-    # Store pub_id in metadata so stage functions can access it
+    # Resolve publisher slug for storage paths
+    # Priority: metadata > DB lookup
+    pub_slug = job_metadata.get("publisher_slug", "")
+    if not pub_slug:
+        from app.db import SessionLocal
+        from app.repositories.publisher import PublisherRepository
+        _session = SessionLocal()
+        try:
+            _pub = PublisherRepository().get(_session, int(pub_id))
+            pub_slug = _pub.slug if _pub else str(pub_id)
+        finally:
+            _session.close()
+
+    # Store in metadata so stage functions can access it
     job_metadata["publisher_id_int"] = pub_id
+    job_metadata["publisher_slug"] = pub_slug
 
     logger.info(
         "Starting processing job %s for book %s (type: %s, publisher_id: %s)",
@@ -131,17 +144,17 @@ async def process_book_task(
         # Initialize AI data structure and metadata using publisher_id (int)
         if book_name:
             # Check if reprocessing - cleanup existing ai-data if metadata exists
-            if metadata_service.metadata_exists(pub_id, book_id, book_name):
+            if metadata_service.metadata_exists(pub_slug, book_id, book_name):
                 logger.info("Reprocessing detected, cleaning up existing ai-data")
-                cleanup_manager.cleanup_all(pub_id, book_id, book_name)
+                cleanup_manager.cleanup_all(pub_slug, book_id, book_name)
 
             # Initialize directory structure
-            structure_manager.initialize_ai_data_structure(pub_id, book_id, book_name)
+            structure_manager.initialize_ai_data_structure(pub_slug, book_id, book_name)
 
             # Create initial metadata.json
             metadata_service.create_metadata(
                 book_id=book_id,
-                publisher_id=pub_id,
+                publisher_slug=pub_slug,
                 book_name=book_name,
             )
             logger.info("Initialized ai-data structure and metadata for book %s", book_id)
@@ -165,7 +178,7 @@ async def process_book_task(
                 # Update metadata.json with stage results
                 if book_name and result:
                     metadata_service.update_metadata(
-                        publisher_id=pub_id,
+                        publisher_slug=pub_slug,
                         book_id=book_id,
                         book_name=book_name,
                         stage_name=stage,
@@ -190,7 +203,7 @@ async def process_book_task(
                 # Update metadata.json with stage failure
                 if book_name:
                     metadata_service.update_metadata(
-                        publisher_id=pub_id,
+                        publisher_slug=pub_slug,
                         book_id=book_id,
                         book_name=book_name,
                         stage_name=stage,
@@ -222,7 +235,7 @@ async def process_book_task(
             # Finalize metadata with partial status
             if book_name:
                 metadata_service.finalize_metadata(
-                    publisher_id=pub_id,
+                    publisher_slug=pub_slug,
                     book_id=book_id,
                     book_name=book_name,
                     final_status=AIDataProcessingStatus.PARTIAL,
@@ -245,7 +258,7 @@ async def process_book_task(
         # Finalize metadata with completed status
         if book_name:
             metadata_service.finalize_metadata(
-                publisher_id=pub_id,
+                publisher_slug=pub_slug,
                 book_id=book_id,
                 book_name=book_name,
                 final_status=AIDataProcessingStatus.COMPLETED,
@@ -269,7 +282,7 @@ async def process_book_task(
         if book_name:
             try:
                 metadata_service.finalize_metadata(
-                    publisher_id=pub_id,
+                    publisher_slug=pub_slug,
                     book_id=book_id,
                     book_name=book_name,
                     final_status=AIDataProcessingStatus.FAILED,
@@ -365,14 +378,14 @@ async def _run_processing_stage(
     # Report initial progress for stage
     await progress.report_progress(stage, 0)
 
-    # Get the integer publisher_id from metadata
-    pub_id = metadata.get("publisher_id_int", publisher_id)
+    # Get publisher slug from metadata for storage paths
+    pub_slug = metadata.get("publisher_slug", publisher_id)
 
     if stage == "text_extraction":
         return await _run_text_extraction(
             job_id=job_id,
             book_id=book_id,
-            publisher_id=pub_id,
+            publisher_slug=pub_slug,
             book_name=metadata.get("book_name", ""),
             progress=progress,
         )
@@ -381,7 +394,7 @@ async def _run_processing_stage(
         return await _run_segmentation(
             job_id=job_id,
             book_id=book_id,
-            publisher_id=pub_id,
+            publisher_slug=pub_slug,
             book_name=metadata.get("book_name", ""),
             progress=progress,
             text_extraction_result=stage_results.get("text_extraction"),
@@ -391,7 +404,7 @@ async def _run_processing_stage(
         return await _run_unified_analysis(
             job_id=job_id,
             book_id=book_id,
-            publisher_id=pub_id,
+            publisher_slug=pub_slug,
             book_name=metadata.get("book_name", ""),
             progress=progress,
             text_extraction_result=stage_results.get("text_extraction"),
@@ -401,7 +414,7 @@ async def _run_processing_stage(
         return await _run_chunked_analysis(
             job_id=job_id,
             book_id=book_id,
-            publisher_id=pub_id,
+            publisher_slug=pub_slug,
             book_name=metadata.get("book_name", ""),
             progress=progress,
             text_extraction_result=stage_results.get("text_extraction"),
@@ -411,7 +424,7 @@ async def _run_processing_stage(
         return await _run_topic_analysis(
             job_id=job_id,
             book_id=book_id,
-            publisher_id=pub_id,
+            publisher_slug=pub_slug,
             book_name=metadata.get("book_name", ""),
             progress=progress,
             segmentation_result=stage_results.get("segmentation"),
@@ -421,7 +434,7 @@ async def _run_processing_stage(
         return await _run_vocabulary_extraction(
             job_id=job_id,
             book_id=book_id,
-            publisher_id=pub_id,
+            publisher_slug=pub_slug,
             book_name=metadata.get("book_name", ""),
             progress=progress,
             topic_analysis_result=stage_results.get("topic_analysis"),
@@ -431,7 +444,7 @@ async def _run_processing_stage(
         return await _run_audio_generation(
             job_id=job_id,
             book_id=book_id,
-            publisher_id=pub_id,
+            publisher_slug=pub_slug,
             book_name=metadata.get("book_name", ""),
             progress=progress,
             vocabulary_result=stage_results.get("vocabulary"),
@@ -447,7 +460,7 @@ async def _run_processing_stage(
 async def _run_text_extraction(
     job_id: str,
     book_id: str,
-    publisher_id: int,
+    publisher_slug: str,
     book_name: str,
     progress: ProgressReporter,
 ) -> dict[str, Any]:
@@ -458,7 +471,7 @@ async def _run_text_extraction(
     Args:
         job_id: Job ID
         book_id: Book ID
-        publisher_id: Publisher ID (integer)
+        publisher_slug: Publisher ID (integer)
         book_name: Book folder name
         progress: Progress reporter
 
@@ -475,9 +488,9 @@ async def _run_text_extraction(
         )
 
     logger.info(
-        "Starting text extraction for book %s (publisher_id: %s, name: %s)",
+        "Starting text extraction for book %s (publisher_slug: %s, name: %s)",
         book_id,
-        publisher_id,
+        publisher_slug,
         book_name,
     )
 
@@ -494,12 +507,12 @@ async def _run_text_extraction(
     ai_storage = get_ai_storage()
 
     # Clean up any existing text files before re-extraction
-    ai_storage.cleanup_text_directory(publisher_id, book_id, book_name)
+    ai_storage.cleanup_text_directory(publisher_slug, book_id, book_name)
 
     # Extract text from PDF
     result = await extraction_service.extract_book_pdf(
         book_id=book_id,
-        publisher_id=publisher_id,
+        publisher_slug=publisher_slug,
         book_name=book_name,
         progress_callback=on_progress,
     )
@@ -531,7 +544,7 @@ async def _run_text_extraction(
 async def _run_segmentation(
     job_id: str,
     book_id: str,
-    publisher_id: int,
+    publisher_slug: str,
     book_name: str,
     progress: ProgressReporter,
     text_extraction_result: dict[str, Any] | None = None,
@@ -543,7 +556,7 @@ async def _run_segmentation(
     Args:
         job_id: Job ID
         book_id: Book ID
-        publisher_id: Publisher ID (integer)
+        publisher_slug: Publisher ID (integer)
         book_name: Book folder name
         progress: Progress reporter
         text_extraction_result: Result from text extraction stage
@@ -561,9 +574,9 @@ async def _run_segmentation(
         )
 
     logger.info(
-        "Starting segmentation for book %s (publisher_id: %s, name: %s)",
+        "Starting segmentation for book %s (publisher_slug: %s, name: %s)",
         book_id,
-        publisher_id,
+        publisher_slug,
         book_name,
     )
 
@@ -577,12 +590,12 @@ async def _run_segmentation(
     module_storage = get_module_storage()
 
     # Clean up any existing module files before re-segmentation
-    module_storage.cleanup_modules_directory(publisher_id, book_id, book_name)
+    module_storage.cleanup_modules_directory(publisher_slug, book_id, book_name)
 
     # Run segmentation
     result = await segmentation_service.segment_book(
         book_id=book_id,
-        publisher_id=publisher_id,
+        publisher_slug=publisher_slug,
         book_name=book_name,
         progress_callback=on_progress,
     )
@@ -615,7 +628,7 @@ async def _run_segmentation(
 async def _run_unified_analysis(
     job_id: str,
     book_id: str,
-    publisher_id: int,
+    publisher_slug: str,
     book_name: str,
     progress: ProgressReporter,
     text_extraction_result: dict[str, Any] | None = None,
@@ -628,7 +641,7 @@ async def _run_unified_analysis(
     Args:
         job_id: Job ID
         book_id: Book ID
-        publisher_id: Publisher ID (integer)
+        publisher_slug: Publisher ID (integer)
         book_name: Book folder name
         progress: Progress reporter
         text_extraction_result: Result from text extraction stage
@@ -646,9 +659,9 @@ async def _run_unified_analysis(
         )
 
     logger.info(
-        "Starting unified AI analysis for book %s (publisher_id: %s, name: %s)",
+        "Starting unified AI analysis for book %s (publisher_slug: %s, name: %s)",
         book_id,
-        publisher_id,
+        publisher_slug,
         book_name,
     )
 
@@ -663,7 +676,7 @@ async def _run_unified_analysis(
     unified_storage = get_unified_analysis_storage()
 
     # Load extracted text pages
-    pages = await _load_text_pages_for_analysis(publisher_id, book_id, book_name)
+    pages = await _load_text_pages_for_analysis(publisher_slug, book_id, book_name)
 
     if not pages:
         raise QueueError(
@@ -681,7 +694,7 @@ async def _run_unified_analysis(
     # Run unified analysis
     result = await unified_service.analyze_book(
         book_id=book_id,
-        publisher_id=publisher_id,
+        publisher_slug=publisher_slug,
         book_name=book_name,
         pages=pages,
         progress_callback=on_progress,
@@ -720,7 +733,7 @@ async def _run_unified_analysis(
 async def _run_chunked_analysis(
     job_id: str,
     book_id: str,
-    publisher_id: int,
+    publisher_slug: str,
     book_name: str,
     progress: ProgressReporter,
     text_extraction_result: dict[str, Any] | None = None,
@@ -736,7 +749,7 @@ async def _run_chunked_analysis(
     Args:
         job_id: Job ID
         book_id: Book ID
-        publisher_id: Publisher ID (integer)
+        publisher_slug: Publisher ID (integer)
         book_name: Book folder name
         progress: Progress reporter
         text_extraction_result: Result from text extraction stage
@@ -754,9 +767,9 @@ async def _run_chunked_analysis(
         )
 
     logger.info(
-        "Starting chunked AI analysis for book %s (publisher_id: %s, name: %s)",
+        "Starting chunked AI analysis for book %s (publisher_slug: %s, name: %s)",
         book_id,
-        publisher_id,
+        publisher_slug,
         book_name,
     )
 
@@ -772,7 +785,7 @@ async def _run_chunked_analysis(
     unified_storage = get_unified_analysis_storage()
 
     # Load extracted text pages
-    pages = await _load_text_pages_for_analysis(publisher_id, book_id, book_name)
+    pages = await _load_text_pages_for_analysis(publisher_slug, book_id, book_name)
 
     if not pages:
         raise QueueError(
@@ -805,7 +818,7 @@ async def _run_chunked_analysis(
     # Run chunked analysis
     result = await unified_service.analyze_book_chunked(
         book_id=book_id,
-        publisher_id=publisher_id,
+        publisher_slug=publisher_slug,
         book_name=book_name,
         pages=pages,
         progress_callback=None,
@@ -843,7 +856,7 @@ async def _run_chunked_analysis(
 
 
 async def _load_text_pages_for_analysis(
-    publisher_id: int,
+    publisher_slug: str,
     book_id: str,
     book_name: str,
 ) -> dict[int, str]:
@@ -859,7 +872,7 @@ async def _load_text_pages_for_analysis(
     pages: dict[int, str] = {}
 
     # Get extraction metadata to know page count
-    meta_path = f"{publisher_id}/books/{book_name}/ai-data/text/extraction_metadata.json"
+    meta_path = f"{publisher_slug}/books/{book_name}/ai-data/text/extraction_metadata.json"
     try:
         response = client.get_object(bucket, meta_path)
         meta_data = response.read()
@@ -873,7 +886,7 @@ async def _load_text_pages_for_analysis(
 
         # Load each page
         for page_num in range(1, total_pages + 1):
-            page_path = f"{publisher_id}/books/{book_name}/ai-data/text/page_{page_num:03d}.txt"
+            page_path = f"{publisher_slug}/books/{book_name}/ai-data/text/page_{page_num:03d}.txt"
             try:
                 resp = client.get_object(bucket, page_path)
                 text = resp.read().decode("utf-8")
@@ -893,7 +906,7 @@ async def _load_text_pages_for_analysis(
 async def _run_topic_analysis(
     job_id: str,
     book_id: str,
-    publisher_id: int,
+    publisher_slug: str,
     book_name: str,
     progress: ProgressReporter,
     segmentation_result: dict[str, Any] | None = None,
@@ -905,7 +918,7 @@ async def _run_topic_analysis(
     Args:
         job_id: Job ID
         book_id: Book ID
-        publisher_id: Publisher ID (integer)
+        publisher_slug: Publisher ID (integer)
         book_name: Book folder name
         progress: Progress reporter
         segmentation_result: Result from segmentation stage
@@ -923,9 +936,9 @@ async def _run_topic_analysis(
         )
 
     logger.info(
-        "Starting topic analysis for book %s (publisher_id: %s, name: %s)",
+        "Starting topic analysis for book %s (publisher_slug: %s, name: %s)",
         book_id,
-        publisher_id,
+        publisher_slug,
         book_name,
     )
 
@@ -934,12 +947,12 @@ async def _run_topic_analysis(
     topic_storage = get_topic_storage()
 
     # Load modules from storage
-    modules = topic_storage.list_modules(publisher_id, book_id, book_name)
+    modules = topic_storage.list_modules(publisher_slug, book_id, book_name)
 
     if not modules:
         logger.warning(
             "No modules found for topic analysis: %s/%s/%s",
-            publisher_id,
+            publisher_slug,
             book_id,
             book_name,
         )
@@ -963,7 +976,7 @@ async def _run_topic_analysis(
     # Run topic analysis
     result = await topic_service.analyze_book(
         book_id=book_id,
-        publisher_id=publisher_id,
+        publisher_slug=publisher_slug,
         book_name=book_name,
         modules=modules,
         progress_callback=on_progress,
@@ -1002,7 +1015,7 @@ async def _run_topic_analysis(
 async def _run_vocabulary_extraction(
     job_id: str,
     book_id: str,
-    publisher_id: int,
+    publisher_slug: str,
     book_name: str,
     progress: ProgressReporter,
     topic_analysis_result: dict[str, Any] | None = None,
@@ -1014,7 +1027,7 @@ async def _run_vocabulary_extraction(
     Args:
         job_id: Job ID
         book_id: Book ID
-        publisher_id: Publisher ID (integer)
+        publisher_slug: Publisher ID (integer)
         book_name: Book folder name
         progress: Progress reporter
         topic_analysis_result: Result from topic analysis stage
@@ -1032,9 +1045,9 @@ async def _run_vocabulary_extraction(
         )
 
     logger.info(
-        "Starting vocabulary extraction for book %s (publisher_id: %s, name: %s)",
+        "Starting vocabulary extraction for book %s (publisher_slug: %s, name: %s)",
         book_id,
-        publisher_id,
+        publisher_slug,
         book_name,
     )
 
@@ -1043,12 +1056,12 @@ async def _run_vocabulary_extraction(
     vocab_storage = get_vocabulary_storage()
 
     # Load modules from storage
-    modules = vocab_storage.list_modules(publisher_id, book_id, book_name)
+    modules = vocab_storage.list_modules(publisher_slug, book_id, book_name)
 
     if not modules:
         logger.warning(
             "No modules found for vocabulary extraction: %s/%s/%s",
-            publisher_id,
+            publisher_slug,
             book_id,
             book_name,
         )
@@ -1075,7 +1088,7 @@ async def _run_vocabulary_extraction(
     # Run vocabulary extraction
     result = await vocab_service.extract_book_vocabulary(
         book_id=book_id,
-        publisher_id=publisher_id,
+        publisher_slug=publisher_slug,
         book_name=book_name,
         modules=modules,
         language=primary_language,
@@ -1115,7 +1128,7 @@ async def _run_vocabulary_extraction(
 async def _run_audio_generation(
     job_id: str,
     book_id: str,
-    publisher_id: int,
+    publisher_slug: str,
     book_name: str,
     progress: ProgressReporter,
     vocabulary_result: dict[str, Any] | None = None,
@@ -1127,7 +1140,7 @@ async def _run_audio_generation(
     Args:
         job_id: Job ID
         book_id: Book ID
-        publisher_id: Publisher ID (integer)
+        publisher_slug: Publisher ID (integer)
         book_name: Book folder name
         progress: Progress reporter
         vocabulary_result: Result from vocabulary extraction stage
@@ -1145,9 +1158,9 @@ async def _run_audio_generation(
         )
 
     logger.info(
-        "Starting audio generation for book %s (publisher_id: %s, name: %s)",
+        "Starting audio generation for book %s (publisher_slug: %s, name: %s)",
         book_id,
-        publisher_id,
+        publisher_slug,
         book_name,
     )
 
@@ -1157,11 +1170,11 @@ async def _run_audio_generation(
 
     # Load vocabulary from storage
     try:
-        vocabulary_data = audio_storage.load_vocabulary(publisher_id, book_id, book_name)
+        vocabulary_data = audio_storage.load_vocabulary(publisher_slug, book_id, book_name)
     except Exception as e:
         logger.warning(
             "No vocabulary found for audio generation: %s/%s/%s - %s",
-            publisher_id,
+            publisher_slug,
             book_id,
             book_name,
             e,
@@ -1200,13 +1213,13 @@ async def _run_audio_generation(
     await progress.report_progress("audio_generation", 10)
 
     # Clean up existing audio before re-generation
-    audio_storage.cleanup_audio_directory(publisher_id, book_id, book_name)
+    audio_storage.cleanup_audio_directory(publisher_slug, book_id, book_name)
 
     # Generate audio for all vocabulary words
     result, audio_data = await audio_service.generate_vocabulary_audio(
         vocabulary=vocabulary_words,
         book_id=book_id,
-        publisher_id=publisher_id,
+        publisher_slug=publisher_slug,
         book_name=book_name,
         language=primary_language,
         translation_language=translation_language,
@@ -1218,7 +1231,7 @@ async def _run_audio_generation(
 
     # Save audio files to storage
     save_result = audio_storage.save_all_audio(
-        publisher_id=publisher_id,
+        publisher_slug=publisher_slug,
         book_id=book_id,
         book_name=book_name,
         audio_files=result.audio_files,
@@ -1231,7 +1244,7 @@ async def _run_audio_generation(
     # Update vocabulary.json with audio paths
     if result.audio_files:
         audio_storage.update_vocabulary_audio_paths(
-            publisher_id=publisher_id,
+            publisher_slug=publisher_slug,
             book_id=book_id,
             book_name=book_name,
             audio_files=result.audio_files,
@@ -1816,7 +1829,7 @@ async def create_bundle_task(
     job_id: str,
     platform: str,
     book_id: int,
-    publisher_id: int,
+    publisher_slug: str,
     book_name: str,
     force: bool = False,
     metadata: dict[str, Any] | None = None,
@@ -1875,11 +1888,11 @@ async def create_bundle_task(
         await repository.update_job_progress(job_id, progress, current_step=step)
 
     logger.info(
-        "Starting bundle creation job %s for book %s (platform: %s, publisher_id: %s)",
+        "Starting bundle creation job %s for book %s (platform: %s, publisher: %s)",
         job_id,
         book_name,
         platform,
-        publisher_id,
+        publisher_slug,
     )
 
     # Update job status to processing
@@ -1909,7 +1922,7 @@ async def create_bundle_task(
 
         # Check if bundle already exists (unless force=True)
         if not force:
-            bundle_prefix = f"{BUNDLE_PREFIX}/{publisher_id}/{book_name}/"
+            bundle_prefix = f"{BUNDLE_PREFIX}/{publisher_slug}/{book_name}/"
             try:
                 existing_bundles = list(client.list_objects(apps_bucket, prefix=bundle_prefix, recursive=True))
                 for obj in existing_bundles:
@@ -1917,7 +1930,7 @@ async def create_bundle_task(
                     if file_name.lower().startswith(f"({normalized_platform})"):
                         logger.info(
                             "Found existing bundle for %s/%s platform %s",
-                            publisher_id,
+                            publisher_slug,
                             book_name,
                             normalized_platform,
                         )
@@ -2010,12 +2023,12 @@ async def create_bundle_task(
                     logger.warning("Local cache empty for %s, falling back to R2 download", local_book_path)
                     use_local_cache = False
                 else:
-                    logger.info("Copied %d assets from local cache for book %s/%s", asset_count, publisher_id, book_name)
+                    logger.info("Copied %d assets from local cache for book %s/%s", asset_count, publisher_slug, book_name)
                     await update_progress(70, f"Copied {asset_count} assets from cache")
 
             if not use_local_cache:
                 await update_progress(25, "Downloading book assets...")
-                book_prefix = f"{publisher_id}/books/{book_name}/"
+                book_prefix = f"{publisher_slug}/books/{book_name}/"
                 objects = [
                     obj for obj in client.list_objects(publishers_bucket, prefix=book_prefix, recursive=True)
                     if not obj.is_dir and obj.object_name[len(book_prefix):]
@@ -2041,7 +2054,7 @@ async def create_bundle_task(
                             pct = 25 + int(asset_count / total_objects * 45)
                             await update_progress(pct, f"Downloaded {asset_count}/{total_objects} assets")
 
-                logger.info("Downloaded %d assets in parallel for book %s/%s", asset_count, publisher_id, book_name)
+                logger.info("Downloaded %d assets in parallel for book %s/%s", asset_count, publisher_slug, book_name)
                 await update_progress(70, f"Downloaded {asset_count} assets")
 
             # 6. Rename app folder and create bundle ZIP
@@ -2069,7 +2082,7 @@ async def create_bundle_task(
 
             # 7. Upload bundle (90-100%)
             await update_progress(92, "Uploading bundle...")
-            bundle_object_name = f"{BUNDLE_PREFIX}/{publisher_id}/{book_name}/{bundle_name}.zip"
+            bundle_object_name = f"{BUNDLE_PREFIX}/{publisher_slug}/{book_name}/{bundle_name}.zip"
             bundle_size = os.path.getsize(bundle_path)
 
             client.fput_object(

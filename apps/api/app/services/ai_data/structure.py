@@ -40,7 +40,7 @@ class AIDataStructureManager:
 
     def get_ai_data_paths(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
     ) -> AIDataStructure:
@@ -48,18 +48,18 @@ class AIDataStructureManager:
         Get all expected paths for ai-data structure.
 
         Args:
-            publisher_id: Publisher ID (integer).
+            publisher_slug: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
 
         Returns:
             AIDataStructure with all paths.
         """
-        return AIDataStructure.from_book_info(publisher_id, book_id, book_name)
+        return AIDataStructure.from_book_info(publisher_slug, book_id, book_name)
 
     def initialize_ai_data_structure(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
     ) -> AIDataStructure:
@@ -71,7 +71,7 @@ class AIDataStructureManager:
         the directory structure is visible in storage browsers.
 
         Args:
-            publisher_id: Publisher ID (integer).
+            publisher_slug: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
 
@@ -84,7 +84,7 @@ class AIDataStructureManager:
         client = get_minio_client(self.settings)
         bucket = self.settings.minio_publishers_bucket
 
-        structure = self.get_ai_data_paths(publisher_id, book_id, book_name)
+        structure = self.get_ai_data_paths(publisher_slug, book_id, book_name)
 
         logger.info(
             "Initializing ai-data structure for book %s at %s",
@@ -135,7 +135,7 @@ class AIDataStructureManager:
 
     def verify_structure(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
     ) -> dict[str, bool]:
@@ -143,7 +143,7 @@ class AIDataStructureManager:
         Check if ai-data structure is properly initialized.
 
         Args:
-            publisher_id: Publisher ID (integer).
+            publisher_slug: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
 
@@ -153,7 +153,7 @@ class AIDataStructureManager:
         client = get_minio_client(self.settings)
         bucket = self.settings.minio_publishers_bucket
 
-        structure = self.get_ai_data_paths(publisher_id, book_id, book_name)
+        structure = self.get_ai_data_paths(publisher_slug, book_id, book_name)
         result: dict[str, bool] = {}
 
         for dir_path in structure.get_all_directories():
@@ -169,7 +169,7 @@ class AIDataStructureManager:
 
     def structure_exists(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
     ) -> bool:
@@ -177,7 +177,7 @@ class AIDataStructureManager:
         Check if ai-data structure exists (at least base path).
 
         Args:
-            publisher_id: Publisher ID (integer).
+            publisher_slug: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
 
@@ -187,7 +187,7 @@ class AIDataStructureManager:
         client = get_minio_client(self.settings)
         bucket = self.settings.minio_publishers_bucket
 
-        structure = self.get_ai_data_paths(publisher_id, book_id, book_name)
+        structure = self.get_ai_data_paths(publisher_slug, book_id, book_name)
         prefix = f"{structure.base_path}/"
 
         try:

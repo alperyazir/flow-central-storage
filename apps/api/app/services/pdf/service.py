@@ -47,7 +47,7 @@ class PDFExtractionService:
 
     def _build_pdf_path(
         self,
-        publisher_id: str,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
     ) -> str:
@@ -55,15 +55,14 @@ class PDFExtractionService:
         Build the MinIO path to the book's PDF file.
 
         Args:
-            publisher_id: Publisher name (not numeric ID).
+            publisher_slug: Publisher slug.
             book_id: Book identifier.
             book_name: Book name (folder name).
 
         Returns:
             MinIO object path.
         """
-        # Storage path: {publisher_name}/books/{book_name}/raw/original.pdf
-        return f"{publisher_id}/books/{book_name}/raw/original.pdf"
+        return f"{publisher_slug}/books/{book_name}/raw/original.pdf"
 
     def _download_pdf(self, pdf_path: str, book_id: str) -> bytes:
         """

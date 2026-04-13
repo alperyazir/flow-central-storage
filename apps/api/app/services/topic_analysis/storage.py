@@ -46,41 +46,41 @@ class TopicStorage:
 
     def _build_modules_path(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
         *path_parts: str,
     ) -> str:
         """Build MinIO path within ai-data/modules directory."""
         # Path: {publisher_id}/books/{book_name}/ai-data/modules (book_id not in path)
-        base = f"{publisher_id}/books/{book_name}/ai-data/modules"
+        base = f"{publisher_slug}/books/{book_name}/ai-data/modules"
         if path_parts:
             return f"{base}/{'/'.join(path_parts)}"
         return base
 
     def _build_module_path(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
         module_id: int,
     ) -> str:
         """Build path for a module JSON file."""
         filename = f"module_{module_id}.json"
-        return self._build_modules_path(publisher_id, book_id, book_name, filename)
+        return self._build_modules_path(publisher_slug, book_id, book_name, filename)
 
     def _build_metadata_path(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
     ) -> str:
         """Build path for topic analysis metadata file."""
-        return self._build_modules_path(publisher_id, book_id, book_name, "topic_analysis_metadata.json")
+        return self._build_modules_path(publisher_slug, book_id, book_name, "topic_analysis_metadata.json")
 
     def get_module(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
         module_id: int,
@@ -100,7 +100,7 @@ class TopicStorage:
         client = get_minio_client(self.settings)
         bucket = self.settings.minio_publishers_bucket
 
-        path = self._build_module_path(publisher_id, book_id, book_name, module_id)
+        path = self._build_module_path(publisher_slug, book_id, book_name, module_id)
 
         try:
             response = client.get_object(bucket, path)
@@ -115,7 +115,7 @@ class TopicStorage:
 
     def list_modules(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
     ) -> list[dict[str, Any]]:
@@ -133,7 +133,7 @@ class TopicStorage:
         client = get_minio_client(self.settings)
         bucket = self.settings.minio_publishers_bucket
 
-        prefix = self._build_modules_path(publisher_id, book_id, book_name) + "/"
+        prefix = self._build_modules_path(publisher_slug, book_id, book_name) + "/"
         modules: list[dict[str, Any]] = []
 
         try:
@@ -163,7 +163,7 @@ class TopicStorage:
 
     def update_module_with_topics(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
         module_result: ModuleAnalysisResult,
@@ -183,10 +183,10 @@ class TopicStorage:
         client = get_minio_client(self.settings)
         bucket = self.settings.minio_publishers_bucket
 
-        path = self._build_module_path(publisher_id, book_id, book_name, module_result.module_id)
+        path = self._build_module_path(publisher_slug, book_id, book_name, module_result.module_id)
 
         # Load existing module
-        existing = self.get_module(publisher_id, book_id, book_name, module_result.module_id)
+        existing = self.get_module(publisher_slug, book_id, book_name, module_result.module_id)
         if existing is None:
             logger.warning(
                 "Module %d not found for update: %s",

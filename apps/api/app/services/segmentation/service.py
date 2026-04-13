@@ -81,7 +81,7 @@ class SegmentationService:
     async def segment_book(
         self,
         book_id: str,
-        publisher_id: str,
+        publisher_slug: str,
         book_name: str,
         manual_definitions: list[ManualModuleDefinition] | None = None,
         progress_callback: Callable[[int, int], None] | None = None,
@@ -91,7 +91,7 @@ class SegmentationService:
 
         Args:
             book_id: Book identifier.
-            publisher_id: Publisher identifier.
+            publisher_slug: Publisher identifier.
             book_name: Book folder name.
             manual_definitions: Optional manual module definitions.
             progress_callback: Optional progress callback (current, total).
@@ -106,7 +106,7 @@ class SegmentationService:
         logger.info(
             "Starting segmentation for book %s (publisher: %s)",
             book_id,
-            publisher_id,
+            publisher_slug,
         )
 
         # Report initial progress
@@ -114,12 +114,12 @@ class SegmentationService:
             progress_callback(0, 100)
 
         # Load extracted text from ai-data/text/
-        pages = await self._load_text_pages(publisher_id, book_id, book_name)
+        pages = await self._load_text_pages(publisher_slug, book_id, book_name)
 
         if not pages:
             raise NoTextFoundError(
                 book_id,
-                f"{publisher_id}/books/{book_name}/ai-data/text/",
+                f"{publisher_slug}/books/{book_name}/ai-data/text/",
             )
 
         total_pages = max(pages.keys())
@@ -156,7 +156,7 @@ class SegmentationService:
 
         result = SegmentationResult(
             book_id=book_id,
-            publisher_id=publisher_id,
+            publisher_id=publisher_slug,
             book_name=book_name,
             total_pages=total_pages,
             modules=modules,
@@ -176,7 +176,7 @@ class SegmentationService:
 
     async def _load_text_pages(
         self,
-        publisher_id: str,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
     ) -> dict[int, str]:
@@ -184,7 +184,7 @@ class SegmentationService:
         pages: dict[int, str] = {}
 
         # Get metadata to know how many pages
-        metadata = self.ai_storage.get_extraction_metadata(publisher_id, book_id, book_name)
+        metadata = self.ai_storage.get_extraction_metadata(publisher_slug, book_id, book_name)
 
         if not metadata:
             logger.warning("No extraction metadata found for book %s", book_id)
@@ -194,7 +194,7 @@ class SegmentationService:
 
         # Load each page
         for page_num in range(1, total_pages + 1):
-            text = self._load_page_text(publisher_id, book_id, book_name, page_num)
+            text = self._load_page_text(publisher_slug, book_id, book_name, page_num)
             if text:
                 pages[page_num] = text
 
@@ -202,7 +202,7 @@ class SegmentationService:
 
     def _load_page_text(
         self,
-        publisher_id: str,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
         page_num: int,
@@ -216,7 +216,7 @@ class SegmentationService:
         bucket = self.settings.minio_publishers_bucket
 
         # Build path (book_id not used in storage path)
-        path = f"{publisher_id}/books/{book_name}/ai-data/text/page_{page_num:03d}.txt"
+        path = f"{publisher_slug}/books/{book_name}/ai-data/text/page_{page_num:03d}.txt"
 
         try:
             response = client.get_object(bucket, path)
@@ -438,7 +438,7 @@ class SegmentationService:
     async def segment_from_text(
         self,
         book_id: str,
-        publisher_id: str,
+        publisher_slug: str,
         book_name: str,
         pages: dict[int, str],
         manual_definitions: list[ManualModuleDefinition] | None = None,
@@ -448,7 +448,7 @@ class SegmentationService:
 
         Args:
             book_id: Book identifier.
-            publisher_id: Publisher identifier.
+            publisher_slug: Publisher identifier.
             book_name: Book folder name.
             pages: Dictionary of page texts.
             manual_definitions: Optional manual definitions.
@@ -475,7 +475,7 @@ class SegmentationService:
 
         return SegmentationResult(
             book_id=book_id,
-            publisher_id=publisher_id,
+            publisher_id=publisher_slug,
             book_name=book_name,
             total_pages=total_pages,
             modules=modules,

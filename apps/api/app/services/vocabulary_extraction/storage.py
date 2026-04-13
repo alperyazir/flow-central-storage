@@ -48,50 +48,50 @@ class VocabularyStorage:
 
     def _build_ai_data_path(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
         *path_parts: str,
     ) -> str:
         """Build MinIO path within ai-data directory."""
         # Path: {publisher_id}/books/{book_name}/ai-data (book_id not in path)
-        base = f"{publisher_id}/books/{book_name}/ai-data"
+        base = f"{publisher_slug}/books/{book_name}/ai-data"
         if path_parts:
             return f"{base}/{'/'.join(path_parts)}"
         return base
 
     def _build_vocabulary_path(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
     ) -> str:
         """Build path for vocabulary.json file."""
-        return self._build_ai_data_path(publisher_id, book_id, book_name, "vocabulary.json")
+        return self._build_ai_data_path(publisher_slug, book_id, book_name, "vocabulary.json")
 
     def _build_module_path(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
         module_id: int,
     ) -> str:
         """Build path for a module JSON file."""
         filename = f"module_{module_id}.json"
-        return self._build_ai_data_path(publisher_id, book_id, book_name, "modules", filename)
+        return self._build_ai_data_path(publisher_slug, book_id, book_name, "modules", filename)
 
     def _build_metadata_path(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
     ) -> str:
         """Build path for vocabulary extraction metadata file."""
-        return self._build_ai_data_path(publisher_id, book_id, book_name, "vocabulary_metadata.json")
+        return self._build_ai_data_path(publisher_slug, book_id, book_name, "vocabulary_metadata.json")
 
     def load_vocabulary(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
     ) -> dict[str, Any] | None:
@@ -109,7 +109,7 @@ class VocabularyStorage:
         client = get_minio_client(self.settings)
         bucket = self.settings.minio_publishers_bucket
 
-        path = self._build_vocabulary_path(publisher_id, book_id, book_name)
+        path = self._build_vocabulary_path(publisher_slug, book_id, book_name)
 
         try:
             response = client.get_object(bucket, path)
@@ -171,7 +171,7 @@ class VocabularyStorage:
 
     def get_module(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
         module_id: int,
@@ -191,7 +191,7 @@ class VocabularyStorage:
         client = get_minio_client(self.settings)
         bucket = self.settings.minio_publishers_bucket
 
-        path = self._build_module_path(publisher_id, book_id, book_name, module_id)
+        path = self._build_module_path(publisher_slug, book_id, book_name, module_id)
 
         try:
             response = client.get_object(bucket, path)
@@ -206,7 +206,7 @@ class VocabularyStorage:
 
     def list_modules(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
     ) -> list[dict[str, Any]]:
@@ -224,7 +224,7 @@ class VocabularyStorage:
         client = get_minio_client(self.settings)
         bucket = self.settings.minio_publishers_bucket
 
-        prefix = self._build_ai_data_path(publisher_id, book_id, book_name, "modules") + "/"
+        prefix = self._build_ai_data_path(publisher_slug, book_id, book_name, "modules") + "/"
         modules: list[dict[str, Any]] = []
 
         try:
@@ -254,7 +254,7 @@ class VocabularyStorage:
 
     def update_module_vocabulary_ids(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
         module_result: ModuleVocabularyResult,
@@ -274,10 +274,10 @@ class VocabularyStorage:
         client = get_minio_client(self.settings)
         bucket = self.settings.minio_publishers_bucket
 
-        path = self._build_module_path(publisher_id, book_id, book_name, module_result.module_id)
+        path = self._build_module_path(publisher_slug, book_id, book_name, module_result.module_id)
 
         # Load existing module
-        existing = self.get_module(publisher_id, book_id, book_name, module_result.module_id)
+        existing = self.get_module(publisher_slug, book_id, book_name, module_result.module_id)
         if existing is None:
             logger.warning(
                 "Module %d not found for vocabulary update: %s",

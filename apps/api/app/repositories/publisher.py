@@ -7,6 +7,7 @@ import logging
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
+from app.core.slugify import slugify
 from app.models.publisher import Publisher
 from app.repositories.base import BaseRepository
 
@@ -60,6 +61,25 @@ class PublisherRepository(BaseRepository[Publisher]):
         result = session.execute(statement)
         return result.scalars().first()
 
+    def get_by_slug(self, session: Session, slug: str) -> Publisher | None:
+        """Fetch a publisher by slug."""
+        statement = select(Publisher).where(Publisher.slug == slug)
+        return session.scalars(statement).first()
+
+    def _generate_unique_slug(self, session: Session, name: str, exclude_id: int | None = None) -> str:
+        """Generate a unique slug from publisher name."""
+        base_slug = slugify(name)
+        slug = base_slug
+        counter = 2
+        while True:
+            stmt = select(Publisher).where(Publisher.slug == slug)
+            if exclude_id is not None:
+                stmt = stmt.where(Publisher.id != exclude_id)
+            if session.scalars(stmt).first() is None:
+                return slug
+            slug = f"{base_slug}-{counter}"
+            counter += 1
+
     def get_or_create_by_name(self, session: Session, name: str) -> Publisher:
         """Get existing publisher by name or create a new one."""
         publisher = self.get_by_name(session, name)
@@ -67,7 +87,8 @@ class PublisherRepository(BaseRepository[Publisher]):
             return publisher
 
         # Create new publisher with name as display_name
-        publisher = Publisher(name=name, display_name=name)
+        slug = self._generate_unique_slug(session, name)
+        publisher = Publisher(name=name, display_name=name, slug=slug)
         return self.add(session, publisher)
 
     def get_with_books(self, session: Session, publisher_id: int) -> Publisher | None:
@@ -76,7 +97,9 @@ class PublisherRepository(BaseRepository[Publisher]):
         return session.scalars(statement).first()
 
     def create(self, session: Session, *, data: dict[str, object]) -> Publisher:
-        """Create a new publisher record."""
+        """Create a new publisher record. Auto-generates slug from name if not provided."""
+        if not data.get("slug"):
+            data["slug"] = self._generate_unique_slug(session, str(data["name"]))
         publisher = Publisher(**data)
         created = self.add(session, publisher)
         session.commit()

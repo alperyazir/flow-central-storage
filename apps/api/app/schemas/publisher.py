@@ -12,6 +12,7 @@ class PublisherBase(BaseModel):
     """Shared attributes required for publisher metadata operations."""
 
     name: str = Field(..., max_length=255)
+    slug: str | None = Field(default=None, max_length=255)
     display_name: str | None = Field(default=None, max_length=255)
     description: str | None = Field(default=None)
     logo_url: str | None = Field(default=None, max_length=512)
@@ -29,6 +30,7 @@ class PublisherUpdate(BaseModel):
     """Payload for updating existing publisher metadata."""
 
     name: str | None = Field(default=None, max_length=255)
+    slug: str | None = Field(default=None, max_length=255)
     display_name: str | None = Field(default=None, max_length=255)
     description: str | None = Field(default=None)
     logo_url: str | None = Field(default=None, max_length=512)
@@ -63,6 +65,7 @@ class PublisherSyncItem(BaseModel):
 
     id: int
     name: str
+    slug: str
     contact_email: str | None = None
     logo_url: str | None = None
 

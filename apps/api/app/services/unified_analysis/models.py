@@ -90,7 +90,7 @@ class UnifiedAnalysisResult:
     """Complete result from unified AI analysis."""
 
     book_id: str
-    publisher_id: str
+    publisher_slug: str
     book_name: str
     total_pages: int
 
@@ -135,7 +135,7 @@ class UnifiedAnalysisResult:
         """Convert to dictionary for JSON serialization."""
         return {
             "book_id": self.book_id,
-            "publisher_id": self.publisher_id,
+            "publisher_slug": self.publisher_slug,
             "book_name": self.book_name,
             "total_pages": self.total_pages,
             "module_count": self.module_count,

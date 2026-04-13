@@ -128,7 +128,7 @@ def create_publisher(
     _require_admin(credentials, db)
 
     try:
-        publisher = _publisher_repository.create(db, data=payload.model_dump())
+        publisher = _publisher_repository.create(db, data=payload.model_dump(exclude_none=True))
     except IntegrityError:
         db.rollback()
         raise HTTPException(
@@ -319,6 +319,7 @@ def soft_delete_publisher(
         )
 
     publisher_name = publisher.name
+    publisher_slug = publisher.slug
     result = PublisherRead.model_validate(publisher)
 
     # Release DB before slow storage operation
@@ -331,7 +332,7 @@ def soft_delete_publisher(
         report = delete_prefix_directly(
             client=client,
             bucket=settings.minio_publishers_bucket,
-            prefix=f"{publisher_id}/",
+            prefix=f"{publisher_slug}/",
         )
         logger.info("Deleted %d objects from R2 for publisher %s", report.objects_removed, publisher_name)
     except DirectDeletionError as e:
@@ -417,7 +418,7 @@ def permanent_delete_publisher(
     # Delete all files from MinIO storage
     settings = get_settings()
     client = get_minio_client(settings)
-    publisher_prefix = f"{publisher.id}/"
+    publisher_prefix = f"{publisher.slug}/"
 
     try:
         # List and delete all objects under publisher prefix
@@ -476,7 +477,7 @@ def list_publisher_assets(
 
     settings = get_settings()
     client = get_minio_client(settings)
-    assets_prefix = f"{publisher.id}/assets/"
+    assets_prefix = f"{publisher.slug}/assets/"
 
     # List all folders under assets/
     asset_types: dict[str, AssetTypeInfo] = {}
@@ -532,7 +533,7 @@ def list_asset_type_files(
 
     settings = get_settings()
     client = get_minio_client(settings)
-    prefix = f"{publisher.id}/assets/{asset_type}/"
+    prefix = f"{publisher.slug}/assets/{asset_type}/"
 
     files: list[AssetFileInfo] = []
     try:
@@ -589,12 +590,12 @@ async def upload_asset_file(
             detail="Filename is required",
         )
 
-    pub_id = publisher.id
+    pub_slug = publisher.slug
     db.commit()  # Release DB connection before S3 upload
 
     settings = get_settings()
     client = get_minio_client(settings)
-    object_key = f"{pub_id}/assets/{asset_type}/{file.filename}"
+    object_key = f"{pub_slug}/assets/{asset_type}/{file.filename}"
 
     # Read file contents
     contents = await file.read()
@@ -655,7 +656,7 @@ def get_publisher_logo(
 
     settings = get_settings()
     client = get_minio_client(settings)
-    logo_prefix = f"{publisher.id}/assets/logos/"
+    logo_prefix = f"{publisher.slug}/assets/logos/"
 
     # List files under the logo prefix
     try:
@@ -728,7 +729,7 @@ def download_asset_file(
 
     settings = get_settings()
     client = get_minio_client(settings)
-    object_key = f"{publisher.id}/assets/{asset_type}/{filename}"
+    object_key = f"{publisher.slug}/assets/{asset_type}/{filename}"
 
     try:
         response = client.get_object(settings.minio_publishers_bucket, object_key)
@@ -772,7 +773,7 @@ def delete_asset_file(
 
     settings = get_settings()
     client = get_minio_client(settings)
-    object_key = f"{publisher.id}/assets/{asset_type}/{filename}"
+    object_key = f"{publisher.slug}/assets/{asset_type}/{filename}"
 
     try:
         report = delete_prefix_directly(
@@ -909,6 +910,11 @@ def calculate_books(
     from app.services import get_minio_client
 
     book_repo = BookRepository()
+    publisher = _publisher_repository.get(db, publisher_id)
+    if publisher is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Publisher not found")
+    pub_slug = publisher.slug
+
     settings = get_settings()
     client = get_minio_client(settings)
     bucket = settings.minio_publishers_bucket
@@ -923,7 +929,7 @@ def calculate_books(
         stats = BookStats(book_id=book.id, book_name=book.book_name)
 
         # Read config.json from S3
-        config_path = f"{publisher_id}/books/{book.book_name}/config.json"
+        config_path = f"{pub_slug}/books/{book.book_name}/config.json"
         try:
             response = client.get_object(bucket, config_path)
             config_data = json.loads(response.read())
@@ -939,7 +945,7 @@ def calculate_books(
             logger.warning("Could not read config.json for book %s: %s", book.book_name, exc)
 
         # Read games.json from S3
-        games_path = f"{publisher_id}/books/{book.book_name}/games.json"
+        games_path = f"{pub_slug}/books/{book.book_name}/games.json"
         try:
             response = client.get_object(bucket, games_path)
             games_data = json.loads(response.read())

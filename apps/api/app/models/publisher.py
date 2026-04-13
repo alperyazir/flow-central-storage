@@ -38,6 +38,7 @@ class Publisher(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    slug: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     logo_url: Mapped[str | None] = mapped_column(String(512), nullable=True)

@@ -303,7 +303,7 @@ def create_bundle(
     apps_bucket: str,
     publishers_bucket: str,
     platform: str,
-    publisher_id: int,
+    publisher_slug: str,
     book_name: str,
     force: bool = False,
     on_progress: "Callable[[int, str, str], None] | None" = None,
@@ -341,7 +341,7 @@ def create_bundle(
 
     # Check if bundle already exists (unless force=True)
     if not force:
-        bundle_prefix = f"{BUNDLE_PREFIX}/{publisher_id}/{book_name}/"
+        bundle_prefix = f"{BUNDLE_PREFIX}/{publisher_slug}/{book_name}/"
         try:
             existing_bundles = list(client.list_objects(apps_bucket, prefix=bundle_prefix, recursive=True))
             # Find bundle matching this platform
@@ -351,7 +351,7 @@ def create_bundle(
                 if file_name.lower().startswith(f"({normalized_platform})"):
                     logger.info(
                         "Found existing bundle for %s/%s platform %s: %s",
-                        publisher_id,
+                        publisher_slug,
                         book_name,
                         normalized_platform,
                         obj.object_name,
@@ -414,7 +414,7 @@ def create_bundle(
 
             # 5. Download book assets in parallel
             _progress(30, "downloading", "Downloading book assets...")
-            book_prefix = f"{publisher_id}/books/{book_name}/"
+            book_prefix = f"{publisher_slug}/books/{book_name}/"
             objects = [
                 obj for obj in client.list_objects(publishers_bucket, prefix=book_prefix, recursive=True)
                 if not obj.is_dir and obj.object_name[len(book_prefix):]
@@ -441,7 +441,7 @@ def create_bundle(
                         pct = 30 + int((asset_count / total_assets) * 40)
                         _progress(pct, "downloading", f"{asset_count}/{total_assets} assets")
 
-            logger.info("Downloaded %d assets in parallel for book %s/%s", asset_count, publisher_id, book_name)
+            logger.info("Downloaded %d assets in parallel for book %s/%s", asset_count, publisher_slug, book_name)
 
             # 6. Rename app folder to include book name and create ZIP
             if app_folder_name:
@@ -467,7 +467,7 @@ def create_bundle(
 
             # 6. Upload bundle to R2
             _progress(85, "uploading", "Uploading bundle...")
-            bundle_object_name = f"{BUNDLE_PREFIX}/{publisher_id}/{book_name}/{bundle_name}.zip"
+            bundle_object_name = f"{BUNDLE_PREFIX}/{publisher_slug}/{book_name}/{bundle_name}.zip"
             bundle_size = os.path.getsize(bundle_path)
 
             client.fput_object(
@@ -488,7 +488,7 @@ def create_bundle(
             logger.info(
                 "Created bundle %s for %s/%s (%d bytes)",
                 bundle_name,
-                publisher_id,
+                publisher_slug,
                 book_name,
                 bundle_size,
             )

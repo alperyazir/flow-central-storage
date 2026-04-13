@@ -196,7 +196,7 @@ class UnifiedAnalysisService:
     async def analyze_book(
         self,
         book_id: str,
-        publisher_id: str,
+        publisher_slug: str,
         book_name: str,
         pages: dict[int, str],
         translation_language: str = "tr",
@@ -207,7 +207,7 @@ class UnifiedAnalysisService:
 
         Args:
             book_id: Book identifier.
-            publisher_id: Publisher identifier.
+            publisher_slug: Publisher identifier.
             book_name: Book folder name.
             pages: Dictionary mapping page numbers to text content.
             translation_language: Target language for translations.
@@ -266,7 +266,7 @@ class UnifiedAnalysisService:
             # Build result
             result = self._build_result(
                 book_id=book_id,
-                publisher_id=publisher_id,
+                publisher_slug=publisher_slug,
                 book_name=book_name,
                 total_pages=total_pages,
                 pages=pages,
@@ -297,7 +297,7 @@ class UnifiedAnalysisService:
     async def analyze_book_chunked(
         self,
         book_id: str,
-        publisher_id: str,
+        publisher_slug: str,
         book_name: str,
         pages: dict[int, str],
         translation_language: str = "tr",
@@ -315,7 +315,7 @@ class UnifiedAnalysisService:
 
         Args:
             book_id: Book identifier.
-            publisher_id: Publisher identifier.
+            publisher_slug: Publisher identifier.
             book_name: Book folder name.
             pages: Dictionary mapping page numbers to text content.
             translation_language: Target language for translations.
@@ -466,7 +466,7 @@ class UnifiedAnalysisService:
         # Build final result
         result = UnifiedAnalysisResult(
             book_id=book_id,
-            publisher_id=publisher_id,
+            publisher_slug=publisher_slug,
             book_name=book_name,
             total_pages=total_pages,
             modules=modules,
@@ -707,7 +707,7 @@ class UnifiedAnalysisService:
     def _build_result(
         self,
         book_id: str,
-        publisher_id: str,
+        publisher_slug: str,
         book_name: str,
         total_pages: int,
         pages: dict[int, str],
@@ -769,7 +769,7 @@ class UnifiedAnalysisService:
 
         return UnifiedAnalysisResult(
             book_id=book_id,
-            publisher_id=publisher_id,
+            publisher_slug=publisher_slug,
             book_name=book_name,
             total_pages=total_pages,
             modules=modules,

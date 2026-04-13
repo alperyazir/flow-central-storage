@@ -118,6 +118,7 @@ class AutoProcessingService:
         self,
         book_id: int,
         publisher_id: int,
+        publisher_slug: str,
         book_name: str,
         force: bool = False,
         priority: JobPriority = JobPriority.NORMAL,
@@ -153,7 +154,8 @@ class AutoProcessingService:
                 priority=priority,
                 metadata={
                     "book_name": book_name,
-                    "publisher_id": publisher_id,  # Required for storage path construction
+                    "publisher_id": publisher_id,
+                    "publisher_slug": publisher_slug,
                     "auto_triggered": True,
                     "force_reprocess": force,
                 },
@@ -192,6 +194,7 @@ def get_auto_processing_service() -> AutoProcessingService:
 async def trigger_auto_processing(
     book_id: int,
     publisher_id: int,
+    publisher_slug: str,
     book_name: str,
     force: bool = False,
 ) -> None:
@@ -199,17 +202,12 @@ async def trigger_auto_processing(
     Convenience function to trigger auto-processing.
 
     This is designed to be called from BackgroundTasks.
-
-    Args:
-        book_id: Book database ID.
-        publisher_id: Publisher ID.
-        book_name: Book folder name.
-        force: If True, process even if already processed.
     """
     service = get_auto_processing_service()
     await service.trigger_processing(
         book_id=book_id,
-        publisher=publisher_id,
+        publisher_id=publisher_id,
+        publisher_slug=publisher_slug,
         book_name=book_name,
         force=force,
     )

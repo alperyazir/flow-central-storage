@@ -104,11 +104,11 @@ async def _check_rate_limit(publisher_id: int) -> tuple[bool, int]:
     return True, 0
 
 
-def _book_has_content(book, publisher_id: int) -> bool:
+def _book_has_content(book, publisher_slug: str) -> bool:
     """Check if book has content in MinIO storage."""
     settings = get_settings()
     client = get_minio_client(settings)
-    prefix = f"{publisher_id}/books/{book.book_name}/"
+    prefix = f"{publisher_slug}/books/{book.book_name}/"
 
     try:
         objects = list(
@@ -167,9 +167,10 @@ async def trigger_processing(
     # Get publisher explicitly (don't rely on lazy loading)
     publisher = _publisher_repository.get(db, book.publisher_id)
     publisher_id = publisher.id if publisher else book.publisher_id
+    publisher_slug = publisher.slug if publisher else str(book.publisher_id)
 
     # Validate book has content
-    if not _book_has_content(book, publisher_id):
+    if not _book_has_content(book, publisher_slug):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Book has no content to process",
@@ -203,7 +204,7 @@ async def trigger_processing(
             publisher_id=str(book.publisher_id),
             job_type=payload.job_type,
             priority=priority,
-            metadata={"book_name": book.book_name, "publisher_id": publisher_id},
+            metadata={"book_name": book.book_name, "publisher_id": publisher_id, "publisher_slug": publisher_slug},
         )
     except JobAlreadyExistsError:
         raise HTTPException(
@@ -335,16 +336,17 @@ async def delete_ai_data(
     # Get publisher explicitly (don't rely on lazy loading)
     publisher = _publisher_repository.get(db, book.publisher_id)
     publisher_id = publisher.id if publisher else book.publisher_id
+    publisher_slug = publisher.slug if publisher else str(book.publisher_id)
     book_name = book.book_name
     book_publisher_id = book.publisher_id
 
     # Release DB connection before slow storage operation
     db.close()
 
-    # Cleanup AI data (use publisher ID for correct storage path)
+    # Cleanup AI data (use publisher slug for correct storage path)
     cleanup_manager = get_ai_data_cleanup_manager()
     stats = cleanup_manager.cleanup_all(
-        publisher_id=str(publisher_id),
+        publisher_id=publisher_slug,
         book_id=str(book_id),
         book_name=book_name,
     )
@@ -361,13 +363,13 @@ async def delete_ai_data(
         db = SessionLocal()
         try:
             book = _book_repository.get_by_id(db, book_id)
-            if book and _book_has_content(book, publisher_id):
+            if book and _book_has_content(book, publisher_slug):
                 queue_service = await get_queue_service()
                 try:
                     job = await queue_service.enqueue_job(
                         book_id=str(book_id),
                         publisher_id=str(book_publisher_id),
-                        metadata={"book_name": book_name, "publisher_id": publisher_id},
+                        metadata={"book_name": book_name, "publisher_id": publisher_id, "publisher_slug": publisher_slug},
                     )
                     logger.info(
                         "Triggered reprocessing for book %s (job_id=%s)",
@@ -746,8 +748,9 @@ async def bulk_reprocess(
         # Get publisher explicitly
         publisher = _publisher_repository.get(db, book.publisher_id)
         publisher_id = publisher.id if publisher else book.publisher_id
+        publisher_slug = publisher.slug if publisher else str(book.publisher_id)
 
-        if not _book_has_content(book, publisher_id):
+        if not _book_has_content(book, publisher_slug):
             errors.append(f"Book {book_id} has no content")
             skipped += 1
             continue
@@ -758,7 +761,7 @@ async def bulk_reprocess(
                 publisher_id=str(book.publisher_id),
                 job_type=job_type,
                 priority=priority,
-                metadata={"book_name": book.book_name, "publisher_id": publisher_id},
+                metadata={"book_name": book.book_name, "publisher_id": publisher_id, "publisher_slug": publisher_slug},
             )
             job_ids.append(job.job_id)
             triggered += 1

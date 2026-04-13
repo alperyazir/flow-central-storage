@@ -305,7 +305,7 @@ class TopicAnalysisService:
     async def analyze_book(
         self,
         book_id: str,
-        publisher_id: str,
+        publisher_slug: str,
         book_name: str,
         modules: list[dict[str, Any]],
         progress_callback: Callable[[int, int], None] | None = None,
@@ -315,7 +315,7 @@ class TopicAnalysisService:
 
         Args:
             book_id: Book identifier.
-            publisher_id: Publisher identifier.
+            publisher_slug: Publisher identifier.
             book_name: Book folder name.
             modules: List of module dictionaries with module_id, title, text.
             progress_callback: Optional callback(current, total) for progress.
@@ -329,7 +329,7 @@ class TopicAnalysisService:
         if not modules:
             raise NoModulesFoundError(
                 book_id=book_id,
-                path=f"{publisher_id}/books/{book_name}/ai-data/modules/",
+                path=f"{publisher_slug}/books/{book_name}/ai-data/modules/",
             )
 
         logger.info(
@@ -359,7 +359,7 @@ class TopicAnalysisService:
 
         book_result = BookAnalysisResult(
             book_id=book_id,
-            publisher_id=publisher_id,
+            publisher_id=publisher_slug,
             book_name=book_name,
             module_results=module_results,
             analyzed_at=datetime.now(timezone.utc),

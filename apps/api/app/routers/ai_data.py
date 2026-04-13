@@ -79,10 +79,10 @@ def _require_auth(credentials: HTTPAuthorizationCredentials, db: Session) -> int
 
 
 def _get_book_info(db: Session, book_id: int) -> tuple[str, str]:
-    """Get publisher ID (as string) and book name for a book ID.
+    """Get publisher slug and book name for a book ID.
 
     Returns:
-        Tuple of (publisher_id, book_name)
+        Tuple of (publisher_slug, book_name)
 
     Raises:
         HTTPException 404 if book not found
@@ -93,8 +93,8 @@ def _get_book_info(db: Session, book_id: int) -> tuple[str, str]:
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Book not found",
         )
-    # Use publisher ID for storage path construction
-    return book.publisher_id, book.book_name
+    # Use publisher slug for storage path construction
+    return book.publisher_rel.slug, book.book_name
 
 
 # =============================================================================
@@ -589,12 +589,12 @@ def stream_vocabulary_audio(
             detail="Invalid word_id format",
         )
 
-    publisher_id, book_name = _get_book_info(db, book_id)
+    publisher_slug, book_name = _get_book_info(db, book_id)
     settings = get_settings()
     client = get_minio_client(settings)
 
     # Build audio file path
-    audio_path = f"{publisher_id}/books/{book_name}/ai-data/audio/vocabulary/{lang}/{word_id}.mp3"
+    audio_path = f"{publisher_slug}/books/{book_name}/ai-data/audio/vocabulary/{lang}/{word_id}.mp3"
 
     # Get file metadata
     try:

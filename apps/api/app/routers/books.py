@@ -20,6 +20,7 @@ from app.core.config import get_settings
 from app.core.security import decode_access_token, verify_api_key_from_db
 from app.db import SessionLocal, get_db
 from app.models.book import Book, BookStatusEnum
+from app.models.publisher import Publisher
 from app.models.webhook import WebhookEventType
 from app.repositories.book import BookRepository
 from app.repositories.publisher import PublisherRepository
@@ -54,7 +55,7 @@ _webhook_service = WebhookService()
 logger = logging.getLogger(__name__)
 
 
-def _trigger_auto_bundles(book_id: int, publisher_id: int, book_name: str, local_book_path: str | None = None) -> None:
+def _trigger_auto_bundles(book_id: int, publisher_id: int, publisher_slug: str, book_name: str, local_book_path: str | None = None) -> None:
     """Enqueue bundle creation for all platforms after book upload.
 
     Creates a fresh event loop to run async arq enqueue from a sync thread.
@@ -127,7 +128,7 @@ def _trigger_auto_bundles(book_id: int, publisher_id: int, book_name: str, local
                 job_id=job_id,
                 platform=platform,
                 book_id=book_id,
-                publisher_id=publisher_id,
+                publisher_slug=publisher_slug,
                 book_name=book_name,
                 force=True,
                 local_book_path=local_book_path,
@@ -204,16 +205,23 @@ def sync_books_with_r2(
     client = get_minio_client(settings)
     bucket = settings.minio_publishers_bucket
 
-    # Get all publisher folders from R2
+    # Build slug → publisher mapping from DB
+    all_publishers = db.execute(select(Publisher)).scalars().all()
+    slug_to_publisher: dict[str, Publisher] = {p.slug: p for p in all_publishers}
+
+    # Get all publisher folders from R2 (folders are now slugs)
     r2_books: dict[tuple[int, str], bool] = {}  # (publisher_id, book_name) → exists
+    slug_for_pub: dict[int, str] = {}  # publisher_id → slug (for path building)
     try:
         for pub_obj in client.list_objects(bucket, recursive=False):
-            pub_prefix = pub_obj.object_name.rstrip("/")
-            try:
-                pub_id = int(pub_prefix)
-            except ValueError:
+            pub_slug = pub_obj.object_name.rstrip("/")
+            publisher = slug_to_publisher.get(pub_slug)
+            if publisher is None:
+                logger.warning("Sync: R2 folder '%s' has no matching publisher in DB, skipping", pub_slug)
                 continue
-            books_prefix = f"{pub_id}/books/"
+            pub_id = publisher.id
+            slug_for_pub[pub_id] = pub_slug
+            books_prefix = f"{pub_slug}/books/"
             for book_obj in client.list_objects(bucket, prefix=books_prefix, recursive=False):
                 book_name = book_obj.object_name[len(books_prefix):].rstrip("/")
                 if book_name:
@@ -232,6 +240,7 @@ def sync_books_with_r2(
     # R2'de var, DB'de yok → config.json'dan metadata oku ve oluştur
     for (pub_id, book_name) in r2_books:
         if (pub_id, book_name) not in db_books:
+            pub_slug = slug_for_pub[pub_id]
             book_data: dict[str, object] = {
                 "publisher_id": pub_id,
                 "book_name": book_name,
@@ -240,7 +249,7 @@ def sync_books_with_r2(
                 "status": BookStatusEnum.PUBLISHED,
             }
             # Try to read config.json from R2 for metadata
-            config_path = f"{pub_id}/books/{book_name}/config.json"
+            config_path = f"{pub_slug}/books/{book_name}/config.json"
             try:
                 response = client.get_object(bucket, config_path)
                 config_data = json.loads(response.read())
@@ -259,11 +268,11 @@ def sync_books_with_r2(
                 if cover:
                     book_data["book_cover"] = os.path.basename(cover)
             except Exception as exc:
-                logger.warning("Sync: could not read config.json for %s/%s: %s", pub_id, book_name, exc)
+                logger.warning("Sync: could not read config.json for %s/%s: %s", pub_slug, book_name, exc)
 
             book = _book_repository.create(db, data=book_data)
             created.append({"id": book.id, "publisher_id": pub_id, "book_name": book_name})
-            logger.info("Sync: created DB record for R2 book %s/%s (id=%d)", pub_id, book_name, book.id)
+            logger.info("Sync: created DB record for R2 book %s/%s (id=%d)", pub_slug, book_name, book.id)
 
     # DB'de var, R2'de yok → sil
     for (pub_id, book_name), book in db_books.items():
@@ -537,6 +546,7 @@ def delete_book(
 
     # Capture book info and release DB connection before slow storage operation
     book_publisher_id = book.publisher_id
+    book_publisher_slug = book.publisher_rel.slug
     book_name = book.book_name
     book_result = BookRead.model_validate(book)
     db.close()
@@ -550,7 +560,7 @@ def delete_book(
 
             settings = get_settings()
             client = get_minio_client(settings)
-            prefix = f"{book_publisher_id}/books/{book_name}/"
+            prefix = f"{book_publisher_slug}/books/{book_name}/"
 
             def on_progress(removed: int, total: int):
                 pct = 10 + int((removed / max(total, 1)) * 60)  # 10-70%
@@ -632,6 +642,7 @@ async def upload_book(
 
     # PHASE 1: Extract needed data, release DB connection
     book_publisher_id = book.publisher_id
+    book_publisher_slug = book.publisher_rel.slug
     book_name = book.book_name
     db.commit()  # Release connection before long S3 ops
 
@@ -645,7 +656,7 @@ async def upload_book(
     try:
         settings = get_settings()
         client = get_minio_client(settings)
-        prefix = f"{book_publisher_id}/books/{book_name}/"
+        prefix = f"{book_publisher_slug}/books/{book_name}/"
 
         # Clear existing files
         try:
@@ -700,6 +711,7 @@ async def upload_book(
             trigger_auto_processing,
             book_id=book_id,
             publisher_id=book.publisher_id,
+            publisher_slug=book.publisher_rel.slug,
             book_name=book.book_name,
             force=True,
         )
@@ -793,16 +805,19 @@ def _run_book_processing(
         try:
             if override_pub_id is not None:
                 book_data["publisher"] = override_pub_name
+                pub = _publisher_repository.get(session, override_pub_id)
                 pub_id = override_pub_id
+                pub_slug = pub.slug if pub else str(override_pub_id)
             else:
                 publisher_name = book_data.get("publisher", "")
                 pub = _publisher_repository.get_or_create_by_name(session, publisher_name)
                 pub_id = pub.id
+                pub_slug = pub.slug
                 session.commit()
 
             settings = get_settings()
             client = get_minio_client(settings)
-            object_prefix = f"{pub_id}/books/{book_data['book_name']}/"
+            object_prefix = f"{pub_slug}/books/{book_data['book_name']}/"
 
             # Check conflict
             prefix_exists = _prefix_exists(client, settings.minio_publishers_bucket, object_prefix)
@@ -834,7 +849,7 @@ def _run_book_processing(
                 set_upload_progress(job_id, pct, "uploading", f"{uploaded}/{total} files")
 
             # Create local cache dir for bundle task to use instead of re-downloading from R2
-            book_cache_dir = BOOK_CACHE_DIR / f"{pub_id}_{book_data['book_name']}"
+            book_cache_dir = BOOK_CACHE_DIR / f"{pub_slug}_{book_data['book_name']}"
             book_cache_dir.mkdir(parents=True, exist_ok=True)
 
             manifest = upload_book_archive(
@@ -875,7 +890,7 @@ def _run_book_processing(
 
             # Auto-create bundles for all platforms (before webhook to avoid timeout blocking)
             if auto_bundle:
-                _trigger_auto_bundles(book.id, pub_id, book_data["book_name"], local_book_path=str(book_cache_dir))
+                _trigger_auto_bundles(book.id, pub_id, pub_slug, book_data["book_name"], local_book_path=str(book_cache_dir))
             else:
                 import shutil
                 shutil.rmtree(book_cache_dir, ignore_errors=True)
@@ -1304,12 +1319,13 @@ async def upload_new_book(
         publisher_name = book_data.get("publisher", "")
         resolved_publisher = _publisher_repository.get_or_create_by_name(db, publisher_name)
         publisher_id = resolved_publisher.id
+        publisher_slug = resolved_publisher.slug
         db.commit()  # Release DB connection back to PGBouncer pool before long S3 ops
 
         # PHASE 2: S3 operations (may take minutes — no DB connection held)
         settings = get_settings()
         client = get_minio_client(settings)
-        object_prefix = f"{publisher_id}/books/{book_data['book_name']}/"
+        object_prefix = f"{publisher_slug}/books/{book_data['book_name']}/"
 
         # Check if book already exists in storage
         try:
@@ -1432,6 +1448,7 @@ async def upload_new_book(
             trigger_auto_processing,
             book_id=book.id,
             publisher_id=resolved_publisher.id,
+            publisher_slug=resolved_publisher.slug,
             book_name=book.book_name,
             force=override,  # Force reprocess if override was used
         )
@@ -1642,6 +1659,7 @@ async def upload_bulk_books(
                 trigger_auto_processing,
                 book_id=book.id,
                 publisher_id=publisher.id,
+                publisher_slug=publisher.slug,
                 book_name=book.book_name,
                 force=override,  # Force reprocess if override was used
             )
@@ -1913,7 +1931,7 @@ def _first_non_empty(payload: dict[str, object], aliases: Iterable[str]) -> obje
 _download_temp_files: dict[str, tuple[str, str]] = {}  # job_id → (tmp_path, book_name)
 
 
-def _run_book_download(job_id: str, publisher_id: int, book_name: str) -> None:
+def _run_book_download(job_id: str, publisher_slug: str, book_name: str) -> None:
     """Background task: zip book assets from S3 into a temp file."""
     import tempfile
 
@@ -1923,7 +1941,7 @@ def _run_book_download(job_id: str, publisher_id: int, book_name: str) -> None:
         settings = get_settings()
         client = get_minio_client(settings)
         bucket = settings.minio_publishers_bucket
-        prefix = f"{publisher_id}/books/{book_name}/"
+        prefix = f"{publisher_slug}/books/{book_name}/"
 
         set_upload_progress(job_id, 10, "listing", "Listing book files...")
 
@@ -1991,7 +2009,7 @@ def download_book(
     background_tasks.add_task(
         _run_book_download,
         job_id=job_id,
-        publisher_id=book.publisher_id,
+        publisher_slug=book.publisher_rel.slug,
         book_name=book.book_name,
     )
 

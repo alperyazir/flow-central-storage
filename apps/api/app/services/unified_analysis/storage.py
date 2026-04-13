@@ -7,8 +7,34 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
+from cefrpy import CEFRAnalyzer
+
 from app.core.config import get_settings
 from app.services.unified_analysis.models import UnifiedAnalysisResult
+
+_cefr_analyzer = CEFRAnalyzer()
+
+_POS_TO_CEFRPY = {
+    "noun": "NN",
+    "verb": "VB",
+    "adjective": "JJ",
+    "adverb": "RB",
+}
+
+
+def _get_cefr_level(word: str, pos: str) -> str:
+    """Get CEFR level from cefrpy, using POS-specific level when available."""
+    word_lower = word.lower()
+    if not _cefr_analyzer.is_word_in_database(word_lower):
+        return ""
+
+    cefrpy_pos = _POS_TO_CEFRPY.get(pos)
+    if cefrpy_pos:
+        level = _cefr_analyzer.get_word_pos_level_CEFR(word_lower, cefrpy_pos)
+        if level:
+            return level
+
+    return _cefr_analyzer.get_average_word_level_CEFR(word_lower) or ""
 
 if TYPE_CHECKING:
     from app.core.config import Settings
@@ -49,7 +75,7 @@ class UnifiedAnalysisStorage:
         """
         client = self._get_minio_client()
         bucket = self.settings.minio_publishers_bucket
-        base_path = f"{result.publisher_id}/books/{result.book_name}/ai-data"
+        base_path = f"{result.publisher_slug}/books/{result.book_name}/ai-data"
 
         saved_modules = []
         saved_vocab_count = 0
@@ -84,6 +110,9 @@ class UnifiedAnalysisStorage:
         for module in result.modules:
             for v in module.vocabulary:
                 word_counter += 1
+                # Get CEFR level from cefrpy (reliable), fallback to LLM value
+                level = _get_cefr_level(v.word, v.part_of_speech) or v.difficulty
+
                 vocab_words.append(
                     {
                         "id": f"word_{word_counter}",
@@ -92,7 +121,7 @@ class UnifiedAnalysisStorage:
                         "translation": v.translation,
                         "part_of_speech": v.part_of_speech,
                         "example": v.example_sentence,
-                        "level": v.difficulty,
+                        "level": level,
                         "phonetic": v.phonetic,
                         "module_id": module.module_id,
                         "module_title": module.title,
@@ -101,7 +130,7 @@ class UnifiedAnalysisStorage:
 
         vocab_data = {
             "book_id": result.book_id,
-            "publisher_id": result.publisher_id,
+            "publisher_id": result.publisher_slug,
             "book_name": result.book_name,
             "language": result.primary_language,
             "translation_language": result.translation_language,
@@ -127,7 +156,7 @@ class UnifiedAnalysisStorage:
         modules_meta_path = f"{base_path}/modules/metadata.json"
         modules_meta = {
             "book_id": result.book_id,
-            "publisher_id": result.publisher_id,
+            "publisher_id": result.publisher_slug,
             "book_name": result.book_name,
             "total_pages": result.total_pages,
             "module_count": result.module_count,

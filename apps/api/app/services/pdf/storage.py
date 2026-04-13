@@ -45,7 +45,7 @@ class AIDataStorage:
 
     def _build_ai_data_path(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
         *path_parts: str,
@@ -63,14 +63,14 @@ class AIDataStorage:
             Complete MinIO object path.
         """
         # Path: {publisher_id}/books/{book_name}/ai-data (book_id not in path)
-        base = f"{publisher_id}/books/{book_name}/ai-data"
+        base = f"{publisher_slug}/books/{book_name}/ai-data"
         if path_parts:
             return f"{base}/{'/'.join(path_parts)}"
         return base
 
     def _build_text_path(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
         page_number: int,
@@ -88,11 +88,11 @@ class AIDataStorage:
             MinIO object path for the page text file.
         """
         filename = f"page_{page_number:03d}.txt"
-        return self._build_ai_data_path(publisher_id, book_id, book_name, "text", filename)
+        return self._build_ai_data_path(publisher_slug, book_id, book_name, "text", filename)
 
     def _build_metadata_path(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
     ) -> str:
@@ -107,7 +107,7 @@ class AIDataStorage:
         Returns:
             MinIO object path for the metadata file.
         """
-        return self._build_ai_data_path(publisher_id, book_id, book_name, "text", "extraction_metadata.json")
+        return self._build_ai_data_path(publisher_slug, book_id, book_name, "text", "extraction_metadata.json")
 
     def save_extracted_text(self, result: PDFExtractionResult) -> list[str]:
         """
@@ -280,7 +280,7 @@ class AIDataStorage:
 
     def cleanup_text_directory(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
     ) -> int:
@@ -299,7 +299,7 @@ class AIDataStorage:
         bucket = self.settings.minio_publishers_bucket
 
         # Build prefix for text directory
-        prefix = self._build_ai_data_path(publisher_id, book_id, book_name, "text/")
+        prefix = self._build_ai_data_path(publisher_slug, book_id, book_name, "text/")
 
         logger.info("Cleaning up text directory: %s", prefix)
 
@@ -320,7 +320,7 @@ class AIDataStorage:
 
     def text_exists(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
     ) -> bool:
@@ -338,7 +338,7 @@ class AIDataStorage:
         client = get_minio_client(self.settings)
         bucket = self.settings.minio_publishers_bucket
 
-        path = self._build_metadata_path(publisher_id, book_id, book_name)
+        path = self._build_metadata_path(publisher_slug, book_id, book_name)
 
         try:
             client.stat_object(bucket, path)
@@ -350,7 +350,7 @@ class AIDataStorage:
 
     def get_extraction_metadata(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
     ) -> dict | None:
@@ -368,7 +368,7 @@ class AIDataStorage:
         client = get_minio_client(self.settings)
         bucket = self.settings.minio_publishers_bucket
 
-        path = self._build_metadata_path(publisher_id, book_id, book_name)
+        path = self._build_metadata_path(publisher_slug, book_id, book_name)
 
         try:
             response = client.get_object(bucket, path)

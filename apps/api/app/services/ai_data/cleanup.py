@@ -39,16 +39,16 @@ class AIDataCleanupManager:
 
     def _get_structure(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
     ) -> AIDataStructure:
         """Get AI data structure paths."""
-        return AIDataStructure.from_book_info(publisher_id, book_id, book_name)
+        return AIDataStructure.from_book_info(publisher_slug, book_id, book_name)
 
     def cleanup_all(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
     ) -> CleanupStats:
@@ -56,7 +56,7 @@ class AIDataCleanupManager:
         Remove all ai-data content for re-processing.
 
         Args:
-            publisher_id: Publisher ID (integer).
+            publisher_slug: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
 
@@ -69,7 +69,7 @@ class AIDataCleanupManager:
         client = get_minio_client(self.settings)
         bucket = self.settings.minio_publishers_bucket
 
-        structure = self._get_structure(publisher_id, book_id, book_name)
+        structure = self._get_structure(publisher_slug, book_id, book_name)
         stats = CleanupStats()
 
         logger.info(
@@ -121,7 +121,7 @@ class AIDataCleanupManager:
 
     def cleanup_selective(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
         directories: list[str],
@@ -130,7 +130,7 @@ class AIDataCleanupManager:
         Remove specific subdirectories.
 
         Args:
-            publisher_id: Publisher ID (integer).
+            publisher_slug: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
             directories: List of directory names to clean (text, modules, audio).
@@ -141,7 +141,7 @@ class AIDataCleanupManager:
         client = get_minio_client(self.settings)
         bucket = self.settings.minio_publishers_bucket
 
-        structure = self._get_structure(publisher_id, book_id, book_name)
+        structure = self._get_structure(publisher_slug, book_id, book_name)
         stats = CleanupStats()
 
         logger.info(
@@ -216,7 +216,7 @@ class AIDataCleanupManager:
 
     def get_cleanup_stats(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
     ) -> dict[str, int]:
@@ -224,7 +224,7 @@ class AIDataCleanupManager:
         Get count of files per directory without deleting.
 
         Args:
-            publisher_id: Publisher ID (integer).
+            publisher_slug: Publisher ID (integer).
             book_id: Book identifier.
             book_name: Book folder name.
 
@@ -234,7 +234,7 @@ class AIDataCleanupManager:
         client = get_minio_client(self.settings)
         bucket = self.settings.minio_publishers_bucket
 
-        structure = self._get_structure(publisher_id, book_id, book_name)
+        structure = self._get_structure(publisher_slug, book_id, book_name)
         counts: dict[str, int] = {
             "text": 0,
             "modules": 0,

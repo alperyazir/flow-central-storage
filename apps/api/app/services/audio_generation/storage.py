@@ -54,30 +54,30 @@ class AudioStorage:
 
     def _build_ai_data_path(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
         *path_parts: str,
     ) -> str:
         """Build MinIO path within ai-data directory."""
         # Path: {publisher_id}/books/{book_name}/ai-data (book_id not in path)
-        base = f"{publisher_id}/books/{book_name}/ai-data"
+        base = f"{publisher_slug}/books/{book_name}/ai-data"
         if path_parts:
             return f"{base}/{'/'.join(path_parts)}"
         return base
 
     def _build_vocabulary_path(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
     ) -> str:
         """Build path for vocabulary.json file."""
-        return self._build_ai_data_path(publisher_id, book_id, book_name, "vocabulary.json")
+        return self._build_ai_data_path(publisher_slug, book_id, book_name, "vocabulary.json")
 
     def _build_audio_path(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
         language: str,
@@ -85,21 +85,21 @@ class AudioStorage:
     ) -> str:
         """Build path for an audio file."""
         return self._build_ai_data_path(
-            publisher_id, book_id, book_name, "audio", "vocabulary", language, f"{word_id}.mp3"
+            publisher_slug, book_id, book_name, "audio", "vocabulary", language, f"{word_id}.mp3"
         )
 
     def _build_audio_prefix(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
     ) -> str:
         """Build prefix for audio vocabulary directory."""
-        return self._build_ai_data_path(publisher_id, book_id, book_name, "audio", "vocabulary") + "/"
+        return self._build_ai_data_path(publisher_slug, book_id, book_name, "audio", "vocabulary") + "/"
 
     def load_vocabulary(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
     ) -> dict[str, Any]:
@@ -120,7 +120,7 @@ class AudioStorage:
         client = get_minio_client(self.settings)
         bucket = self.settings.minio_publishers_bucket
 
-        path = self._build_vocabulary_path(publisher_id, book_id, book_name)
+        path = self._build_vocabulary_path(publisher_slug, book_id, book_name)
 
         try:
             response = client.get_object(bucket, path)
@@ -135,7 +135,7 @@ class AudioStorage:
 
     def save_audio_file(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
         audio_file: AudioFile,
@@ -160,7 +160,7 @@ class AudioStorage:
         client = get_minio_client(self.settings)
         bucket = self.settings.minio_publishers_bucket
 
-        path = self._build_audio_path(publisher_id, book_id, book_name, audio_file.language, audio_file.word_id)
+        path = self._build_audio_path(publisher_slug, book_id, book_name, audio_file.language, audio_file.word_id)
 
         data = BytesIO(audio_data)
 
@@ -189,7 +189,7 @@ class AudioStorage:
 
     def save_all_audio(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
         audio_files: list[AudioFile],
@@ -257,7 +257,7 @@ class AudioStorage:
 
     def update_vocabulary_audio_paths(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
         audio_files: list[AudioFile],
@@ -282,7 +282,7 @@ class AudioStorage:
         bucket = self.settings.minio_publishers_bucket
 
         # Load existing vocabulary
-        vocabulary = self.load_vocabulary(publisher_id, book_id, book_name)
+        vocabulary = self.load_vocabulary(publisher_slug, book_id, book_name)
 
         # Build audio path lookup by word_id and language
         # audio_files contains both word and translation audio
@@ -320,7 +320,7 @@ class AudioStorage:
                 updated_count += 1
 
         # Save updated vocabulary
-        path = self._build_vocabulary_path(publisher_id, book_id, book_name)
+        path = self._build_vocabulary_path(publisher_slug, book_id, book_name)
 
         json_str = json.dumps(vocabulary, indent=2, ensure_ascii=False)
         json_bytes = json_str.encode("utf-8")
@@ -351,7 +351,7 @@ class AudioStorage:
 
     def cleanup_audio_directory(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
     ) -> int:
@@ -369,7 +369,7 @@ class AudioStorage:
         client = get_minio_client(self.settings)
         bucket = self.settings.minio_publishers_bucket
 
-        prefix = self._build_audio_prefix(publisher_id, book_id, book_name)
+        prefix = self._build_audio_prefix(publisher_slug, book_id, book_name)
         deleted_count = 0
 
         try:

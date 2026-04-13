@@ -8,6 +8,8 @@ import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
+from cefrpy import CEFRAnalyzer
+
 from app.core.config import get_settings
 from app.services.llm import LLMProviderError, get_llm_service
 from app.services.vocabulary_extraction.models import (
@@ -56,6 +58,31 @@ class VocabularyExtractionService:
         """
         self.settings = settings or get_settings()
         self._llm_service = llm_service
+        self._cefr_analyzer = CEFRAnalyzer()
+
+    # Map our POS labels to cefrpy Penn Treebank tags
+    POS_TO_CEFRPY = {
+        "noun": "NN",
+        "verb": "VB",
+        "adjective": "JJ",
+        "adverb": "RB",
+    }
+
+    def _get_cefr_level(self, word: str, pos: str) -> str:
+        """Get CEFR level from cefrpy, using POS-specific level when available."""
+        word_lower = word.lower()
+        if not self._cefr_analyzer.is_word_in_database(word_lower):
+            return ""
+
+        # Try POS-specific level first
+        cefrpy_pos = self.POS_TO_CEFRPY.get(pos)
+        if cefrpy_pos:
+            level = self._cefr_analyzer.get_word_pos_level_CEFR(word_lower, cefrpy_pos)
+            if level:
+                return level
+
+        # Fallback to average level
+        return self._cefr_analyzer.get_average_word_level_CEFR(word_lower) or ""
 
     @property
     def llm_service(self) -> LLMService:
@@ -157,11 +184,6 @@ class VocabularyExtractionService:
             if not word or len(word) < min_word_length:
                 continue
 
-            # Validate difficulty level
-            level = str(item.get("level", "")).upper()
-            if level not in ["A1", "A2", "B1", "B2", "C1", "C2"]:
-                level = ""
-
             # Validate part of speech
             pos = str(item.get("part_of_speech", "")).lower()
             valid_pos = [
@@ -178,6 +200,13 @@ class VocabularyExtractionService:
             ]
             if pos not in valid_pos:
                 pos = ""
+
+            # Get CEFR level from cefrpy (reliable), fallback to LLM
+            level = self._get_cefr_level(word, pos)
+            if not level:
+                level = str(item.get("level", "")).upper()
+                if level not in ["A1", "A2", "B1", "B2", "C1", "C2"]:
+                    level = ""
 
             vocab_word = VocabularyWord(
                 word=word,
@@ -387,7 +416,7 @@ class VocabularyExtractionService:
     async def extract_book_vocabulary(
         self,
         book_id: str,
-        publisher_id: str,
+        publisher_slug: str,
         book_name: str,
         modules: list[dict[str, Any]],
         language: str = "en",
@@ -399,7 +428,7 @@ class VocabularyExtractionService:
 
         Args:
             book_id: Book identifier.
-            publisher_id: Publisher identifier.
+            publisher_slug: Publisher slug.
             book_name: Book folder name.
             modules: List of module dictionaries with module_id, title, text, difficulty.
             language: Primary language of the content.
@@ -415,7 +444,7 @@ class VocabularyExtractionService:
         if not modules:
             raise NoModulesFoundError(
                 book_id=book_id,
-                path=f"{publisher_id}/books/{book_name}/ai-data/modules/",
+                path=f"{publisher_slug}/books/{book_name}/ai-data/modules/",
             )
 
         logger.info(
@@ -453,7 +482,7 @@ class VocabularyExtractionService:
 
         book_result = BookVocabularyResult(
             book_id=book_id,
-            publisher_id=publisher_id,
+            publisher_id=publisher_slug,
             book_name=book_name,
             language=language,
             translation_language=translation_language,
