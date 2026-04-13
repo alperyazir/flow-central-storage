@@ -286,7 +286,6 @@ def sync_books_with_r2(
 
     # --- Teacher Materials Sync ---
     from app.models.material import Material
-    from app.models.teacher import Teacher
 
     teachers_bucket = settings.minio_teachers_bucket
     r2_materials: dict[tuple[int, str], dict] = {}  # (teacher_id, filename) → metadata

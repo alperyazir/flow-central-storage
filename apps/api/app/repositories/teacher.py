@@ -60,14 +60,13 @@ class TeacherRepository(BaseRepository[Teacher]):
         result = session.execute(statement)
         return result.scalars().first()
 
-    def get_or_create_by_teacher_id(self, session: Session, teacher_id: str) -> Teacher:
+    def get_or_create_by_teacher_id(self, session: Session, teacher_id: str, display_name: str | None = None) -> Teacher:
         """Get existing teacher by teacher_id or create a new one."""
         teacher = self.get_by_teacher_id(session, teacher_id)
         if teacher is not None:
             return teacher
 
-        # Create new teacher with teacher_id as display_name
-        teacher = Teacher(teacher_id=teacher_id, display_name=teacher_id)
+        teacher = Teacher(teacher_id=teacher_id, display_name=display_name or teacher_id)
         return self.add(session, teacher)
 
     def get_with_materials(self, session: Session, teacher_id: int) -> Teacher | None:

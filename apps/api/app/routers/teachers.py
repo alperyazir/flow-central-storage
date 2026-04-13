@@ -191,6 +191,7 @@ def _validate_file_type(content_type: str | None, settings) -> str:
 async def upload_teacher_material(
     teacher_id: str,
     file: UploadFile,
+    display_name: str | None = Query(default=None, description="Teacher username for storage path"),
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
     db: Session = Depends(get_db),
 ):
@@ -232,12 +233,19 @@ async def upload_teacher_material(
 
     try:
         # Get or create Teacher record in database
-        teacher = _teacher_repository.get_or_create_by_teacher_id(db, teacher_id)
+        teacher = _teacher_repository.get_or_create_by_teacher_id(db, teacher_id, display_name=display_name)
         teacher_db_id = teacher.id
+
+        # Update display_name if provided and changed
+        if display_name and teacher.display_name != display_name:
+            teacher.display_name = display_name
+            db.flush()
+
         logger.info(
-            "Teacher record: id=%d, teacher_id='%s'",
+            "Teacher record: id=%d, teacher_id='%s', display_name='%s'",
             teacher.id,
             teacher.teacher_id,
+            teacher.display_name,
         )
         db.commit()  # Release DB connection before S3 upload
 
@@ -405,9 +413,10 @@ async def download_teacher_material(
     - `Range: bytes=-500` - Last 500 bytes
     """
     _require_admin(credentials, db)
+    storage_name = _get_teacher_storage_name(db, teacher_id)
     settings = get_settings()
     client = get_minio_client(settings)
-    object_key = _build_teacher_object_key(teacher_id, path)
+    object_key = _build_teacher_object_key(storage_name, path)
 
     # Get file metadata
     try:
