@@ -117,7 +117,7 @@ class AudioGenerationService:
         self,
         vocabulary: list[dict[str, Any]],
         book_id: str,
-        publisher_id: str,
+        publisher_slug: str,
         book_name: str,
         language: str = "en",
         translation_language: str = "tr",
@@ -129,7 +129,7 @@ class AudioGenerationService:
         Args:
             vocabulary: List of vocabulary word dictionaries.
             book_id: Book identifier.
-            publisher_id: Publisher identifier.
+            publisher_slug: Publisher slug for storage path.
             book_name: Book name for context.
             language: Primary language code.
             translation_language: Translation language code.
@@ -142,7 +142,7 @@ class AudioGenerationService:
             logger.info(f"[AudioGeneration] No vocabulary words for book {book_id}")
             return BookAudioResult(
                 book_id=book_id,
-                publisher_id=publisher_id,
+                publisher_id=publisher_slug,
                 book_name=book_name,
                 language=language,
                 translation_language=translation_language,
@@ -262,7 +262,7 @@ class AudioGenerationService:
 
         result = BookAudioResult(
             book_id=book_id,
-            publisher_id=publisher_id,
+            publisher_id=publisher_slug,
             book_name=book_name,
             language=language,
             translation_language=translation_language,
