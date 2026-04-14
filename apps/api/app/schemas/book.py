@@ -64,6 +64,7 @@ class BookRead(BookBase):
 
     id: int
     publisher_id: int
+    publisher_slug: str | None = None
     created_at: datetime
     updated_at: datetime
 

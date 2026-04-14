@@ -63,3 +63,8 @@ class Book(Base):
     def publisher(self) -> str:
         """Get publisher name from relationship."""
         return self.publisher_rel.name
+
+    @property
+    def publisher_slug(self) -> str:
+        """Get publisher slug from relationship."""
+        return self.publisher_rel.slug
