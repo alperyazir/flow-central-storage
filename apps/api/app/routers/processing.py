@@ -346,7 +346,7 @@ async def delete_ai_data(
     # Cleanup AI data (use publisher slug for correct storage path)
     cleanup_manager = get_ai_data_cleanup_manager()
     stats = cleanup_manager.cleanup_all(
-        publisher_id=publisher_slug,
+        publisher_slug=publisher_slug,
         book_id=str(book_id),
         book_name=book_name,
     )
