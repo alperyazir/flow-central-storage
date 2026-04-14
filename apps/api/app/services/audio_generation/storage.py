@@ -231,7 +231,7 @@ class AudioStorage:
 
             try:
                 path = self.save_audio_file(
-                    publisher_id=publisher_id,
+                    publisher_slug=publisher_slug,
                     book_id=book_id,
                     book_name=book_name,
                     audio_file=audio_file,

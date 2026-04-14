@@ -256,7 +256,7 @@ class TopicStorage:
 
             try:
                 path = self.update_module_with_topics(
-                    publisher_id=book_result.publisher_id,
+                    publisher_slug=book_result.publisher_id,
                     book_id=book_result.book_id,
                     book_name=book_result.book_name,
                     module_result=module_result,
