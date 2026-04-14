@@ -95,7 +95,7 @@ class PDFExtractionService:
     async def extract_book_pdf(
         self,
         book_id: str,
-        publisher_id: str,
+        publisher_slug: str,
         book_name: str,
         progress_callback: Callable[[int, int], None] | None = None,
     ) -> PDFExtractionResult:
@@ -111,7 +111,7 @@ class PDFExtractionService:
 
         Args:
             book_id: Book identifier.
-            publisher_id: Publisher identifier.
+            publisher_slug: Publisher slug for storage path.
             book_name: Book name (folder name in storage).
             progress_callback: Optional callback(current_page, total_pages).
 
@@ -127,12 +127,12 @@ class PDFExtractionService:
         logger.info(
             "Starting PDF extraction for book %s (publisher: %s, name: %s)",
             book_id,
-            publisher_id,
+            publisher_slug,
             book_name,
         )
 
         # Download PDF from MinIO
-        pdf_path = self._build_pdf_path(publisher_id, book_id, book_name)
+        pdf_path = self._build_pdf_path(publisher_slug, book_id, book_name)
         pdf_data = self._download_pdf(pdf_path, book_id)
         logger.debug("Downloaded PDF: %d bytes", len(pdf_data))
 
@@ -227,7 +227,7 @@ class PDFExtractionService:
 
             result = PDFExtractionResult(
                 book_id=book_id,
-                publisher_id=publisher_id,
+                publisher_id=publisher_slug,
                 book_name=book_name,
                 total_pages=total_pages,
                 pages=final_pages,
