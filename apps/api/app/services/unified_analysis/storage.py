@@ -32,9 +32,12 @@ def _get_cefr_level(word: str, pos: str) -> str:
     if cefrpy_pos:
         level = _cefr_analyzer.get_word_pos_level_CEFR(word_lower, cefrpy_pos)
         if level:
-            return level
+            return level.name if hasattr(level, "name") else str(level)
 
-    return _cefr_analyzer.get_average_word_level_CEFR(word_lower) or ""
+    avg = _cefr_analyzer.get_average_word_level_CEFR(word_lower)
+    if avg:
+        return avg.name if hasattr(avg, "name") else str(avg)
+    return ""
 
 if TYPE_CHECKING:
     from app.core.config import Settings

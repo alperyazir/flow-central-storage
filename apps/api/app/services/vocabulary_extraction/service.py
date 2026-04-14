@@ -79,10 +79,13 @@ class VocabularyExtractionService:
         if cefrpy_pos:
             level = self._cefr_analyzer.get_word_pos_level_CEFR(word_lower, cefrpy_pos)
             if level:
-                return level
+                return level.name if hasattr(level, "name") else str(level)
 
         # Fallback to average level
-        return self._cefr_analyzer.get_average_word_level_CEFR(word_lower) or ""
+        avg = self._cefr_analyzer.get_average_word_level_CEFR(word_lower)
+        if avg:
+            return avg.name if hasattr(avg, "name") else str(avg)
+        return ""
 
     @property
     def llm_service(self) -> LLMService:
