@@ -103,12 +103,12 @@ class AIDataCleanupManager:
 
                     logger.debug("Deleted: %s", obj.object_name)
 
-                except S3Error as e:
+                except Exception as e:
                     error_msg = f"Failed to delete {obj.object_name}: {e}"
                     stats.errors.append(error_msg)
                     logger.warning(error_msg)
 
-        except S3Error as e:
+        except Exception as e:
             logger.error("Failed to list objects for cleanup: %s", e)
             raise CleanupError(book_id, structure.base_path, str(e))
 
@@ -178,6 +178,8 @@ class AIDataCleanupManager:
                 except S3Error as e:
                     if e.code != "NoSuchKey":
                         stats.errors.append(f"Failed to delete {path}: {e}")
+                except Exception as e:
+                    stats.errors.append(f"Failed to delete {path}: {e}")
                 continue
 
             # For directories
@@ -199,12 +201,12 @@ class AIDataCleanupManager:
 
                         logger.debug("Deleted: %s", obj.object_name)
 
-                    except S3Error as e:
+                    except Exception as e:
                         error_msg = f"Failed to delete {obj.object_name}: {e}"
                         stats.errors.append(error_msg)
                         logger.warning(error_msg)
 
-            except S3Error as e:
+            except Exception as e:
                 stats.errors.append(f"Failed to list {path}: {e}")
 
         logger.info(

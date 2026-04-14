@@ -526,7 +526,7 @@ async def list_books_with_processing_status(
     for book in books:
         pub = publishers_by_id.get(book.publisher_id)
         publisher_name = pub.name if pub else ""
-        pub_id = pub.id if pub else book.publisher_id
+        pub_slug = pub.slug if pub else str(book.publisher_id)
         # Get most recent job for this book
         jobs = await queue_service.list_jobs(book_id=str(book.id), limit=1)
 
@@ -550,10 +550,10 @@ async def list_books_with_processing_status(
                 )
         else:
             # Check if metadata exists (means it was processed at some point)
-            metadata = retrieval_service.get_metadata(pub_id, str(book.id), book.book_name)
+            metadata = retrieval_service.get_metadata(pub_slug, str(book.id), book.book_name)
             if metadata:
-                processing_status = "completed"
-                progress = 100
+                processing_status = metadata.processing_status.value
+                progress = 100 if metadata.processing_status.value == "completed" else 0
                 if metadata.processing_completed_at:
                     last_processed_at = (
                         metadata.processing_completed_at.isoformat()
