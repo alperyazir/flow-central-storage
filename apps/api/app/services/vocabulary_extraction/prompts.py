@@ -2,11 +2,12 @@
 
 # System prompt for vocabulary extraction
 SYSTEM_PROMPT = """You are a vocabulary extraction API that returns JSON only.
-Extract vocabulary words from educational text with definitions and translations.
+Extract vocabulary words from educational text with definitions and Turkish translations.
 CRITICAL: Return ONLY a raw JSON array. No markdown. No code blocks. No explanation. No text before or after the JSON."""
 
 # Main vocabulary extraction prompt
 VOCABULARY_EXTRACTION_PROMPT = """Extract {max_words} vocabulary words from this {difficulty}-level educational module.
+The content is in {language}.
 
 MODULE TITLE: {module_title}
 
@@ -17,36 +18,38 @@ IMPORTANT: Focus on words that are KEY to learning the module's topic "{module_t
 - Extract words that students need to learn for this specific topic
 - Prioritize nouns, verbs, and adjectives directly related to the theme
 - Skip words that are not essential to understanding the topic
+- Keep words in their original language ({language}) — do NOT translate them to another language
 - Use infinitive for verbs, singular for nouns
 
 Return a JSON array with these fields for each word:
-- word: base form
-- translation: Turkish translation
-- definition: simple English definition
+- word: base form in {language}
+- translation: Turkish translation (Türkçe çeviri)
+- definition: clear explanation in {language}
 - part_of_speech: noun/verb/adjective/adverb
 - level: A1/A2/B1/B2/C1/C2
-- example: example sentence
+- example: example sentence in {language}
 
 OUTPUT FORMAT - Return ONLY this JSON array, nothing else:
-[{{"word":"elephant","translation":"fil","definition":"a large animal with a trunk","part_of_speech":"noun","level":"A1","example":"The elephant is big."}}]"""
+[{{"word":"Schule","translation":"okul","definition":"Ein Ort, an dem Kinder lernen","part_of_speech":"noun","level":"A1","example":"Die Kinder gehen in die Schule."}}]"""
 
 # Fallback prompt for simpler extraction
-SIMPLE_VOCABULARY_PROMPT = """Extract {max_words} vocabulary words about "{module_title}" from this text. Return ONLY a JSON array.
+SIMPLE_VOCABULARY_PROMPT = """Extract {max_words} vocabulary words about "{module_title}" from this {language} text. Return ONLY a JSON array.
 Focus on words essential to the topic. Skip unrelated common words.
+Keep words in their original language. Provide Turkish translations.
 
 TEXT:
 {module_text}
 
 OUTPUT (JSON array only, no other text):
-[{{"word":"cat","translation":"kedi","definition":"a small pet animal","part_of_speech":"noun","level":"A1","example":"I have a cat."}}]"""
+[{{"word":"house","translation":"ev","definition":"a building where people live","part_of_speech":"noun","level":"A1","example":"I live in a house."}}]"""
 
-# Bilingual extraction prompt (for Turkish + English content)
-BILINGUAL_VOCABULARY_PROMPT = """Extract vocabulary from this bilingual (English-Turkish) educational text.
+# Bilingual extraction prompt (for mixed language content)
+BILINGUAL_VOCABULARY_PROMPT = """Extract vocabulary from this bilingual educational text.
 
-For each English vocabulary word, provide:
-- The English word
-- Its Turkish translation (may already be in the text)
-- Definition in English
+For each vocabulary word, provide:
+- The word in the language being taught
+- Its Turkish translation
+- Definition in the word's language
 - Part of speech
 - CEFR level
 - Example sentence
@@ -56,7 +59,7 @@ Text:
 {module_text}
 ---
 
-Extract {max_words} vocabulary words. Focus on the English words and their Turkish translations.
+Extract {max_words} vocabulary words. Focus on the words being taught and their Turkish translations.
 
 Respond with ONLY a valid JSON array:
 [
@@ -77,6 +80,7 @@ def build_vocabulary_extraction_prompt(
     difficulty: str = "B1",
     max_words: int = 50,
     max_length: int = 8000,
+    language: str = "en",
 ) -> str:
     """
     Build the vocabulary extraction prompt with the given module text.
@@ -87,6 +91,7 @@ def build_vocabulary_extraction_prompt(
         difficulty: Target CEFR difficulty level.
         max_words: Maximum number of words to extract.
         max_length: Maximum text length to include.
+        language: Source language of the content.
 
     Returns:
         Formatted prompt string.
@@ -100,6 +105,7 @@ def build_vocabulary_extraction_prompt(
         module_title=module_title or "Unknown",
         difficulty=difficulty,
         max_words=max_words,
+        language=language,
     )
 
 
@@ -108,6 +114,7 @@ def build_simple_vocabulary_prompt(
     module_title: str = "",
     max_words: int = 30,
     max_length: int = 4000,
+    language: str = "en",
 ) -> str:
     """
     Build a simpler vocabulary extraction prompt for fallback.
@@ -117,6 +124,7 @@ def build_simple_vocabulary_prompt(
         module_title: Title of the module for topic context.
         max_words: Maximum number of words to extract.
         max_length: Maximum text length to include.
+        language: Source language of the content.
 
     Returns:
         Formatted prompt string.
@@ -128,6 +136,7 @@ def build_simple_vocabulary_prompt(
         module_text=module_text,
         module_title=module_title or "this topic",
         max_words=max_words,
+        language=language,
     )
 
 

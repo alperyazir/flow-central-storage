@@ -38,24 +38,27 @@ UNIFIED_ANALYSIS_PROMPT = """Analyze this educational book content and provide a
 
 2. **Extract Topics**: For each module, identify the main educational topics and grammar points
 
-3. **Extract Vocabulary**: For each module, extract 15-40 important vocabulary words with definitions and translations
+3. **Extract Vocabulary**: For each module, extract 15-40 important vocabulary words that students are expected to learn in that module. These are the KEY words being taught — not common filler words.
 
 ## Content with Page Markers
 {text_content}
 
 ## CRITICAL Requirements
+- First detect the language of the book content (e.g., en, de, fr, es, etc.)
 - Analyze the ENTIRE book from first page to last page
 - Identify ALL modules/units throughout the book (typically 6-15 modules)
 - NO module should exceed 20 pages - if you find a large section, break it into multiple modules
 - Extract 15-40 vocabulary words per module (more for larger modules)
+- Extract words IN THE LANGUAGE THEY APPEAR in the book (do NOT translate words to English)
 - Include nouns, verbs, adjectives, prepositions, common phrases
-- Provide Turkish translations for all vocabulary
-- Assess difficulty level (beginner, intermediate, advanced or A1, A2, B1, B2)
+- Provide Turkish translations for ALL vocabulary words
+- The "definition" field should be a clear explanation in the book's own language
+- Assess difficulty level (A1, A2, B1, B2, C1, C2)
 
 ## Response Format
 Return ONLY a valid JSON object (no markdown, no explanations):
 {{
-  "language": "en",
+  "language": "detected language code (en, de, fr, es, etc.)",
   "modules": [
     {{
       "title": "Module/Unit Title",
@@ -66,11 +69,11 @@ Return ONLY a valid JSON object (no markdown, no explanations):
       "difficulty_level": "A1",
       "vocabulary": [
         {{
-          "word": "example",
-          "definition": "a thing characteristic of its kind",
-          "translation": "örnek",
+          "word": "example word in the book's language",
+          "definition": "clear explanation in the book's language",
+          "translation": "Turkish translation (Türkçe çeviri)",
           "part_of_speech": "noun",
-          "example_sentence": "This is an example sentence.",
+          "example_sentence": "An example sentence from or inspired by the book content.",
           "difficulty": "A1"
         }}
       ]
@@ -124,6 +127,7 @@ PHASE2_EXTRACT_VOCABULARY_PROMPT = """Extract vocabulary and write a brief summa
 - Pages: {start_page} to {end_page}
 - Topics: {topics}
 - Level: {difficulty_level}
+- Content Language: {language}
 
 ## Content
 {module_text}
@@ -131,7 +135,7 @@ PHASE2_EXTRACT_VOCABULARY_PROMPT = """Extract vocabulary and write a brief summa
 ## Task
 1. Write a 2-3 sentence summary describing what this module covers and its learning objectives.
 2. Identify the key grammar points taught or practiced in this module (e.g., "Present Simple", "Comparatives", "Modal verbs: can/could").
-3. Extract important vocabulary words from this content.
+3. Extract important vocabulary words that this module is teaching to students. Focus on the KEY words being introduced and practiced — not common filler words.
 
 ## Response Format
 Return ONLY valid JSON:
@@ -141,9 +145,9 @@ Return ONLY valid JSON:
   "grammar_points": ["Grammar point 1", "Grammar point 2"],
   "vocabulary": [
     {{
-      "word": "example",
-      "definition": "a thing characteristic of its kind",
-      "translation": "örnek",
+      "word": "word in the content's language",
+      "definition": "clear explanation in the content's language",
+      "translation": "Turkish translation (Türkçe çeviri)",
       "part_of_speech": "noun",
       "difficulty": "A1"
     }}
@@ -151,10 +155,11 @@ Return ONLY valid JSON:
 }}
 
 Focus on:
-- Key nouns, verbs, adjectives
-- Common phrases and expressions
+- Key nouns, verbs, adjectives that the module is teaching
+- Common phrases and expressions being introduced
 - Words essential to the module's topics
-- Provide Turkish translations"""
+- Keep the "word" in its original language as it appears in the text
+- Provide Turkish translations for every word"""
 
 
 class UnifiedAnalysisService:
@@ -412,6 +417,7 @@ class UnifiedAnalysisService:
                         topics=mod_data.get("topics", []),
                         difficulty_level=difficulty,
                         module_text=module_text,
+                        language=primary_language,
                     )
                     vocabulary = self._parse_vocabulary(vocab_data)
                     summary = vocab_data.get("summary", "")
@@ -542,6 +548,7 @@ class UnifiedAnalysisService:
         topics: list[str],
         difficulty_level: str,
         module_text: str,
+        language: str = "en",
     ) -> dict[str, Any]:
         """Phase 2: Extract vocabulary for a single module."""
         prompt = PHASE2_EXTRACT_VOCABULARY_PROMPT.format(
@@ -551,6 +558,7 @@ class UnifiedAnalysisService:
             topics=", ".join(topics) if topics else "General",
             difficulty_level=difficulty_level,
             module_text=module_text[:50000],  # Limit text size
+            language=language,
         )
 
         response = await self.llm_service.simple_completion(

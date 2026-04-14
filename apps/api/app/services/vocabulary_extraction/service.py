@@ -302,6 +302,7 @@ class VocabularyExtractionService:
             difficulty=difficulty,
             max_words=max_words,
             max_length=max_text,
+            language=language,
         )
         provider_name = ""
         tokens_used = 0
@@ -348,6 +349,7 @@ class VocabularyExtractionService:
                     module_title=module_title,
                     max_words=max_words // 2,
                     max_length=max_text // 2,
+                    language=language,
                 )
                 response = await self.llm_service.simple_completion(
                     prompt=simple_prompt,

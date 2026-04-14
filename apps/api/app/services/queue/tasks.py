@@ -437,7 +437,7 @@ async def _run_processing_stage(
             publisher_slug=pub_slug,
             book_name=metadata.get("book_name", ""),
             progress=progress,
-            topic_analysis_result=stage_results.get("topic_analysis"),
+            topic_analysis_result=stage_results.get("topic_analysis") or stage_results.get("unified_analysis"),
         )
 
     if stage == "audio_generation":
@@ -1074,11 +1074,15 @@ async def _run_vocabulary_extraction(
             "language": "",
         }
 
-    # Determine language from topic analysis result or modules
+    # Determine language from topic analysis or unified analysis result
     primary_language = "en"
     translation_language = "tr"
     if topic_analysis_result:
-        primary_language = topic_analysis_result.get("primary_language", "en") or "en"
+        primary_language = (
+            topic_analysis_result.get("primary_language")
+            or topic_analysis_result.get("language")
+            or "en"
+        )
 
     # Progress tracking
     def on_progress(current: int, total: int) -> None:
