@@ -1,5 +1,6 @@
 """Worker task definitions for arq."""
 
+import asyncio
 import fcntl
 import logging
 import shutil
@@ -1892,12 +1893,28 @@ async def create_bundle_task(
     async def update_progress(progress: int, step: str) -> None:
         await repository.update_job_progress(job_id, progress, current_step=step)
 
+    # Resolve the book's R2 prefix (nested for children, flat for top-level).
+    # We look this up from DB so the worker doesn't need callers to pass it.
+    from app.db import SessionLocal
+    from app.models.book import Book as _Book
+
+    def _resolve_book_prefix() -> str:
+        with SessionLocal() as session:
+            b = session.get(_Book, book_id)
+            if b is None:
+                # Fallback to flat — book should exist, but don't crash.
+                return f"{publisher_slug}/books/{book_name}/"
+            return b.r2_prefix
+
+    book_r2_prefix = await asyncio.to_thread(_resolve_book_prefix)
+
     logger.info(
-        "Starting bundle creation job %s for book %s (platform: %s, publisher: %s)",
+        "Starting bundle creation job %s for book %s (platform: %s, publisher: %s, prefix: %s)",
         job_id,
         book_name,
         platform,
         publisher_slug,
+        book_r2_prefix,
     )
 
     # Update job status to processing
@@ -2035,7 +2052,8 @@ async def create_bundle_task(
 
             if not use_local_cache:
                 await update_progress(25, "Downloading book assets...")
-                book_prefix = f"{publisher_slug}/books/{book_name}/"
+                # Use the nested-aware prefix resolved from the Book record.
+                book_prefix = book_r2_prefix
                 objects = [
                     obj for obj in client.list_objects(publishers_bucket, prefix=book_prefix, recursive=True)
                     if not obj.is_dir and obj.object_name[len(book_prefix):]

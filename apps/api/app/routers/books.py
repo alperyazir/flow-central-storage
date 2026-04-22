@@ -225,9 +225,34 @@ def sync_books_with_r2(
     all_publishers = db.execute(select(Publisher)).scalars().all()
     slug_to_publisher: dict[str, Publisher] = {p.slug: p for p in all_publishers}
 
-    # Get all publisher folders from R2 (folders are now slugs)
-    r2_books: dict[tuple[int, str], bool] = {}  # (publisher_id, book_name) → exists
-    slug_for_pub: dict[int, str] = {}  # publisher_id → slug (for path building)
+    # Walk R2 at two levels:
+    #   {slug}/books/{name}/                      → top-level
+    #   {slug}/books/{parent}/additional-resources/{child}/   → nested child
+    # For each found book, record its R2 location so we can reconstruct
+    # parent_book_id + book_type from path alone (crucial when DB was
+    # wiped and is being rebuilt from R2).
+    r2_book_info: dict[tuple[int, str], dict[str, object]] = {}
+    slug_for_pub: dict[int, str] = {}
+
+    def _detect_child_type(prefix: str) -> str:
+        """Return 'pdf' if the only content under prefix is raw/*.pdf, else 'standard'."""
+        has_raw_pdf = False
+        has_non_raw = False
+        try:
+            for obj in client.list_objects(bucket, prefix=prefix, recursive=True):
+                if obj.is_dir:
+                    continue
+                rel = obj.object_name[len(prefix):]
+                if rel.startswith("raw/") and rel.lower().endswith(".pdf"):
+                    has_raw_pdf = True
+                elif rel:
+                    has_non_raw = True
+        except Exception:
+            pass
+        if has_raw_pdf and not has_non_raw:
+            return BookTypeEnum.PDF.value
+        return BookTypeEnum.STANDARD.value
+
     try:
         for pub_obj in client.list_objects(bucket, recursive=False):
             pub_slug = pub_obj.object_name.rstrip("/")
@@ -240,8 +265,24 @@ def sync_books_with_r2(
             books_prefix = f"{pub_slug}/books/"
             for book_obj in client.list_objects(bucket, prefix=books_prefix, recursive=False):
                 book_name = book_obj.object_name[len(books_prefix):].rstrip("/")
-                if book_name:
-                    r2_books[(pub_id, book_name)] = True
+                if not book_name:
+                    continue
+                # Top-level book record
+                r2_book_info[(pub_id, book_name)] = {
+                    "parent_book_name": None,
+                    "book_type": BookTypeEnum.STANDARD.value,
+                }
+                # Walk its additional-resources/ subfolder for child books
+                ar_prefix = f"{books_prefix}{book_name}/additional-resources/"
+                for child_obj in client.list_objects(bucket, prefix=ar_prefix, recursive=False):
+                    child_name = child_obj.object_name[len(ar_prefix):].rstrip("/")
+                    if not child_name:
+                        continue
+                    child_prefix = f"{ar_prefix}{child_name}/"
+                    r2_book_info[(pub_id, child_name)] = {
+                        "parent_book_name": book_name,
+                        "book_type": _detect_child_type(child_prefix),
+                    }
     except Exception as exc:
         logger.error("Failed to list R2 books: %s", exc)
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Failed to list R2 storage") from exc
@@ -253,19 +294,52 @@ def sync_books_with_r2(
     created = []
     removed = []
 
-    # R2'de var, DB'de yok → config.json'dan metadata oku ve oluştur
-    for (pub_id, book_name) in r2_books:
-        if (pub_id, book_name) not in db_books:
-            pub_slug = slug_for_pub[pub_id]
-            book_data: dict[str, object] = {
-                "publisher_id": pub_id,
-                "book_name": book_name,
-                "book_title": book_name,
-                "language": "en",
-                "status": BookStatusEnum.PUBLISHED,
-            }
-            # Try to read config.json from R2 for metadata
+    # Process top-level books first so their IDs are available when we
+    # create children with parent_book_id.
+    r2_sorted = sorted(
+        r2_book_info.items(),
+        key=lambda kv: 0 if kv[1]["parent_book_name"] is None else 1,
+    )
+
+    for (pub_id, book_name), info in r2_sorted:
+        if (pub_id, book_name) in db_books:
+            continue
+        pub_slug = slug_for_pub[pub_id]
+        parent_book_name = info["parent_book_name"]
+        book_type = info["book_type"]
+
+        if parent_book_name is None:
             config_path = f"{pub_slug}/books/{book_name}/config.json"
+        else:
+            config_path = (
+                f"{pub_slug}/books/{parent_book_name}/additional-resources/{book_name}/config.json"
+            )
+
+        book_data: dict[str, object] = {
+            "publisher_id": pub_id,
+            "book_name": book_name,
+            "book_title": book_name,
+            "language": "en",
+            "status": BookStatusEnum.PUBLISHED,
+            "book_type": book_type,
+        }
+
+        # Resolve parent_book_id from DB (parent must exist at this point
+        # since we sorted top-level first).
+        if parent_book_name is not None:
+            parent_book = _book_repository.get_by_publisher_id_and_name(
+                db, publisher_id=pub_id, book_name=parent_book_name
+            )
+            if parent_book is None:
+                logger.warning(
+                    "Sync: child %s/%s has parent %s that is not in DB — skipping",
+                    pub_slug, book_name, parent_book_name,
+                )
+                continue
+            book_data["parent_book_id"] = parent_book.id
+
+        # PDF children have no config.json; skip metadata read for them
+        if book_type != BookTypeEnum.PDF.value:
             try:
                 response = client.get_object(bucket, config_path)
                 config_data = json.loads(response.read())
@@ -279,20 +353,30 @@ def sync_books_with_r2(
                     book_data["category"] = config_data["category"]
                 book_data["activity_count"] = _count_activities(config_data)
                 book_data["activity_details"] = _collect_activity_details(config_data)
-                # Get book cover filename
                 cover = config_data.get("book_cover")
                 if cover:
                     book_data["book_cover"] = os.path.basename(cover)
             except Exception as exc:
                 logger.warning("Sync: could not read config.json for %s/%s: %s", pub_slug, book_name, exc)
 
-            book = _book_repository.create(db, data=book_data)
-            created.append({"id": book.id, "publisher_id": pub_id, "book_name": book_name})
-            logger.info("Sync: created DB record for R2 book %s/%s (id=%d)", pub_slug, book_name, book.id)
+        book = _book_repository.create(db, data=book_data)
+        created.append({
+            "id": book.id,
+            "publisher_id": pub_id,
+            "book_name": book_name,
+            "book_type": book_type,
+            "parent_book_name": parent_book_name,
+        })
+        # Refresh db_books so later children can find this parent
+        db_books[(pub_id, book_name)] = book
+        logger.info(
+            "Sync: created DB record for R2 book %s/%s (id=%d, type=%s, parent=%s)",
+            pub_slug, book_name, book.id, book_type, parent_book_name,
+        )
 
-    # DB'de var, R2'de yok → sil
-    for (pub_id, book_name), book in db_books.items():
-        if (pub_id, book_name) not in r2_books:
+    # DB'de var, R2'de yok → sil (kontrol hem top-level hem nested lokasyonlara bakar)
+    for (pub_id, book_name), book in list(db_books.items()):
+        if (pub_id, book_name) not in r2_book_info:
             _book_repository.delete(db, book)
             removed.append({"id": book.id, "publisher_id": pub_id, "book_name": book_name})
             logger.info("Sync: removed orphan DB record for %s/%s (id=%d)", pub_id, book_name, book.id)
@@ -368,7 +452,7 @@ def sync_books_with_r2(
         "books": {
             "created": created,
             "removed": removed,
-            "r2_count": len(r2_books),
+            "r2_count": len(r2_book_info),
             "db_count": len(db_books),
         },
         "materials": {
@@ -616,6 +700,12 @@ def delete_book(
     book_publisher_id = book.publisher_id
     book_publisher_slug = book.publisher_rel.slug
     book_name = book.book_name
+    # Resolve R2 prefix while the session is still attached (nested for
+    # children, flat for top-level). Deleting this prefix removes all
+    # descendant objects, so children nested underneath a parent are
+    # cleaned up in the parent's prefix delete — no separate child R2
+    # loop needed for content.
+    book_prefix = book.r2_prefix
     children = _book_repository.list_children(db, book.id)
     children_info = [(c.book_name, c.book_type) for c in children]
     book_result = BookRead.model_validate(book)
@@ -631,37 +721,23 @@ def delete_book(
 
             settings = get_settings()
             client = get_minio_client(settings)
-            prefix = f"{book_publisher_slug}/books/{book_name}/"
 
             def on_progress(removed: int, total: int):
                 pct = 10 + int((removed / max(total, 1)) * 60)  # 10-70%
                 set_deletion_progress(job_id, pct, "deleting", f"{removed}/{total} files")
 
+            # For top-level books, book_prefix recursively includes nested
+            # `additional-resources/` children so their R2 content is
+            # cleaned up in this single delete. For a direct child delete,
+            # book_prefix is the child's nested location only.
             report = delete_prefix_directly(
                 client=client,
                 bucket=settings.minio_publishers_bucket,
-                prefix=prefix,
+                prefix=book_prefix,
                 on_progress=on_progress,
             )
 
             total_removed = report.objects_removed
-
-            # Delete R2 prefixes for any child books as well (DB rows are
-            # cascaded via the FK, but R2 objects need an explicit delete).
-            for child_name, _child_type in children_info:
-                child_prefix = f"{book_publisher_slug}/books/{child_name}/"
-                try:
-                    child_report = delete_prefix_directly(
-                        client=client,
-                        bucket=settings.minio_publishers_bucket,
-                        prefix=child_prefix,
-                    )
-                    total_removed += child_report.objects_removed
-                    logger.info(
-                        "Deleted %d child-book objects for %s", child_report.objects_removed, child_name
-                    )
-                except Exception as exc:
-                    logger.warning("Failed to delete child book %s: %s", child_name, exc)
 
             # Delete bundles if requested
             if delete_bundles:
@@ -763,6 +839,9 @@ async def upload_book(
     book_publisher_slug = book.publisher_rel.slug
     book_name = book.book_name
     book_type = book.book_type or BookTypeEnum.STANDARD.value
+    # Resolve R2 prefix while the session is still attached (nested for
+    # children via parent_rel, flat for top-level).
+    prefix = book.r2_prefix
     db.commit()  # Release connection before long S3 ops
 
     is_pdf = book_type == BookTypeEnum.PDF.value
@@ -778,7 +857,6 @@ async def upload_book(
     try:
         settings = get_settings()
         client = get_minio_client(settings)
-        prefix = f"{book_publisher_slug}/books/{book_name}/"
 
         # Clear existing files
         try:
@@ -966,12 +1044,14 @@ def _run_target_book_processing(
         book_publisher_id = book.publisher_id
         book_publisher_slug = book.publisher_rel.slug
         book_name = book.book_name
+        # Capture the nested-aware R2 prefix while the session still holds
+        # publisher_rel / parent_rel.
+        prefix = book.r2_prefix
         session.close()
         session = None
 
         settings = get_settings()
         client = get_minio_client(settings)
-        prefix = f"{book_publisher_slug}/books/{book_name}/"
 
         # Clear existing objects so the replacement is clean
         set_upload_progress(job_id, 45, "clearing", "Clearing existing files...")
@@ -2305,8 +2385,13 @@ def _first_non_empty(payload: dict[str, object], aliases: Iterable[str]) -> obje
 _download_temp_files: dict[str, tuple[str, str]] = {}  # job_id → (tmp_path, book_name)
 
 
-def _run_book_download(job_id: str, publisher_slug: str, book_name: str) -> None:
-    """Background task: zip book assets from S3 into a temp file."""
+def _run_book_download(job_id: str, book_prefix: str, book_name: str) -> None:
+    """Background task: zip book assets from S3 into a temp file.
+
+    ``book_prefix`` is the nested-aware R2 prefix for the book (caller
+    computes it via ``book.r2_prefix``). ``book_name`` is used as the
+    top-level folder inside the generated ZIP.
+    """
     import tempfile
 
     from app.services.cache import set_upload_progress
@@ -2316,7 +2401,7 @@ def _run_book_download(job_id: str, publisher_slug: str, book_name: str) -> None
         settings = get_settings()
         client = get_minio_client(settings)
         bucket = settings.minio_publishers_bucket
-        prefix = f"{publisher_slug}/books/{book_name}/"
+        prefix = book_prefix
 
         set_upload_progress(job_id, 10, "listing", "Listing book files...")
 
@@ -2390,7 +2475,8 @@ def get_pdf_download_url(
     settings = get_settings()
     internal_client = get_minio_client(settings)
     bucket = settings.minio_publishers_bucket
-    prefix = f"{book.publisher_rel.slug}/books/{book.book_name}/raw/"
+    # PDF lives under the book's R2 prefix (nested for children) in raw/
+    prefix = f"{book.r2_prefix}raw/"
     objects = [
         obj for obj in internal_client.list_objects(bucket, prefix=prefix, recursive=True)
         if not obj.is_dir
@@ -2443,7 +2529,7 @@ def download_book(
     background_tasks.add_task(
         _run_book_download,
         job_id=job_id,
-        publisher_slug=book.publisher_rel.slug,
+        book_prefix=book.r2_prefix,
         book_name=book.book_name,
     )
 

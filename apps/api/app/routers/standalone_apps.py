@@ -326,7 +326,10 @@ async def create_bundle_endpoint(
     # Check for existing bundle — return immediately if found
     if not payload.force:
         normalized_platform = payload.platform.lower()
-        bundle_prefix = f"bundles/{publisher.id}/{book.book_name}/"
+        # Bundles are written under bundles/{publisher_slug}/{book_name}/ —
+        # using publisher.id here is a pre-existing bug that caused cache
+        # checks to always miss, regenerating bundles every call.
+        bundle_prefix = f"bundles/{publisher.slug}/{book.book_name}/"
         try:
             found_objects = list(client.list_objects(settings.minio_apps_bucket, prefix=bundle_prefix, recursive=True))
             for obj in found_objects:

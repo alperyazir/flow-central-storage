@@ -355,6 +355,7 @@ def create_bundle(
     book_name: str,
     force: bool = False,
     on_progress: "Callable[[int, str, str], None] | None" = None,
+    book_prefix: str | None = None,
 ) -> tuple[str, str, int, datetime]:
     """Create a bundle by combining app template with book assets.
 
@@ -462,7 +463,11 @@ def create_bundle(
 
             # 5. Download book assets in parallel
             _progress(30, "downloading", "Downloading book assets...")
-            book_prefix = f"{publisher_slug}/books/{book_name}/"
+            # Nested children need parent-scoped prefix; caller supplies
+            # via book_prefix param. Falls back to flat layout for
+            # top-level books or backward-compatible callers.
+            if book_prefix is None:
+                book_prefix = f"{publisher_slug}/books/{book_name}/"
             objects = [
                 obj for obj in client.list_objects(publishers_bucket, prefix=book_prefix, recursive=True)
                 if not obj.is_dir and obj.object_name[len(book_prefix):]

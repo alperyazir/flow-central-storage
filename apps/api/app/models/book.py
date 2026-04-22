@@ -96,3 +96,26 @@ class Book(Base):
     def publisher_slug(self) -> str:
         """Get publisher slug from relationship."""
         return self.publisher_rel.slug
+
+    @property
+    def r2_prefix(self) -> str:
+        """R2 object prefix for this book's content in the publishers bucket.
+
+        Top-level books live at ``{publisher_slug}/books/{book_name}/``.
+        Child books (``parent_book_id`` set) are nested under their parent:
+        ``{publisher_slug}/books/{parent.book_name}/additional-resources/{book_name}/``.
+        The nested layout lets sync-with-R2 reconstruct parent links from
+        path alone and makes parent bundle exclusion straightforward
+        (see ``should_skip_bundled_path`` filtering ``additional-resources/``).
+
+        Requires an attached session — accesses ``publisher_rel`` and,
+        for children, ``parent_rel``.
+        """
+        slug = self.publisher_rel.slug
+        if self.parent_book_id is None:
+            return f"{slug}/books/{self.book_name}/"
+        parent = self.parent_rel
+        if parent is None:
+            # Defensive: child with a dangling FK — fall back to flat path.
+            return f"{slug}/books/{self.book_name}/"
+        return f"{slug}/books/{parent.book_name}/additional-resources/{self.book_name}/"
