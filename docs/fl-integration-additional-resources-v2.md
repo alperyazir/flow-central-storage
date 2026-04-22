@@ -5,9 +5,10 @@
 
 ## TL;DR
 
-Additional materials attached to a Book are **Books themselves** with `parent_book_id` set. No new entity, no new router — FL keeps using the existing `/books/*` endpoints and `Book*` webhooks. Three additions:
+Additional materials attached to a Book are **Books themselves** with `parent_book_id` set. No new entity, no new router — FL keeps using the existing `/books/*` endpoints and `Book*` webhooks. Four additions:
 
-- Two new fields on `Book`: `parent_book_id: int | null`, `book_type: 'standard' | 'pdf'`.
+- Two new persistent fields on `Book`: `parent_book_id: int | null`, `book_type: 'standard' | 'pdf'`.
+- Two response-only fields for convenience: `parent_book_name: str | null`, `r2_prefix: string`.
 - One new endpoint for PDF children: `GET /books/{id}/pdf-url`.
 - One new list filter: `GET /books/?parent_book_id=<id>`.
 
@@ -21,9 +22,12 @@ Book
 ├── book_name
 ├── book_title
 ├── publisher_id
-├── parent_book_id ◀──  NEW: null for top-level books; int for children
-├── book_type      ◀──  NEW: 'standard' (default) | 'pdf'
-├── child_count    ◀──  NEW (response-only): number of non-archived children
+├── publisher_slug           ◀──  response-only: publisher's URL slug
+├── parent_book_id           ◀──  NEW: null for top-level books; int for children
+├── parent_book_name         ◀──  NEW (response-only): parent's book_name, null for top-level
+├── book_type                ◀──  NEW: 'standard' (default) | 'pdf'
+├── r2_prefix                ◀──  NEW (response-only): the book's content prefix in R2
+├── child_count              ◀──  NEW (response-only): number of non-archived children
 └── …existing fields
 ```
 
@@ -118,22 +122,43 @@ Returns `{ job_id, status, book, children: [{ book_name, book_type }] }`. When `
 
 ## Direct CDN URLs
 
-If FL fronts the publishers bucket with a CDN, **pattern differs** for children:
+Every Book response now includes `r2_prefix` — a pre-computed content
+prefix that handles both flat and nested layouts automatically. FL
+builds CDN URLs without any path logic:
 
 ```
-# Top-level book
-{CDN_BASE}/{publisher_slug}/books/{book_name}/config.json
+# For ANY book (top-level or child, flowbook or PDF):
+{CDN_BASE}/{book.r2_prefix}{asset_subpath}
 
-# Child book (any type)
-{CDN_BASE}/{publisher_slug}/books/{parent.book_name}/additional-resources/{book.book_name}/config.json
-
-# Child PDF
-{CDN_BASE}/{publisher_slug}/books/{parent.book_name}/additional-resources/{book.book_name}/raw/{filename}.pdf
+# Examples:
+{CDN_BASE}/{book.r2_prefix}config.json
+{CDN_BASE}/{book.r2_prefix}images/{book.book_cover}
+{CDN_BASE}/{book.r2_prefix}raw/{pdf_filename}        # PDF children
 ```
 
-**Preferred:** use `GET /books/{id}/pdf-url` or `POST /books/{id}/download` — these return server-computed URLs, so future layout changes stay transparent to FL.
+Reference values from a real child PDF response:
+```json
+{
+  "id": 26,
+  "book_name": "2_Sinif_22",
+  "book_type": "pdf",
+  "parent_book_id": 16,
+  "parent_book_name": "Brains",
+  "publisher_slug": "universal-elt",
+  "r2_prefix": "universal-elt/books/Brains/additional-resources/2_Sinif_22/"
+}
+```
 
-To construct the CDN URL directly, FL must first fetch the child's `parent_book_id`, then fetch the parent book to get `parent.book_name`. Plan for one extra API call when rendering child-book assets.
+The underlying layout (for reference — FL should not need to recompose this manually):
+
+```
+Top-level:   {publisher_slug}/books/{book_name}/
+Child book:  {publisher_slug}/books/{parent.book_name}/additional-resources/{book.book_name}/
+```
+
+**Preferred for PDFs:** `GET /books/{id}/pdf-url` returns a short-lived (6h) presigned URL — useful if CDN caching is undesirable. For long-lived cacheable URLs, use `{CDN_BASE}{r2_prefix}raw/{filename}` directly (FL needs to know the filename; query the object name via admin or keep it in FL's own metadata).
+
+**One-call contract:** a single `GET /books/{id}` returns everything FL needs for UI rendering AND CDN URL construction — no follow-up parent fetch required.
 
 ## Webhooks
 

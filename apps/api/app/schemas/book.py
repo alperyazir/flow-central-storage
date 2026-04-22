@@ -63,12 +63,18 @@ class BookUpdate(BaseModel):
 class BookRead(BookBase):
     """Representation returned by the API for persisted book records.
 
-    Note: publisher field is populated via ORM property from publisher_rel relationship.
+    Note: publisher, publisher_slug, parent_book_name, and r2_prefix are
+    populated via ORM properties (Book.publisher_rel / parent_rel).
+    ``r2_prefix`` is the book's content prefix in the publishers bucket —
+    consumers can compose CDN URLs as ``{CDN_BASE}/{r2_prefix}<path>``
+    without needing to know whether the book is top-level or nested.
     """
 
     id: int
     publisher_id: int
     publisher_slug: str | None = None
+    parent_book_name: str | None = None
+    r2_prefix: str | None = None
     child_count: int = 0
     created_at: datetime
     updated_at: datetime

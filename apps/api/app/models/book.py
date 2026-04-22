@@ -98,6 +98,17 @@ class Book(Base):
         return self.publisher_rel.slug
 
     @property
+    def parent_book_name(self) -> str | None:
+        """Get the parent book's ``book_name`` for child books (else None).
+
+        Exposed on responses so FL can render breadcrumbs and build CDN
+        URLs without a second fetch of the parent.
+        """
+        if self.parent_book_id is None or self.parent_rel is None:
+            return None
+        return self.parent_rel.book_name
+
+    @property
     def r2_prefix(self) -> str:
         """R2 object prefix for this book's content in the publishers bucket.
 
