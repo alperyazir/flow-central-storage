@@ -293,6 +293,7 @@ def sync_books_with_r2(
 
     created = []
     removed = []
+    updated = []
 
     # Process top-level books first so their IDs are available when we
     # create children with parent_book_id.
@@ -303,6 +304,35 @@ def sync_books_with_r2(
 
     for (pub_id, book_name), info in r2_sorted:
         if (pub_id, book_name) in db_books:
+            # Self-heal: if R2 says this book is nested under a parent or is
+            # a different book_type than DB records, update the DB record
+            # so sync is a one-click "make DB match R2" button.
+            existing = db_books[(pub_id, book_name)]
+            desired_parent_name = info["parent_book_name"]
+            desired_parent_id: int | None = None
+            if desired_parent_name is not None:
+                parent_book = _book_repository.get_by_publisher_id_and_name(
+                    db, publisher_id=pub_id, book_name=desired_parent_name
+                )
+                if parent_book is not None:
+                    desired_parent_id = parent_book.id
+            update_data: dict[str, object] = {}
+            if existing.parent_book_id != desired_parent_id:
+                update_data["parent_book_id"] = desired_parent_id
+            if (existing.book_type or BookTypeEnum.STANDARD.value) != info["book_type"]:
+                update_data["book_type"] = info["book_type"]
+            if update_data:
+                _book_repository.update(db, existing, data=update_data)
+                updated.append({
+                    "id": existing.id,
+                    "publisher_id": pub_id,
+                    "book_name": book_name,
+                    "changes": update_data,
+                })
+                logger.info(
+                    "Sync: updated DB record for %s/%s (id=%d) to match R2 layout: %s",
+                    slug_for_pub[pub_id], book_name, existing.id, update_data,
+                )
             continue
         pub_slug = slug_for_pub[pub_id]
         parent_book_name = info["parent_book_name"]
@@ -381,7 +411,7 @@ def sync_books_with_r2(
             removed.append({"id": book.id, "publisher_id": pub_id, "book_name": book_name})
             logger.info("Sync: removed orphan DB record for %s/%s (id=%d)", pub_id, book_name, book.id)
 
-    if created or removed:
+    if created or removed or updated:
         _invalidate_book_cache()
 
     # --- Teacher Materials Sync ---
@@ -451,6 +481,7 @@ def sync_books_with_r2(
         "synced": True,
         "books": {
             "created": created,
+            "updated": updated,
             "removed": removed,
             "r2_count": len(r2_book_info),
             "db_count": len(db_books),
