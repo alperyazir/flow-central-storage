@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.book import Book, BookStatusEnum
@@ -22,25 +22,66 @@ class BookRepository(BaseRepository[Book]):
         session.commit()
         return created
 
-    def list_all_books(self, session: Session, *, skip: int = 0, limit: int = 50) -> list[Book]:
-        """List all books that are not archived (not in trash)."""
-        statement = select(Book).where(Book.status != BookStatusEnum.ARCHIVED).offset(skip).limit(limit)
+    def list_all_books(
+        self,
+        session: Session,
+        *,
+        skip: int = 0,
+        limit: int = 50,
+        parent_book_id: int | None = None,
+        top_level_only: bool = False,
+    ) -> list[Book]:
+        """List non-archived books, optionally scoped to a parent or top-level only."""
+        statement = select(Book).where(Book.status != BookStatusEnum.ARCHIVED)
+        if top_level_only:
+            statement = statement.where(Book.parent_book_id.is_(None))
+        elif parent_book_id is not None:
+            statement = statement.where(Book.parent_book_id == parent_book_id)
+        statement = statement.offset(skip).limit(limit)
         return list(session.scalars(statement).all())
 
     def list_by_publisher_id(
-        self, session: Session, publisher_id: int, *, skip: int = 0, limit: int = 50
+        self,
+        session: Session,
+        publisher_id: int,
+        *,
+        skip: int = 0,
+        limit: int = 50,
+        top_level_only: bool = False,
     ) -> list[Book]:
-        """List all non-archived books for a specific publisher."""
-        statement = (
-            select(Book)
-            .where(
-                Book.publisher_id == publisher_id,
-                Book.status != BookStatusEnum.ARCHIVED,
-            )
-            .offset(skip)
-            .limit(limit)
+        """List non-archived books for a specific publisher."""
+        statement = select(Book).where(
+            Book.publisher_id == publisher_id,
+            Book.status != BookStatusEnum.ARCHIVED,
+        )
+        if top_level_only:
+            statement = statement.where(Book.parent_book_id.is_(None))
+        statement = statement.offset(skip).limit(limit)
+        return list(session.scalars(statement).all())
+
+    def list_children(self, session: Session, parent_book_id: int) -> list[Book]:
+        """List direct child books of a parent (excluding archived)."""
+        statement = select(Book).where(
+            Book.parent_book_id == parent_book_id,
+            Book.status != BookStatusEnum.ARCHIVED,
         )
         return list(session.scalars(statement).all())
+
+    def count_children_by_parent(
+        self, session: Session, parent_ids: list[int]
+    ) -> dict[int, int]:
+        """Return {parent_id: count} for the given parent ids (non-archived children)."""
+        if not parent_ids:
+            return {}
+        statement = (
+            select(Book.parent_book_id, func.count(Book.id))
+            .where(
+                Book.parent_book_id.in_(parent_ids),
+                Book.status != BookStatusEnum.ARCHIVED,
+            )
+            .group_by(Book.parent_book_id)
+        )
+        return {row[0]: row[1] for row in session.execute(statement).all()}
 
     def get_by_id(self, session: Session, identifier: int) -> Book | None:
         return self.get(session, identifier)

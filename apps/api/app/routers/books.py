@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.security import decode_access_token, verify_api_key_from_db
 from app.db import SessionLocal, get_db
-from app.models.book import Book, BookStatusEnum
+from app.models.book import Book, BookStatusEnum, BookTypeEnum
 from app.models.publisher import Publisher
 from app.models.webhook import WebhookEventType
 from app.repositories.book import BookRepository
@@ -36,7 +36,7 @@ from app.services import (
     upload_book_archive,
 )
 from app.services.ai_processing import trigger_auto_processing
-from app.services.storage import BOOK_CACHE_DIR, _normalize_filename, _prefix_exists, normalize_book_name
+from app.services.storage import BOOK_CACHE_DIR, _normalize_filename, _prefix_exists, _safe_pdf_filename, normalize_book_name
 from app.services.webhook import WebhookService
 
 # TODO [PERF-C3/C4]: Upload endpoints buffer full archives in memory.
@@ -55,14 +55,30 @@ _webhook_service = WebhookService()
 logger = logging.getLogger(__name__)
 
 
-def _trigger_auto_bundles(book_id: int, publisher_id: int, publisher_slug: str, book_name: str, local_book_path: str | None = None) -> None:
+def _trigger_auto_bundles(
+    book_id: int,
+    publisher_id: int,
+    publisher_slug: str,
+    book_name: str,
+    local_book_path: str | None = None,
+    book_type: str = BookTypeEnum.STANDARD.value,
+) -> None:
     """Enqueue bundle creation for all platforms after book upload.
 
     Creates a fresh event loop to run async arq enqueue from a sync thread.
+    Skips entirely when ``book_type`` is not ``standard`` (e.g. PDF child
+    books are download-only and never bundled).
     """
     import asyncio
 
     from app.services.standalone_apps import ALLOWED_PLATFORMS, template_exists
+
+    if book_type != BookTypeEnum.STANDARD.value:
+        logger.info("[AUTO-BUNDLE] Skipping non-standard book %s (type=%s)", book_name, book_type)
+        if local_book_path:
+            import shutil
+            shutil.rmtree(local_book_path, ignore_errors=True)
+        return
 
     settings = get_settings()
     client = get_minio_client(settings)
@@ -396,6 +412,26 @@ def create_book(
     publisher = _publisher_repository.get_or_create_by_name(db, publisher_name)
     data["publisher_id"] = publisher.id
 
+    parent_id = data.get("parent_book_id")
+    if parent_id is not None:
+        parent = _book_repository.get_by_id(db, parent_id)
+        if parent is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"parent_book_id {parent_id} does not reference an existing book",
+            )
+        if parent.parent_book_id is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Child books cannot themselves have children",
+            )
+        # Inherit publisher from parent to keep R2 layout consistent
+        data["publisher_id"] = parent.publisher_id
+
+    book_type_val = data.get("book_type")
+    if hasattr(book_type_val, "value"):
+        data["book_type"] = book_type_val.value
+
     book = _book_repository.create(db, data=data)
 
     # Trigger webhook in background
@@ -409,31 +445,61 @@ def create_book(
     return BookRead.model_validate(book)
 
 
+def _attach_child_counts(db: Session, books: list[Book]) -> list[dict]:
+    """Serialize books with an accurate ``child_count`` for each."""
+    parent_ids = [b.id for b in books]
+    counts = _book_repository.count_children_by_parent(db, parent_ids)
+    result: list[dict] = []
+    for book in books:
+        payload = BookRead.model_validate(book).model_dump(mode="json")
+        payload["child_count"] = counts.get(book.id, 0)
+        result.append(payload)
+    return result
+
+
 @router.get("/", response_model=list[BookRead])
 def list_books(
     publisher_id: int | None = Query(default=None, description="Filter books by publisher ID"),
+    parent_book_id: int | None = Query(
+        default=None, description="Filter by parent book ID (children of the given parent)"
+    ),
+    top_level_only: bool = Query(
+        default=True,
+        description="When true (default), excludes child books (parent_book_id IS NULL).",
+    ),
     skip: int = Query(0, ge=0, description="Number of records to skip"),
     limit: int = Query(50, ge=1, le=500, description="Max number of records to return"),
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
     db: Session = Depends(get_db),
 ) -> list[BookRead]:
-    """Return stored books with pagination, optionally filtered by publisher."""
+    """Return stored books with pagination, optionally filtered by publisher/parent."""
 
     _require_admin(credentials, db)
 
     from app.services.cache import cache_key, get_cache
 
+    # If caller asks for children, ignore top_level_only.
+    effective_top_level = top_level_only and parent_book_id is None
+
     cache = get_cache()
-    ck = cache_key("books", "list", publisher_id, skip, limit)
+    ck = cache_key("books", "list", publisher_id, parent_book_id, effective_top_level, skip, limit)
     cached = cache.get(ck)
     if cached is not None:
         return cached
 
     if publisher_id is not None:
-        books = _book_repository.list_by_publisher_id(db, publisher_id, skip=skip, limit=limit)
+        books = _book_repository.list_by_publisher_id(
+            db, publisher_id, skip=skip, limit=limit, top_level_only=effective_top_level
+        )
     else:
-        books = _book_repository.list_all_books(db, skip=skip, limit=limit)
-    result = [BookRead.model_validate(book).model_dump(mode="json") for book in books]
+        books = _book_repository.list_all_books(
+            db,
+            skip=skip,
+            limit=limit,
+            parent_book_id=parent_book_id,
+            top_level_only=effective_top_level,
+        )
+    result = _attach_child_counts(db, books)
     cache.set(ck, result, ttl=300)
     return result
 
@@ -481,7 +547,10 @@ def get_book(
     book = _book_repository.get_by_id(db, book_id)
     if book is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
-    return BookRead.model_validate(book)
+    counts = _book_repository.count_children_by_parent(db, [book.id])
+    result = BookRead.model_validate(book)
+    result.child_count = counts.get(book.id, 0)
+    return result
 
 
 @router.put("/{book_id}", response_model=BookRead)
@@ -547,7 +616,10 @@ def delete_book(
     book_publisher_id = book.publisher_id
     book_publisher_slug = book.publisher_rel.slug
     book_name = book.book_name
+    children = _book_repository.list_children(db, book.id)
+    children_info = [(c.book_name, c.book_type) for c in children]
     book_result = BookRead.model_validate(book)
+    book_result.child_count = len(children_info)
     db.close()
 
     job_id = str(uuid.uuid4())
@@ -574,10 +646,31 @@ def delete_book(
 
             total_removed = report.objects_removed
 
+            # Delete R2 prefixes for any child books as well (DB rows are
+            # cascaded via the FK, but R2 objects need an explicit delete).
+            for child_name, _child_type in children_info:
+                child_prefix = f"{book_publisher_slug}/books/{child_name}/"
+                try:
+                    child_report = delete_prefix_directly(
+                        client=client,
+                        bucket=settings.minio_publishers_bucket,
+                        prefix=child_prefix,
+                    )
+                    total_removed += child_report.objects_removed
+                    logger.info(
+                        "Deleted %d child-book objects for %s", child_report.objects_removed, child_name
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to delete child book %s: %s", child_name, exc)
+
             # Delete bundles if requested
             if delete_bundles:
                 set_deletion_progress(job_id, 75, "deleting_bundles", "Deleting bundles...")
-                bundle_prefix = f"bundles/{book_publisher_id}/{book_name}/"
+                # Bundles live under bundles/{publisher_slug}/{book_name}/ — see
+                # BUNDLE_PREFIX in standalone_apps.py and create_bundle_task in
+                # queue/tasks.py. Using the slug (not the numeric publisher id)
+                # is critical; the id-based path never existed in storage.
+                bundle_prefix = f"bundles/{book_publisher_slug}/{book_name}/"
                 try:
                     bundle_report = delete_prefix_directly(
                         client=client,
@@ -588,6 +681,22 @@ def delete_book(
                     logger.info("Deleted %d bundle objects for book %s", bundle_report.objects_removed, book_name)
                 except Exception as exc:
                     logger.warning("Failed to delete bundles for book %s: %s", book_name, exc)
+                # Bundles for child books too (only 'standard' children have bundles)
+                for child_name, child_type in children_info:
+                    if child_type != BookTypeEnum.STANDARD.value:
+                        continue
+                    child_bundle_prefix = f"bundles/{book_publisher_slug}/{child_name}/"
+                    try:
+                        bundle_report = delete_prefix_directly(
+                            client=client,
+                            bucket=settings.minio_apps_bucket,
+                            prefix=child_bundle_prefix,
+                        )
+                        total_removed += bundle_report.objects_removed
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to delete bundles for child %s: %s", child_name, exc
+                        )
 
             set_deletion_progress(job_id, 85, "database", "Removing database record...")
 
@@ -618,7 +727,12 @@ def delete_book(
 
     background_tasks.add_task(_process_deletion)
 
-    return {"job_id": job_id, "status": "accepted", "book": book_result.model_dump()}
+    return {
+        "job_id": job_id,
+        "status": "accepted",
+        "book": book_result.model_dump(mode="json"),
+        "children": [{"book_name": n, "book_type": t} for n, t in children_info],
+    }
 
 
 @router.post("/{book_id}/upload", status_code=status.HTTP_201_CREATED)
@@ -629,7 +743,12 @@ async def upload_book(
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
     db: Session = Depends(get_db),
 ):
-    """Upload/replace content for an existing book."""
+    """Upload/replace content for an existing book.
+
+    For ``book_type='pdf'`` books, uploads a single PDF under ``raw/``
+    instead of extracting a ZIP archive. PDF books skip config.json
+    validation, auto-bundling, and AI auto-processing.
+    """
     import asyncio
     import os
     import tempfile
@@ -643,10 +762,14 @@ async def upload_book(
     book_publisher_id = book.publisher_id
     book_publisher_slug = book.publisher_rel.slug
     book_name = book.book_name
+    book_type = book.book_type or BookTypeEnum.STANDARD.value
     db.commit()  # Release connection before long S3 ops
 
-    # Stream upload to temp file (never load entire ZIP into memory)
-    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+    is_pdf = book_type == BookTypeEnum.PDF.value
+    suffix = ".pdf" if is_pdf else ".zip"
+
+    # Stream upload to temp file (never load entire archive into memory)
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp_path = tmp.name
         while chunk := await file.read(1024 * 1024):  # 1MB chunks
             tmp.write(chunk)
@@ -672,7 +795,55 @@ async def upload_book(
                 detail="Failed to clear existing book files",
             ) from exc
 
-        # Upload from temp file (disk-based, low memory)
+        if is_pdf:
+            upload_name = file.filename or "original.pdf"
+            if not upload_name.lower().endswith(".pdf"):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="PDF books require a .pdf upload",
+                )
+            safe_name = _safe_pdf_filename(upload_name)
+            object_name = f"{prefix}raw/{safe_name}"
+            try:
+                file_size = os.path.getsize(tmp_path)
+                await asyncio.to_thread(
+                    client.fput_object,
+                    settings.minio_publishers_bucket,
+                    object_name,
+                    tmp_path,
+                    content_type="application/pdf",
+                )
+            except Exception as exc:
+                logger.error("Failed to upload PDF for book %s: %s", book_id, exc)
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="Failed to upload PDF",
+                ) from exc
+
+            # Update total_size on the book record (best-effort)
+            try:
+                session = SessionLocal()
+                try:
+                    db_book = _book_repository.get_by_id(session, book_id)
+                    if db_book is not None:
+                        _book_repository.update(
+                            session, db_book, data={"total_size": file_size}
+                        )
+                finally:
+                    session.close()
+            except Exception:
+                logger.warning("Failed to update total_size for pdf book %s", book_id, exc_info=True)
+
+            background_tasks.add_task(_trigger_webhook, book_id, WebhookEventType.BOOK_UPDATED)
+            _invalidate_book_cache()
+
+            return {
+                "book_id": book_id,
+                "files": [{"object_name": object_name, "size": file_size}],
+                "book_type": book_type,
+            }
+
+        # Standard ZIP flow
         try:
             _bn = book_name
             manifest = await asyncio.to_thread(
@@ -709,10 +880,21 @@ async def upload_book(
         background_tasks.add_task(
             trigger_auto_processing,
             book_id=book_id,
-            publisher_id=book.publisher_id,
-            publisher_slug=book.publisher_rel.slug,
-            book_name=book.book_name,
+            publisher_id=book_publisher_id,
+            publisher_slug=book_publisher_slug,
+            book_name=book_name,
             force=True,
+        )
+
+        # Trigger auto-bundles for standard books so the generated
+        # standalone app ZIPs stay in sync with the new content.
+        background_tasks.add_task(
+            _trigger_auto_bundles,
+            book_id=book_id,
+            publisher_id=book_publisher_id,
+            publisher_slug=book_publisher_slug,
+            book_name=book_name,
+            book_type=book_type,
         )
 
         return {"book_id": book_id, "files": manifest}
@@ -752,6 +934,154 @@ def get_delete_status(
     if progress is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Delete job not found")
     return progress
+
+
+def _run_target_book_processing(
+    job_id: str,
+    tmp_path: str,
+    target_book_id: int,
+    book_type: str,
+    upload_filename: str,
+    cleanup_dir: str | None = None,
+    auto_bundle: bool = True,
+) -> None:
+    """Background task: push a reassembled file into an existing Book.
+
+    Used by the chunked upload flow when the caller already created the
+    Book record (e.g. child books with a ``parent_book_id``). The target
+    book's ``book_type`` controls whether we extract a ZIP or store a
+    raw PDF.
+    """
+    import shutil
+
+    from app.services.cache import set_upload_progress
+
+    session = None
+    try:
+        session = SessionLocal()
+        book = _book_repository.get_by_id(session, target_book_id)
+        if book is None:
+            set_upload_progress(job_id, 0, "error", error=f"Target book {target_book_id} not found")
+            return
+        book_publisher_id = book.publisher_id
+        book_publisher_slug = book.publisher_rel.slug
+        book_name = book.book_name
+        session.close()
+        session = None
+
+        settings = get_settings()
+        client = get_minio_client(settings)
+        prefix = f"{book_publisher_slug}/books/{book_name}/"
+
+        # Clear existing objects so the replacement is clean
+        set_upload_progress(job_id, 45, "clearing", "Clearing existing files...")
+        try:
+            existing = list(
+                client.list_objects(settings.minio_publishers_bucket, prefix=prefix, recursive=True)
+            )
+            for obj in existing:
+                client.remove_object(settings.minio_publishers_bucket, obj.object_name)
+        except Exception as exc:
+            logger.error("[UPLOAD:%s] Failed to clear existing files: %s", job_id, exc)
+            set_upload_progress(job_id, 0, "error", error="Failed to clear existing files")
+            return
+
+        if book_type == BookTypeEnum.PDF.value:
+            safe_name = _safe_pdf_filename(upload_filename)
+            object_name = f"{prefix}raw/{safe_name}"
+            set_upload_progress(job_id, 60, "uploading", "Uploading PDF...")
+            try:
+                client.fput_object(
+                    settings.minio_publishers_bucket,
+                    object_name,
+                    tmp_path,
+                    content_type="application/pdf",
+                )
+                file_size = os.path.getsize(tmp_path)
+            except Exception as exc:
+                logger.error("[UPLOAD:%s] PDF upload failed: %s", job_id, exc)
+                set_upload_progress(job_id, 0, "error", error="Failed to upload PDF")
+                return
+
+            # Best-effort size update on the book record
+            try:
+                session = SessionLocal()
+                db_book = _book_repository.get_by_id(session, target_book_id)
+                if db_book is not None:
+                    _book_repository.update(session, db_book, data={"total_size": file_size})
+            except Exception:
+                logger.warning("[UPLOAD:%s] Failed updating total_size", job_id, exc_info=True)
+            finally:
+                if session is not None:
+                    session.close()
+                    session = None
+
+            _invalidate_book_cache()
+            _trigger_webhook(target_book_id, WebhookEventType.BOOK_UPDATED)
+            set_upload_progress(
+                job_id,
+                100,
+                "completed",
+                f"PDF uploaded ({file_size // 1024 // 1024}MB)",
+                book_id=target_book_id,
+            )
+            return
+
+        # Standard ZIP path
+        set_upload_progress(job_id, 60, "uploading", "Uploading book assets...")
+        try:
+            manifest = upload_book_archive(
+                client=client,
+                archive_path=tmp_path,
+                bucket=settings.minio_publishers_bucket,
+                object_prefix=prefix,
+                content_type="application/octet-stream",
+                strip_root_folder=True,
+                book_name=book_name,
+            )
+        except UploadError as exc:
+            set_upload_progress(job_id, 0, "error", error=str(exc))
+            return
+        except Exception as exc:
+            logger.error("[UPLOAD:%s] Archive upload failed: %s", job_id, exc)
+            set_upload_progress(job_id, 0, "error", error="Failed to upload archive")
+            return
+
+        _invalidate_book_cache()
+        _trigger_webhook(target_book_id, WebhookEventType.BOOK_UPDATED)
+
+        if auto_bundle:
+            _trigger_auto_bundles(
+                book_id=target_book_id,
+                publisher_id=book_publisher_id,
+                publisher_slug=book_publisher_slug,
+                book_name=book_name,
+                book_type=book_type,
+            )
+
+        set_upload_progress(
+            job_id,
+            100,
+            "completed",
+            f"{len(manifest)} files uploaded",
+            book_id=target_book_id,
+        )
+    except Exception as exc:
+        logger.error("[UPLOAD:%s] Unexpected failure: %s", job_id, exc, exc_info=True)
+        try:
+            set_upload_progress(job_id, 0, "error", error=str(exc))
+        except Exception:
+            pass
+    finally:
+        if session is not None:
+            session.close()
+        try:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+        except Exception:
+            pass
+        if cleanup_dir:
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
 
 
 def _run_book_processing(
@@ -1000,6 +1330,11 @@ class ChunkedUploadInit(BaseModel):
     publisher_id: int | None = None
     override: bool = False
     auto_bundle: bool = True
+    # For child-book uploads: target an existing Book record (created
+    # up-front via POST /books/ with parent_book_id + book_type). When
+    # set, the session uses the target book's publisher/slug/name and
+    # `book_type` drives the processing path (ZIP vs raw PDF).
+    target_book_id: int | None = None
 
 
 @router.post("/chunked-upload/init")
@@ -1017,15 +1352,37 @@ async def chunked_upload_init(
 
     _require_admin(credentials, db)
 
-    if not body.filename.lower().endswith(".zip"):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="File must be a ZIP archive")
-
     expected_chunks = math.ceil(body.total_size / body.chunk_size)
     if body.total_chunks != expected_chunks:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             detail=f"total_chunks must be {expected_chunks} for the given size/chunk_size",
         )
+
+    target_book_id: int | None = None
+    target_book_type: str | None = None
+    if body.target_book_id is not None:
+        target = _book_repository.get_by_id(db, body.target_book_id)
+        if target is None:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                detail=f"target_book_id {body.target_book_id} not found",
+            )
+        target_book_id = target.id
+        target_book_type = target.book_type or BookTypeEnum.STANDARD.value
+
+    # Filename suffix check depends on target book type (if any)
+    name_lower = body.filename.lower()
+    if target_book_type == BookTypeEnum.PDF.value:
+        if not name_lower.endswith(".pdf"):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, detail="PDF child books require a .pdf upload"
+            )
+    else:
+        if not name_lower.endswith(".zip"):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, detail="File must be a ZIP archive"
+            )
 
     # Resolve publisher early so we can fail fast
     override_pub_id: int | None = None
@@ -1051,6 +1408,8 @@ async def chunked_upload_init(
         "override_pub_name": override_pub_name,
         "auto_bundle": body.auto_bundle,
         "status": "uploading",
+        "target_book_id": target_book_id,
+        "target_book_type": target_book_type,
     }
     set_chunked_session(upload_id, session_data)
 
@@ -1175,7 +1534,12 @@ async def chunked_upload_complete(
     set_chunked_session(upload_id, session_data)
 
     temp_dir = session_data["temp_dir"]
-    final_path = os.path.join(temp_dir, "final.zip")
+    target_book_id = session_data.get("target_book_id")
+    target_book_type = session_data.get("target_book_type") or BookTypeEnum.STANDARD.value
+    is_target_pdf = target_book_id is not None and target_book_type == BookTypeEnum.PDF.value
+
+    final_name = "final.pdf" if is_target_pdf else "final.zip"
+    final_path = os.path.join(temp_dir, final_name)
     job_id = str(uuid.uuid4())
 
     set_upload_progress(job_id, 5, "assembling", "Reassembling chunks...")
@@ -1189,8 +1553,8 @@ async def chunked_upload_complete(
                     out.write(block)
             os.unlink(chunk_path)
 
-    # Validate ZIP
-    if not zipfile.is_zipfile(final_path):
+    # Validate archive format (skip ZIP validation for PDF uploads)
+    if not is_target_pdf and not zipfile.is_zipfile(final_path):
         import shutil
 
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -1200,25 +1564,36 @@ async def chunked_upload_complete(
 
     set_upload_progress(job_id, 40, "received", f"File assembled ({session_data['total_size'] // 1024 // 1024}MB)")
 
-    book_name_from_zip = session_data["filename"]
-    if book_name_from_zip.lower().endswith(".zip"):
-        book_name_from_zip = book_name_from_zip[:-4]
-    book_name_from_zip = normalize_book_name(book_name_from_zip)
-
-    # Clean up Redis session (temp dir cleaned by _run_book_processing)
+    # Clean up Redis session (temp dir cleaned by processor)
     delete_chunked_session(upload_id)
 
-    background_tasks.add_task(
-        _run_book_processing,
-        job_id=job_id,
-        tmp_path=final_path,
-        book_name_from_zip=book_name_from_zip,
-        override=session_data.get("override", False),
-        override_pub_id=session_data.get("override_pub_id"),
-        override_pub_name=session_data.get("override_pub_name"),
-        cleanup_dir=temp_dir,
-        auto_bundle=session_data.get("auto_bundle", True),
-    )
+    if target_book_id is not None:
+        background_tasks.add_task(
+            _run_target_book_processing,
+            job_id=job_id,
+            tmp_path=final_path,
+            target_book_id=target_book_id,
+            book_type=target_book_type,
+            upload_filename=session_data["filename"],
+            cleanup_dir=temp_dir,
+            auto_bundle=session_data.get("auto_bundle", True),
+        )
+    else:
+        book_name_from_zip = session_data["filename"]
+        if book_name_from_zip.lower().endswith(".zip"):
+            book_name_from_zip = book_name_from_zip[:-4]
+        book_name_from_zip = normalize_book_name(book_name_from_zip)
+        background_tasks.add_task(
+            _run_book_processing,
+            job_id=job_id,
+            tmp_path=final_path,
+            book_name_from_zip=book_name_from_zip,
+            override=session_data.get("override", False),
+            override_pub_id=session_data.get("override_pub_id"),
+            override_pub_name=session_data.get("override_pub_name"),
+            cleanup_dir=temp_dir,
+            auto_bundle=session_data.get("auto_bundle", True),
+        )
 
     return {"job_id": job_id, "status": "accepted"}
 
@@ -1935,6 +2310,7 @@ def _run_book_download(job_id: str, publisher_slug: str, book_name: str) -> None
     import tempfile
 
     from app.services.cache import set_upload_progress
+    from app.services.standalone_apps import should_skip_bundled_path
 
     try:
         settings = get_settings()
@@ -1944,9 +2320,12 @@ def _run_book_download(job_id: str, publisher_slug: str, book_name: str) -> None
 
         set_upload_progress(job_id, 10, "listing", "Listing book files...")
 
+        # Skip the same folders we exclude from bundles: AI artifacts,
+        # raw PDFs, additional-resources. The downloaded ZIP should
+        # contain only the flowbook content itself.
         objects = [
             obj for obj in client.list_objects(bucket, prefix=prefix, recursive=True)
-            if not obj.is_dir
+            if not obj.is_dir and not should_skip_bundled_path(obj.object_name[len(prefix):])
         ]
         total = len(objects)
 
@@ -1983,6 +2362,57 @@ def _run_book_download(job_id: str, publisher_slug: str, book_name: str) -> None
         set_upload_progress(job_id, 0, "error", error=str(exc))
 
 
+@router.get("/{book_id}/pdf-url")
+def get_pdf_download_url(
+    book_id: int,
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+):
+    """Return a presigned URL for a PDF book's raw file.
+
+    Only valid for books where ``book_type == 'pdf'``. Returns 400 for
+    standard books (use ``POST /books/{id}/download`` instead).
+    """
+    from datetime import timedelta
+
+    from app.services import get_minio_client_external
+
+    _require_admin(credentials, db)
+    book = _book_repository.get_by_id(db, book_id)
+    if book is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+    if (book.book_type or BookTypeEnum.STANDARD.value) != BookTypeEnum.PDF.value:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Book is not a PDF book; use the standard download endpoint",
+        )
+
+    settings = get_settings()
+    internal_client = get_minio_client(settings)
+    bucket = settings.minio_publishers_bucket
+    prefix = f"{book.publisher_rel.slug}/books/{book.book_name}/raw/"
+    objects = [
+        obj for obj in internal_client.list_objects(bucket, prefix=prefix, recursive=True)
+        if not obj.is_dir
+    ]
+    if not objects:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="PDF not uploaded yet")
+
+    object_name = objects[0].object_name
+    external = get_minio_client_external(settings)
+    expires = timedelta(hours=6)
+    try:
+        url = external.presigned_get_object(bucket, object_name, expires=expires)
+    except Exception as exc:
+        logger.error("Failed to presign PDF url for book %s: %s", book_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail="Could not generate download URL"
+        ) from exc
+
+    filename = object_name.rsplit("/", 1)[-1]
+    return {"download_url": url, "filename": filename, "expires_in_seconds": int(expires.total_seconds())}
+
+
 @router.post("/{book_id}/download", status_code=status.HTTP_202_ACCEPTED)
 def download_book(
     book_id: int,
@@ -1996,6 +2426,11 @@ def download_book(
     book = _book_repository.get_by_id(db, book_id)
     if book is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+    if (book.book_type or BookTypeEnum.STANDARD.value) == BookTypeEnum.PDF.value:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="PDF books do not support ZIP download; use /books/{id}/pdf-url",
+        )
 
     import uuid
 

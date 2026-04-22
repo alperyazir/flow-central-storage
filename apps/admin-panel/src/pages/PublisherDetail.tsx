@@ -8,6 +8,7 @@ import {
   FolderOpen,
   Trash2,
   Upload,
+  Paperclip,
 } from 'lucide-react';
 
 import { Card, CardContent, CardHeader, CardTitle } from 'components/ui/card';
@@ -38,7 +39,7 @@ import PublisherFormDialog from 'components/PublisherFormDialog';
 import PublisherUploadDialog from 'components/PublisherUploadDialog';
 import { useAuthStore } from 'stores/auth';
 import { useOperationsStore } from 'stores/operations';
-import { deleteBook, getDeleteStatus } from 'lib/books';
+import { deleteBook, fetchBooks, getDeleteStatus, type BookRecord } from 'lib/books';
 import {
   fetchPublisher,
   fetchPublisherBooks,
@@ -74,6 +75,25 @@ const PublisherDetailPage = () => {
   const [bookSearch, setBookSearch] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<PublisherBook | null>(null);
   const [delBundles, setDelBundles] = useState(true);
+  const [deleteChildren, setDeleteChildren] = useState<BookRecord[] | null>(null);
+
+  useEffect(() => {
+    if (!deleteTarget || !token || !(deleteTarget.child_count ?? 0)) {
+      setDeleteChildren(null);
+      return;
+    }
+    let cancelled = false;
+    fetchBooks(token, tt, undefined, { parentBookId: deleteTarget.id })
+      .then((kids) => {
+        if (!cancelled) setDeleteChildren(kids);
+      })
+      .catch(() => {
+        if (!cancelled) setDeleteChildren([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [deleteTarget, token, tt]);
   const [expandedAssets, setExpandedAssets] = useState<Set<string>>(new Set());
   const [assetFiles, setAssetFiles] = useState<Record<string, AssetFileInfo[]>>(
     {}
@@ -349,9 +369,21 @@ const PublisherDetailPage = () => {
                 </TableRow>
               ) : (
                 filteredBooks.map((b) => (
-                  <TableRow key={b.id}>
+                  <TableRow
+                    key={b.id}
+                    className="cursor-pointer hover:bg-accent/40"
+                    onClick={() => navigate(`/books/${b.id}`)}
+                  >
                     <TableCell className="font-medium">
-                      {b.book_title || b.book_name}
+                      <div className="flex items-center gap-2">
+                        {b.book_title || b.book_name}
+                        {(b.child_count ?? 0) > 0 && (
+                          <Badge variant="secondary" className="gap-1">
+                            <Paperclip className="h-3 w-3" />
+                            +{b.child_count}
+                          </Badge>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell>
                       <Badge variant="outline">
@@ -365,7 +397,10 @@ const PublisherDetailPage = () => {
                     <TableCell>
                       <Badge variant="outline">{b.status}</Badge>
                     </TableCell>
-                    <TableCell className="text-right">
+                    <TableCell
+                      className="text-right"
+                      onClick={(e) => e.stopPropagation()}
+                    >
                       <Button
                         variant="ghost"
                         size="icon"
@@ -414,6 +449,34 @@ const PublisherDetailPage = () => {
               This will remove all files from storage and cannot be undone.
             </DialogDescription>
           </DialogHeader>
+          {deleteTarget && (deleteTarget.child_count ?? 0) > 0 && (
+            <Alert>
+              <AlertDescription>
+                <div className="text-sm">
+                  <strong>{deleteTarget.child_count}</strong> additional
+                  resource
+                  {deleteTarget.child_count === 1 ? '' : 's'} will be deleted
+                  with this book:
+                </div>
+                {deleteChildren === null ? (
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    Loading list…
+                  </div>
+                ) : deleteChildren.length === 0 ? null : (
+                  <ul className="mt-2 list-disc space-y-0.5 pl-5 text-xs">
+                    {deleteChildren.map((c) => (
+                      <li key={c.id}>
+                        {c.book_title || c.book_name}
+                        <span className="ml-1 text-muted-foreground">
+                          ({c.book_type === 'pdf' ? 'PDF' : 'Flowbook'})
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </AlertDescription>
+            </Alert>
+          )}
           <div className="flex items-center space-x-2 py-2">
             <Checkbox
               id="del-bundles-pub"

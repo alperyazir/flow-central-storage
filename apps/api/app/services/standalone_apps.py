@@ -24,6 +24,54 @@ PRESIGNED_URL_EXPIRY_SECONDS = 21600  # 6 hours
 TEMPLATE_CACHE_DIR = Path(tempfile.gettempdir()) / "fcs_template_cache"
 ASSET_DOWNLOAD_WORKERS = 8  # concurrent R2 downloads
 
+_BUNDLE_JUNK_BASENAMES = {".ds_store", "desktop.ini", ".keep", ".gitkeep", "settings.json"}
+_BUNDLE_JUNK_SUFFIXES = (".fbinf", ".bak", ".tmp")
+
+# Top-level folders inside a book's R2 prefix that must never end up in a
+# bundle. These hold content that is either orthogonal to the flowbook
+# runtime (AI-generated artifacts) or is download-only data (raw PDFs
+# for child resources, v1 additional-resources layout).
+_BUNDLE_SKIP_PREFIXES: tuple[str, ...] = (
+    "raw/",
+    "additional-resources/",
+    "ai-data/",
+    "ai-content/",
+)
+
+
+def should_skip_bundled_path(relative_path: str) -> bool:
+    """Return True for paths that must be excluded from a standalone bundle.
+
+    Filters macOS metadata, backup/scratch files, AI-processing artifacts
+    and additional-resource layouts. The path is the object name relative
+    to the book's R2 prefix (e.g. ``raw/foo.pdf``, ``ai-data/x.json``).
+    """
+    if not relative_path:
+        return True
+
+    norm = relative_path.replace("\\", "/").lstrip("/")
+    if not norm:
+        return True
+
+    if "__MACOSX/" in norm or norm.startswith("__MACOSX/"):
+        return True
+
+    basename = norm.rsplit("/", 1)[-1]
+    if basename.startswith("._"):
+        return True
+
+    bn_lower = basename.lower()
+    if bn_lower in _BUNDLE_JUNK_BASENAMES:
+        return True
+    if bn_lower.endswith(_BUNDLE_JUNK_SUFFIXES):
+        return True
+
+    for prefix in _BUNDLE_SKIP_PREFIXES:
+        if norm.startswith(prefix):
+            return True
+
+    return False
+
 
 class TemplateNotFoundError(Exception):
     """Raised when a requested template does not exist."""
@@ -423,6 +471,8 @@ def create_bundle(
             download_tasks = []
             for obj in objects:
                 relative_path = obj.object_name[len(book_prefix):]
+                if should_skip_bundled_path(relative_path):
+                    continue
                 dest_path = os.path.join(book_dir, relative_path)
                 download_tasks.append((publishers_bucket, obj.object_name, dest_path))
 

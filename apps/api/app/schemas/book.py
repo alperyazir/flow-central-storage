@@ -6,7 +6,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models.book import BookStatusEnum
+from app.models.book import BookStatusEnum, BookTypeEnum
 
 
 class BookBase(BaseModel):
@@ -22,6 +22,8 @@ class BookBase(BaseModel):
     language: str = Field(default="en", max_length=64)  # Defaults to "en" if not specified
     category: str | None = Field(default=None, max_length=128)
     status: BookStatusEnum = Field(default=BookStatusEnum.DRAFT)
+    parent_book_id: int | None = Field(default=None)
+    book_type: BookTypeEnum = Field(default=BookTypeEnum.STANDARD)
 
 
 class BookCreate(BookBase):
@@ -54,6 +56,8 @@ class BookUpdate(BaseModel):
     language: str | None = Field(default="en", max_length=64)  # Defaults to "en"
     category: str | None = Field(default=None, max_length=128)
     status: BookStatusEnum | None = Field(default=None)
+    parent_book_id: int | None = Field(default=None)
+    book_type: BookTypeEnum | None = Field(default=None)
 
 
 class BookRead(BookBase):
@@ -65,6 +69,7 @@ class BookRead(BookBase):
     id: int
     publisher_id: int
     publisher_slug: str | None = None
+    child_count: int = 0
     created_at: datetime
     updated_at: datetime
 

@@ -7,6 +7,7 @@ import DashboardPage from './pages/Dashboard';
 import PublishersPage from './pages/Publishers';
 import PublisherDetailPage from './pages/PublisherDetail';
 import BooksPage from './pages/Books';
+import BookDetailPage from './pages/BookDetail';
 import AppsPage from './pages/Apps';
 import BundlesPage from './pages/Bundles';
 import TeachersPage from './pages/TeachersManagement';
@@ -55,6 +56,7 @@ const App = () => {
           <Route path="publishers" element={<PublishersPage />} />
           <Route path="publishers/:id" element={<PublisherDetailPage />} />
           <Route path="books" element={<BooksPage />} />
+          <Route path="books/:id" element={<BookDetailPage />} />
           <Route path="apps" element={<AppsPage />} />
           <Route path="bundles" element={<BundlesPage />} />
           <Route path="teachers" element={<TeachersPage />} />

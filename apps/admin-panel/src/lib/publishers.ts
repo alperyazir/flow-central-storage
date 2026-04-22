@@ -43,6 +43,9 @@ export interface PublisherBook {
   language: string;
   category?: string;
   status: string;
+  parent_book_id?: number | null;
+  book_type?: 'standard' | 'pdf';
+  child_count?: number;
   created_at?: string;
   updated_at?: string;
 }

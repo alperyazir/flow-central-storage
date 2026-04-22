@@ -1878,6 +1878,7 @@ async def create_bundle_task(
         TEMPLATE_PREFIX,
         InvalidPlatformError,
         TemplateNotFoundError,
+        should_skip_bundled_path,
     )
 
     settings = get_settings()
@@ -2018,6 +2019,8 @@ async def create_bundle_task(
                             continue
                         src = os.path.join(root, file)
                         rel = os.path.relpath(src, local_book_path)
+                        if should_skip_bundled_path(rel):
+                            continue
                         dst = os.path.join(book_dir, rel)
                         os.makedirs(os.path.dirname(dst), exist_ok=True)
                         shutil.copy2(src, dst)
@@ -2037,13 +2040,15 @@ async def create_bundle_task(
                     obj for obj in client.list_objects(publishers_bucket, prefix=book_prefix, recursive=True)
                     if not obj.is_dir and obj.object_name[len(book_prefix):]
                 ]
-                total_objects = len(objects)
 
                 download_tasks = []
                 for obj in objects:
                     relative_path = obj.object_name[len(book_prefix):]
+                    if should_skip_bundled_path(relative_path):
+                        continue
                     dest_path = os.path.join(book_dir, relative_path)
                     download_tasks.append((publishers_bucket, obj.object_name, dest_path))
+                total_objects = len(download_tasks)
 
                 asset_count = 0
                 with ThreadPoolExecutor(max_workers=ASSET_DOWNLOAD_WORKERS) as executor:

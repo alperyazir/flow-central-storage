@@ -24,6 +24,13 @@ class BookStatusEnum(str, enum.Enum):
     ARCHIVED = "archived"
 
 
+class BookTypeEnum(str, enum.Enum):
+    """Kind of content stored for a book record."""
+
+    STANDARD = "standard"
+    PDF = "pdf"
+
+
 class Book(Base):
     """Represents a book metadata record persisted in PostgreSQL."""
 
@@ -56,8 +63,29 @@ class Book(Base):
     # Foreign key to publishers table (required)
     publisher_id: Mapped[int] = mapped_column(ForeignKey("publishers.id"), nullable=False)
 
+    # Child-book support: a book may be attached to a parent book as an
+    # additional resource (flowbook child or raw PDF). ``book_type``
+    # controls the content pipeline: ``standard`` keeps the existing ZIP
+    # flow, ``pdf`` stores a single PDF under ``raw/`` and skips bundles.
+    parent_book_id: Mapped[int | None] = mapped_column(
+        ForeignKey("books.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    book_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=BookTypeEnum.STANDARD.value, server_default=BookTypeEnum.STANDARD.value
+    )
+
     # Relationship to Publisher model
     publisher_rel: Mapped["Publisher"] = relationship("Publisher", back_populates="books")
+
+    parent_rel: Mapped["Book | None"] = relationship(
+        "Book", remote_side="Book.id", back_populates="children_rel"
+    )
+    children_rel: Mapped[list["Book"]] = relationship(
+        "Book",
+        back_populates="parent_rel",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
     @property
     def publisher(self) -> str:

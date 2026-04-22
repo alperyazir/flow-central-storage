@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Loader2, Cpu, RefreshCw, Download, Trash2 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Loader2, Cpu, RefreshCw, Download, Trash2, Paperclip } from 'lucide-react';
 
 import { Card, CardContent } from 'components/ui/card';
 import {
@@ -41,6 +42,7 @@ import {
   getDownloadStatus,
   deleteBook,
   getDeleteStatus,
+  type BookRecord,
   type SyncR2Response,
 } from 'lib/books';
 import { buildAuthHeaders } from 'lib/http';
@@ -64,11 +66,14 @@ interface BookRow {
   category: string;
   activityCount: number;
   status: string;
+  childCount: number;
+  bookType: 'standard' | 'pdf';
 }
 
 const BooksPage = () => {
   const { token, tokenType } = useAuthStore();
   const tt = tokenType ?? 'Bearer';
+  const navigate = useNavigate();
 
   const [books, setBooks] = useState<BookRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -86,6 +91,7 @@ const BooksPage = () => {
   const [downloadingId, setDownloadingId] = useState<number | null>(null);
   const [delTarget, setDelTarget] = useState<BookRow | null>(null);
   const [delBundles, setDelBundles] = useState(true);
+  const [delChildren, setDelChildren] = useState<BookRecord[] | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [delProgress, setDelProgress] = useState(0);
   const [delStep, setDelStep] = useState('');
@@ -178,6 +184,24 @@ const BooksPage = () => {
     };
   }, []);
 
+  useEffect(() => {
+    if (!delTarget || !token || delTarget.childCount === 0) {
+      setDelChildren(null);
+      return;
+    }
+    let cancelled = false;
+    fetchBooks(token, tt, undefined, { parentBookId: delTarget.id })
+      .then((kids) => {
+        if (!cancelled) setDelChildren(kids);
+      })
+      .catch(() => {
+        if (!cancelled) setDelChildren([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [delTarget, token, tt]);
+
   const handleSync = async () => {
     if (!token) return;
     setSyncing(true);
@@ -198,7 +222,7 @@ const BooksPage = () => {
     setLoading(true);
     setError('');
     try {
-      const recs = await fetchBooks(token, tt);
+      const recs = await fetchBooks(token, tt, undefined, { topLevelOnly: true });
       setBooks(
         recs.map((r) => ({
           id: r.id,
@@ -210,6 +234,8 @@ const BooksPage = () => {
           category: r.category || '',
           activityCount: r.activity_count || 0,
           status: r.status,
+          childCount: r.child_count ?? 0,
+          bookType: r.book_type,
         }))
       );
     } catch (e) {
@@ -368,16 +394,26 @@ const BooksPage = () => {
                 </TableRow>
               ) : (
                 filtered.map((b) => (
-                  <TableRow key={b.id}>
+                  <TableRow
+                    key={b.id}
+                    className="cursor-pointer hover:bg-accent/40"
+                    onClick={() => navigate(`/books/${b.id}`)}
+                  >
                     <TableCell>
-                      <div>
+                      <div className="flex items-center gap-2">
                         <span className="font-medium">{b.bookTitle}</span>
-                        {b.bookTitle !== b.bookName && (
-                          <span className="block text-xs text-muted-foreground">
-                            {b.bookName}
-                          </span>
+                        {b.childCount > 0 && (
+                          <Badge variant="secondary" className="gap-1">
+                            <Paperclip className="h-3 w-3" />
+                            +{b.childCount}
+                          </Badge>
                         )}
                       </div>
+                      {b.bookTitle !== b.bookName && (
+                        <span className="block text-xs text-muted-foreground">
+                          {b.bookName}
+                        </span>
+                      )}
                     </TableCell>
                     <TableCell>{b.publisher}</TableCell>
                     <TableCell>
@@ -389,7 +425,10 @@ const BooksPage = () => {
                     <TableCell>
                       <Badge variant="secondary">{b.activityCount}</Badge>
                     </TableCell>
-                    <TableCell className="text-right space-x-1">
+                    <TableCell
+                      className="text-right space-x-1"
+                      onClick={(e) => e.stopPropagation()}
+                    >
                       <Button
                         variant="ghost"
                         size="icon"
@@ -450,6 +489,33 @@ const BooksPage = () => {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
+            {!!delTarget && delTarget.childCount > 0 && (
+              <Alert>
+                <AlertDescription>
+                  <div className="text-sm">
+                    <strong>{delTarget.childCount}</strong> additional
+                    resource{delTarget.childCount === 1 ? '' : 's'} will be
+                    deleted with this book:
+                  </div>
+                  {delChildren === null ? (
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      Loading list…
+                    </div>
+                  ) : delChildren.length === 0 ? null : (
+                    <ul className="mt-2 list-disc space-y-0.5 pl-5 text-xs">
+                      {delChildren.map((c) => (
+                        <li key={c.id}>
+                          {c.book_title || c.book_name}
+                          <span className="ml-1 text-muted-foreground">
+                            ({c.book_type === 'pdf' ? 'PDF' : 'Flowbook'})
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </AlertDescription>
+              </Alert>
+            )}
             <div className="flex items-center space-x-2">
               <Checkbox
                 id="del-bundles"

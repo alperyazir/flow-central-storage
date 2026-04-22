@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Loader2,
   Download,
@@ -9,6 +10,10 @@ import {
   RefreshCw,
   XCircle,
   Eraser,
+  ChevronDown,
+  ChevronRight,
+  Paperclip,
+  BookOpen,
 } from 'lucide-react';
 
 import { Card, CardContent } from 'components/ui/card';
@@ -79,8 +84,10 @@ const fmtDate = (s: string) =>
 const BundlesPage = () => {
   const { token, tokenType } = useAuthStore();
   const tt = tokenType ?? 'Bearer';
+  const navigate = useNavigate();
 
   const [bundles, setBundles] = useState<BundleInfo[]>([]);
+  const [allBooks, setAllBooks] = useState<BookRecord[]>([]);
   const [templates, setTemplates] = useState<TemplateInfo[]>([]);
   const [bundleJobs, setBundleJobs] = useState<BundleJobStatus[]>([]);
   const [loading, setLoading] = useState(true);
@@ -88,6 +95,7 @@ const BundlesPage = () => {
   const [search, setSearch] = useState('');
   const [platformFilter, setPlatformFilter] = useState('all');
   const [publisherFilter, setPublisherFilter] = useState('all');
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [createOpen, setCreateOpen] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [platform, setPlatform] = useState('');
@@ -107,14 +115,16 @@ const BundlesPage = () => {
     setLoading(true);
     setError(null);
     try {
-      const [b, t, j] = await Promise.all([
+      const [b, t, j, bk] = await Promise.all([
         listBundles(token, tt),
         listTemplates(token, tt),
         listBundleJobs(token, tt),
+        fetchBooks(token, tt, undefined, { topLevelOnly: false }),
       ]);
       setBundles(b.bundles);
       setTemplates(t.templates);
       setBundleJobs(j.jobs);
+      setAllBooks(bk);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load');
     } finally {
@@ -193,6 +203,76 @@ const BundlesPage = () => {
       d = d.filter((b) => b.publisher_name === publisherFilter);
     return d;
   }, [bundles, search, platformFilter, publisherFilter]);
+
+  // Build a name→book index and group bundles by parent book so child
+  // books' bundles nest under their parent.
+  const { groups, autoExpandKeys } = useMemo(() => {
+    const byName = new Map<string, BookRecord>();
+    for (const b of allBooks) byName.set(b.book_name, b);
+
+    interface Group {
+      key: string; // parent book_name
+      parent: BookRecord | null;
+      parentBundles: BundleInfo[];
+      children: Map<string, { book: BookRecord | null; bundles: BundleInfo[] }>;
+    }
+
+    const map = new Map<string, Group>();
+    const getGroup = (key: string, parent: BookRecord | null): Group => {
+      let g = map.get(key);
+      if (!g) {
+        g = { key, parent, parentBundles: [], children: new Map() };
+        map.set(key, g);
+      }
+      return g;
+    };
+
+    for (const bundle of filtered) {
+      const book = byName.get(bundle.book_name) ?? null;
+      if (book && book.parent_book_id) {
+        const parent = allBooks.find((b) => b.id === book.parent_book_id) ?? null;
+        const key = parent?.book_name ?? bundle.book_name;
+        const grp = getGroup(key, parent);
+        let childEntry = grp.children.get(bundle.book_name);
+        if (!childEntry) {
+          childEntry = { book, bundles: [] };
+          grp.children.set(bundle.book_name, childEntry);
+        }
+        childEntry.bundles.push(bundle);
+      } else {
+        const key = bundle.book_name;
+        const grp = getGroup(key, book);
+        grp.parentBundles.push(bundle);
+      }
+    }
+
+    // Sort groups alphabetically by key and bundles within by platform
+    const sorted = [...map.values()].sort((a, b) => a.key.localeCompare(b.key));
+    for (const g of sorted) {
+      g.parentBundles.sort((a, b) => a.platform.localeCompare(b.platform));
+      for (const c of g.children.values()) {
+        c.bundles.sort((a, b) => a.platform.localeCompare(b.platform));
+      }
+    }
+
+    // Auto-expand when searching or any filter narrows the view
+    const shouldAutoExpand = search.length > 0 || platformFilter !== 'all' || publisherFilter !== 'all';
+    const keys = shouldAutoExpand ? sorted.map((g) => g.key) : [];
+    return { groups: sorted, autoExpandKeys: keys };
+  }, [filtered, allBooks, search, platformFilter, publisherFilter]);
+
+  useEffect(() => {
+    if (autoExpandKeys.length === 0) return;
+    setExpanded((prev) => {
+      const next = { ...prev };
+      for (const k of autoExpandKeys) next[k] = true;
+      return next;
+    });
+  }, [autoExpandKeys]);
+
+  const isExpanded = (key: string) => expanded[key] ?? false; // default collapsed
+  const toggleExpanded = (key: string) =>
+    setExpanded((prev) => ({ ...prev, [key]: !isExpanded(key) }));
 
   const openCreate = async () => {
     setPlatform('');
@@ -452,77 +532,171 @@ const BundlesPage = () => {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Book</TableHead>
+                <TableHead className="w-[36%]">Book / Resource</TableHead>
                 <TableHead>Publisher</TableHead>
-                <TableHead>Platform</TableHead>
-                <TableHead>Size</TableHead>
-                <TableHead>Created</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
+                <TableHead>Platforms</TableHead>
+                <TableHead>Latest</TableHead>
+                <TableHead className="text-right w-[80px]"></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {!filtered.length ? (
+              {!groups.length ? (
                 <TableRow>
-                  <TableCell
-                    colSpan={6}
-                    className="text-center py-8 text-muted-foreground"
-                  >
-                    No bundles created
+                  <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
+                    No bundles match your filters
                   </TableCell>
                 </TableRow>
               ) : (
-                filtered.map((b) => (
-                  <TableRow key={b.object_name}>
-                    <TableCell>
-                      <div>
-                        <span className="font-medium">{b.book_name}</span>
-                        <span className="block text-xs text-muted-foreground">
-                          {b.file_name}
-                        </span>
-                      </div>
-                    </TableCell>
-                    <TableCell>{b.publisher_name}</TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-1">
-                        {b.platform === 'mac' ? (
-                          <Apple className="h-4 w-4" />
-                        ) : (
-                          <Monitor className="h-4 w-4" />
-                        )}
-                        <Badge variant="outline">
-                          {PLATFORM_LABELS[b.platform as StandalonePlatform] ||
-                            b.platform}
-                        </Badge>
-                      </div>
-                    </TableCell>
-                    <TableCell>{fmtBytes(b.file_size)}</TableCell>
-                    <TableCell>{fmtDate(b.created_at)}</TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex justify-end gap-1">
-                        {b.download_url && (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-7 w-7"
-                            onClick={() =>
-                              window.open(b.download_url!, '_blank')
-                            }
-                          >
-                            <Download className="h-4 w-4" />
-                          </Button>
-                        )}
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7"
-                          onClick={() => setDelTarget(b)}
-                        >
-                          <Trash2 className="h-4 w-4 text-destructive" />
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))
+                groups.flatMap((g) => {
+                  const rows: JSX.Element[] = [];
+                  const childrenArr = [...g.children.values()];
+                  const childCount = childrenArr.length;
+                  const open = isExpanded(g.key);
+                  const canToggle = childCount > 0;
+
+                  const renderBookRow = (
+                    key: string,
+                    book: BookRecord | null,
+                    bundles: BundleInfo[],
+                    opts: { isChild?: boolean; isHeader?: boolean } = {}
+                  ) => {
+                    const latest = bundles.reduce<string | null>((acc, b) => {
+                      if (!acc) return b.created_at;
+                      return new Date(b.created_at) > new Date(acc) ? b.created_at : acc;
+                    }, null);
+                    const publisher = bundles[0]?.publisher_name ?? book?.publisher ?? '—';
+                    const bookTitle = book?.book_title || book?.book_name || key;
+                    const bookTypeBadge = book?.book_type === 'pdf' ? 'PDF' : null;
+                    return (
+                      <TableRow
+                        key={`row-${key}`}
+                        className={opts.isHeader ? 'bg-accent/20' : undefined}
+                      >
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            {opts.isHeader ? (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6"
+                                disabled={!canToggle}
+                                onClick={() => canToggle && toggleExpanded(g.key)}
+                                title={canToggle ? 'Toggle resources' : ''}
+                              >
+                                {!canToggle ? (
+                                  <BookOpen className="h-4 w-4 text-muted-foreground" />
+                                ) : open ? (
+                                  <ChevronDown className="h-4 w-4" />
+                                ) : (
+                                  <ChevronRight className="h-4 w-4" />
+                                )}
+                              </Button>
+                            ) : (
+                              <span className="pl-8 flex items-center text-muted-foreground">
+                                <Paperclip className="h-3 w-3" />
+                              </span>
+                            )}
+                            <button
+                              type="button"
+                              className="font-medium hover:underline text-left"
+                              onClick={() => book && navigate(`/books/${book.id}`)}
+                            >
+                              {bookTitle}
+                            </button>
+                            {bookTypeBadge && (
+                              <Badge variant="outline" className="text-[10px]">
+                                {bookTypeBadge}
+                              </Badge>
+                            )}
+                            {opts.isHeader && childCount > 0 && (
+                              <Badge variant="secondary" className="gap-1">
+                                <Paperclip className="h-3 w-3" />
+                                {childCount}
+                              </Badge>
+                            )}
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-sm">{publisher}</TableCell>
+                        <TableCell>
+                          {bundles.length === 0 ? (
+                            <span className="text-xs text-muted-foreground">
+                              {book?.book_type === 'pdf' ? 'PDF (no bundles)' : 'No bundles'}
+                            </span>
+                          ) : (
+                            <div className="flex flex-wrap gap-1.5">
+                              {bundles.map((b) => (
+                                <div
+                                  key={b.object_name}
+                                  title={`${b.file_name} — ${fmtBytes(b.file_size)}`}
+                                  className="group/chip flex items-center gap-1 rounded-md border bg-background px-2 py-1 text-xs min-w-[150px] hover:bg-accent/30"
+                                >
+                                  {b.platform === 'mac' ? (
+                                    <Apple className="h-3 w-3" />
+                                  ) : (
+                                    <Monitor className="h-3 w-3" />
+                                  )}
+                                  <span className="font-medium">
+                                    {PLATFORM_LABELS[b.platform as StandalonePlatform] || b.platform}
+                                  </span>
+                                  <span className="ml-auto text-muted-foreground tabular-nums">
+                                    {fmtBytes(b.file_size)}
+                                  </span>
+                                  {b.download_url && (
+                                    <button
+                                      type="button"
+                                      className="ml-1 text-muted-foreground hover:text-foreground"
+                                      onClick={() => window.open(b.download_url!, '_blank')}
+                                      title={`Download ${b.file_name}`}
+                                    >
+                                      <Download className="h-3 w-3" />
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    className="opacity-0 group-hover/chip:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
+                                    onClick={() => setDelTarget(b)}
+                                    title="Delete bundle"
+                                  >
+                                    <Trash2 className="h-3 w-3" />
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {latest ? fmtDate(latest) : '—'}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          {opts.isHeader && (
+                            <span className="text-xs text-muted-foreground">
+                              {g.parentBundles.length + childrenArr.reduce((n, c) => n + c.bundles.length, 0)} total
+                            </span>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  };
+
+                  rows.push(
+                    renderBookRow(g.key, g.parent, g.parentBundles, { isHeader: true })
+                  );
+
+                  if (open) {
+                    childrenArr.forEach((c) => {
+                      rows.push(
+                        renderBookRow(
+                          `child-${g.key}-${c.book?.book_name ?? 'x'}`,
+                          c.book,
+                          c.bundles,
+                          { isChild: true }
+                        )
+                      );
+                    });
+                  }
+
+                  return rows;
+                })
               )}
             </TableBody>
           </Table>
@@ -652,6 +826,32 @@ const BundlesPage = () => {
               undone.
             </DialogDescription>
           </DialogHeader>
+          {delTarget && (() => {
+            const b = allBooks.find((x) => x.book_name === delTarget.book_name);
+            if (!b) return null;
+            const parent = b.parent_book_id
+              ? allBooks.find((x) => x.id === b.parent_book_id)
+              : null;
+            return (
+              <Alert>
+                <AlertDescription className="text-xs">
+                  {parent ? (
+                    <>
+                      Attached to child resource{' '}
+                      <strong>{b.book_title || b.book_name}</strong> under{' '}
+                      <strong>{parent.book_title || parent.book_name}</strong>.
+                      Only this one platform bundle will be removed.
+                    </>
+                  ) : (
+                    <>
+                      Belongs to <strong>{b.book_title || b.book_name}</strong>.
+                      Only this one platform bundle will be removed.
+                    </>
+                  )}
+                </AlertDescription>
+              </Alert>
+            );
+          })()}
           <DialogFooter>
             <Button
               variant="outline"

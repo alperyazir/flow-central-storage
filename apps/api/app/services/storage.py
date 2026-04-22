@@ -269,6 +269,32 @@ def _normalize_filename(name: str) -> str:
     return "/".join(normalized_parts)
 
 
+def _safe_pdf_filename(raw_name: str | None) -> str:
+    """Produce a filesystem- and header-safe PDF filename.
+
+    Strips path components (defeats traversal via ``../``), removes
+    characters that would break a Content-Disposition header (``"``,
+    ``\\r``, ``\\n``), applies the same normalization as ZIP entries, and
+    enforces a ``.pdf`` suffix. Falls back to ``original.pdf`` if the
+    cleaned result is empty.
+    """
+    if not raw_name:
+        return "original.pdf"
+    base = raw_name.replace("\\", "/").rsplit("/", 1)[-1]
+    base = base.replace('"', "").replace("\r", "").replace("\n", "")
+    base = base.strip()
+    if not base:
+        return "original.pdf"
+    stem, dot, ext = base.rpartition(".")
+    if dot and ext.lower() == "pdf":
+        cleaned = _normalize_part(stem) + ".pdf"
+    else:
+        cleaned = _normalize_part(base) + ".pdf"
+    if cleaned in {".pdf", "_.pdf"}:
+        return "original.pdf"
+    return cleaned
+
+
 def _build_rename_map(entries: list[tuple[zipfile.ZipInfo, str]]) -> dict[str, str]:
     """Build old_path → new_path mapping for files that need renaming."""
     rename_map: dict[str, str] = {}

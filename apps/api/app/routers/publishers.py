@@ -19,6 +19,7 @@ from app.core.config import get_settings
 from app.core.security import decode_access_token, verify_api_key_from_db
 from app.db import SessionLocal, get_db
 from app.models.webhook import WebhookEventType
+from app.repositories.book import BookRepository
 from app.repositories.publisher import PublisherRepository
 from app.repositories.user import UserRepository
 from app.schemas.asset import AssetFileInfo, AssetTypeInfo, PublisherAssetsResponse
@@ -36,6 +37,7 @@ from app.services.webhook import WebhookService
 router = APIRouter(prefix="/publishers", tags=["Publishers"])
 _bearer_scheme = HTTPBearer(auto_error=True)
 _publisher_repository = PublisherRepository()
+_book_repository = BookRepository()
 _user_repository = UserRepository()
 _webhook_service = WebhookService()
 logger = logging.getLogger(__name__)
@@ -446,7 +448,7 @@ def get_publisher_books(
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
     db: Session = Depends(get_db),
 ) -> list[BookRead]:
-    """List all books for a specific publisher."""
+    """List top-level books for a specific publisher (excludes child books)."""
 
     _require_admin(credentials, db)
     publisher = _publisher_repository.get_with_books(db, publisher_id)
@@ -456,7 +458,14 @@ def get_publisher_books(
             detail="Publisher not found",
         )
 
-    return [BookRead.model_validate(book) for book in publisher.books]
+    top_level = [b for b in publisher.books if b.parent_book_id is None]
+    counts = _book_repository.count_children_by_parent(db, [b.id for b in top_level])
+    result: list[BookRead] = []
+    for book in top_level:
+        read = BookRead.model_validate(book)
+        read.child_count = counts.get(book.id, 0)
+        result.append(read)
+    return result
 
 
 @router.get("/{publisher_id}/assets", response_model=PublisherAssetsResponse)
