@@ -10,7 +10,8 @@ from typing import TYPE_CHECKING, Any
 from cefrpy import CEFRAnalyzer
 
 from app.core.config import get_settings
-from app.services.unified_analysis.models import UnifiedAnalysisResult
+from app.services.unified_analysis.models import UnifiedAnalysisResult, VocabularyWord
+from app.services.vocabulary_extraction.dedup import deduplicate_by_word
 
 _cefr_analyzer = CEFRAnalyzer()
 
@@ -107,29 +108,35 @@ class UnifiedAnalysisStorage:
         # Save aggregated vocabulary.json (compatible with existing format)
         vocab_path = f"{base_path}/vocabulary.json"
 
-        # Build vocabulary words with unique IDs
-        vocab_words = []
-        word_counter = 0
-        for module in result.modules:
-            for v in module.vocabulary:
-                word_counter += 1
-                # Get CEFR level from cefrpy (reliable), fallback to LLM value
-                level = _get_cefr_level(v.word, v.part_of_speech) or v.difficulty
+        # Collect (word, module_id, module_title) entries across all modules, then
+        # deduplicate case-insensitively. First occurrence wins, so module_id/title
+        # reflect the module where the word first appeared.
+        entries: list[tuple[VocabularyWord, int, str]] = [
+            (v, module.module_id, module.title)
+            for module in result.modules
+            for v in module.vocabulary
+        ]
+        deduplicated = deduplicate_by_word(entries, lambda e: e[0].word)
 
-                vocab_words.append(
-                    {
-                        "id": f"word_{word_counter}",
-                        "word": v.word,
-                        "definition": v.definition,
-                        "translation": v.translation,
-                        "part_of_speech": v.part_of_speech,
-                        "example": v.example_sentence,
-                        "level": level,
-                        "phonetic": v.phonetic,
-                        "module_id": module.module_id,
-                        "module_title": module.title,
-                    }
-                )
+        vocab_words = []
+        for idx, (v, module_id, module_title) in enumerate(deduplicated, start=1):
+            # Get CEFR level from cefrpy (reliable), fallback to LLM value
+            level = _get_cefr_level(v.word, v.part_of_speech) or v.difficulty
+
+            vocab_words.append(
+                {
+                    "id": f"word_{idx}",
+                    "word": v.word,
+                    "definition": v.definition,
+                    "translation": v.translation,
+                    "part_of_speech": v.part_of_speech,
+                    "example": v.example_sentence,
+                    "level": level,
+                    "phonetic": v.phonetic,
+                    "module_id": module_id,
+                    "module_title": module_title,
+                }
+            )
 
         vocab_data = {
             "book_id": result.book_id,
@@ -137,7 +144,7 @@ class UnifiedAnalysisStorage:
             "book_name": result.book_name,
             "language": result.primary_language,
             "translation_language": result.translation_language,
-            "total_words": result.total_vocabulary,
+            "total_words": len(vocab_words),
             "words": vocab_words,
         }
 
@@ -151,7 +158,11 @@ class UnifiedAnalysisStorage:
                 length=len(content_bytes),
                 content_type="application/json",
             )
-            logger.info("Saved vocabulary.json with %d words", result.total_vocabulary)
+            logger.info(
+                "Saved vocabulary.json with %d unique words (%d before dedup)",
+                len(vocab_words),
+                result.total_vocabulary,
+            )
         except Exception as e:
             logger.error("Failed to save vocabulary.json: %s", e)
 

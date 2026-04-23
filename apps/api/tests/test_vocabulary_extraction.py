@@ -538,7 +538,7 @@ class TestVocabularyExtractionService:
         """Test that invalid CEFR levels are cleared."""
         llm_response = json.dumps(
             [
-                {"word": "test", "translation": "test", "level": "INVALID", "part_of_speech": "noun"},
+                {"word": "xyzabc", "translation": "test", "level": "INVALID", "part_of_speech": "noun"},
             ]
         )
         mock_llm_service.simple_completion.return_value = llm_response
@@ -556,7 +556,8 @@ class TestVocabularyExtractionService:
         )
 
         assert result.success is True
-        assert result.words[0].level == ""  # Invalid level should be cleared
+        # cefrpy doesn't know "xyzabc", so code falls back to LLM level which is invalid and gets cleared
+        assert result.words[0].level == ""
 
     @pytest.mark.asyncio
     async def test_extract_book_vocabulary_success(self, service, mock_llm_service):
@@ -592,7 +593,7 @@ class TestVocabularyExtractionService:
 
         result = await service.extract_book_vocabulary(
             book_id="book-123",
-            publisher_id="pub-456",
+            publisher_slug="pub-456",
             book_name="Test Book",
             modules=modules,
         )
@@ -607,7 +608,7 @@ class TestVocabularyExtractionService:
         with pytest.raises(NoModulesFoundError):
             await service.extract_book_vocabulary(
                 book_id="book-123",
-                publisher_id="pub-456",
+                publisher_slug="pub-456",
                 book_name="Test Book",
                 modules=[],
             )
@@ -634,7 +635,7 @@ class TestVocabularyExtractionService:
 
         await service.extract_book_vocabulary(
             book_id="book-123",
-            publisher_id="pub-456",
+            publisher_slug="pub-456",
             book_name="Test Book",
             modules=modules,
             progress_callback=progress_callback,
@@ -689,7 +690,7 @@ class TestVocabularyStorage:
     def test_build_vocabulary_path(self, storage):
         """Test building vocabulary.json path."""
         path = storage._build_vocabulary_path(
-            publisher_id="pub-123",
+            publisher_slug="pub-123",
             book_id="book-456",
             book_name="Test Book",
         )
@@ -699,7 +700,7 @@ class TestVocabularyStorage:
     def test_build_module_path(self, storage):
         """Test building module JSON path."""
         path = storage._build_module_path(
-            publisher_id="pub-123",
+            publisher_slug="pub-123",
             book_id="book-456",
             book_name="Test Book",
             module_id=1,
@@ -710,7 +711,7 @@ class TestVocabularyStorage:
     def test_build_metadata_path(self, storage):
         """Test building metadata path."""
         path = storage._build_metadata_path(
-            publisher_id="pub-123",
+            publisher_slug="pub-123",
             book_id="book-456",
             book_name="Test Book",
         )
@@ -724,10 +725,10 @@ class TestVocabularyStorage:
 
         mock_client = MagicMock()
         mock_get_client.return_value = mock_client
-        mock_client.get_object.side_effect = S3Error("NoSuchKey", "Not found", "", "", "", "")
+        mock_client.get_object.side_effect = S3Error(code="NoSuchKey", message="Not found", resource="", request_id="", host_id="", response=None)
 
         result = storage.load_vocabulary(
-            publisher_id="pub-123",
+            publisher_slug="pub-123",
             book_id="book-456",
             book_name="Test Book",
         )
@@ -750,7 +751,7 @@ class TestVocabularyStorage:
         mock_client.get_object.return_value = mock_response
 
         result = storage.load_vocabulary(
-            publisher_id="pub-123",
+            publisher_slug="pub-123",
             book_id="book-456",
             book_name="Test Book",
         )
@@ -785,10 +786,10 @@ class TestVocabularyStorage:
 
         mock_client = MagicMock()
         mock_get_client.return_value = mock_client
-        mock_client.get_object.side_effect = S3Error("NoSuchKey", "Not found", "", "", "", "")
+        mock_client.get_object.side_effect = S3Error(code="NoSuchKey", message="Not found", resource="", request_id="", host_id="", response=None)
 
         result = storage.get_module(
-            publisher_id="pub-123",
+            publisher_slug="pub-123",
             book_id="book-456",
             book_name="Test Book",
             module_id=1,
@@ -819,7 +820,7 @@ class TestVocabularyStorage:
         )
 
         path = storage.update_module_vocabulary_ids(
-            publisher_id="pub-123",
+            publisher_slug="pub-123",
             book_id="book-456",
             book_name="Test Book",
             module_result=module_result,
@@ -853,7 +854,7 @@ class TestVocabularyStorage:
         mock_client.get_object.side_effect = [mock_response1, mock_response2]
 
         modules = storage.list_modules(
-            publisher_id="pub-123",
+            publisher_slug="pub-123",
             book_id="book-456",
             book_name="Test Book",
         )

@@ -12,6 +12,7 @@ from cefrpy import CEFRAnalyzer
 
 from app.core.config import get_settings
 from app.services.llm import LLMProviderError, get_llm_service
+from app.services.vocabulary_extraction.dedup import deduplicate_by_word
 from app.services.vocabulary_extraction.models import (
     BookVocabularyResult,
     InvalidLLMResponseError,
@@ -226,27 +227,8 @@ class VocabularyExtractionService:
         return words
 
     def _deduplicate_vocabulary(self, all_words: list[VocabularyWord]) -> list[VocabularyWord]:
-        """
-        Deduplicate vocabulary words across modules.
-
-        Keeps the first occurrence of each word (case-insensitive).
-
-        Args:
-            all_words: List of all vocabulary words from all modules.
-
-        Returns:
-            Deduplicated list of vocabulary words.
-        """
-        seen: dict[str, VocabularyWord] = {}
-
-        for word in all_words:
-            # Use lowercase word as key for case-insensitive matching
-            key = word.word.lower()
-            if key not in seen:
-                seen[key] = word
-
-        # Return words in order of first occurrence
-        return list(seen.values())
+        """Deduplicate vocabulary words across modules (case-insensitive, first wins)."""
+        return deduplicate_by_word(all_words, lambda w: w.word)
 
     async def extract_module_vocabulary(
         self,
