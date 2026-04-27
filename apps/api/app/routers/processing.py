@@ -487,7 +487,9 @@ async def list_books_with_processing_status(
     _require_auth(credentials, db)
 
     # Get all books with optional filters
-    query = db.query(_book_repository.model)
+    from app.models.book import Book
+
+    query = db.query(_book_repository.model).filter(Book.parent_book_id.is_(None))
 
     if publisher:
         from app.models.publisher import Publisher
@@ -495,8 +497,6 @@ async def list_books_with_processing_status(
         query = query.join(Publisher).filter(Publisher.name.ilike(f"%{publisher}%"))
 
     if search:
-        from app.models.book import Book
-
         query = query.filter((Book.book_name.ilike(f"%{search}%")) | (Book.book_title.ilike(f"%{search}%")))
 
     # Get total count before pagination
