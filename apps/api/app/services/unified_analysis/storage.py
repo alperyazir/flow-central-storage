@@ -26,6 +26,10 @@ _POS_TO_CEFRPY = {
 def _get_cefr_level(word: str, pos: str) -> str:
     """Get CEFR level from cefrpy, using POS-specific level when available."""
     word_lower = word.lower()
+    # cefrpy packs each char as a single byte (ord <= 255); non-ASCII words
+    # (e.g. Turkish ğ/ş/ç) raise struct.error. CEFR is English-only anyway.
+    if not word_lower.isascii():
+        return ""
     if not _cefr_analyzer.is_word_in_database(word_lower):
         return ""
 
