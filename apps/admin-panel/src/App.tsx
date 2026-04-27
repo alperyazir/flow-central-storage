@@ -14,6 +14,7 @@ import TeachersPage from './pages/TeachersManagement';
 import LoginPage from './pages/Login';
 import SystemInfoPage from './pages/SystemInfo';
 import ProcessingPage from './pages/Processing';
+import AIDataPage from './pages/AIData';
 import ApiKeysPage from './pages/ApiKeys';
 import CalculatePage from './pages/Calculate';
 import TeacherDetailPage from './pages/TeacherDetail';
@@ -62,6 +63,7 @@ const App = () => {
           <Route path="teachers" element={<TeachersPage />} />
           <Route path="teachers/:id" element={<TeacherDetailPage />} />
           <Route path="processing" element={<ProcessingPage />} />
+          <Route path="processing/:bookId/ai-data" element={<AIDataPage />} />
           <Route path="api-keys" element={<ApiKeysPage />} />
           <Route path="calculate" element={<CalculatePage />} />
           <Route path="system" element={<SystemInfoPage />} />

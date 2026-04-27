@@ -30,9 +30,9 @@ import { Button } from 'components/ui/button';
 import { Badge } from 'components/ui/badge';
 import { Progress } from 'components/ui/progress';
 import { Alert, AlertDescription } from 'components/ui/alert';
+import { useNavigate } from 'react-router-dom';
 import ProcessingDialog from 'components/ProcessingDialog';
 import ProcessingSettingsDialog from 'components/ProcessingSettingsDialog';
-import AIDataDialog from 'components/AIDataDialog';
 import { useAuthStore } from 'stores/auth';
 import {
   getBooksWithProcessingStatus,
@@ -56,6 +56,7 @@ const statusVariant = (s: string) => {
 const ProcessingPage = () => {
   const { token, tokenType } = useAuthStore();
   const tt = tokenType ?? 'Bearer';
+  const navigate = useNavigate();
 
   const [books, setBooks] = useState<BookWithProcessingStatus[]>([]);
   const [queue, setQueue] = useState<ProcessingQueueItem[]>([]);
@@ -70,9 +71,6 @@ const ProcessingPage = () => {
   const [bulkProcessing, setBulkProcessing] = useState(false);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [aiDataBook, setAiDataBook] = useState<BookWithProcessingStatus | null>(
-    null
-  );
 
   const fetchData = useCallback(async () => {
     if (!token) return;
@@ -301,9 +299,21 @@ const ProcessingPage = () => {
                   </TableCell>
                 </TableRow>
               ) : (
-                filtered.map((b) => (
-                  <TableRow key={b.book_id}>
-                    <TableCell>
+                filtered.map((b) => {
+                  const hasAIData =
+                    b.processing_status === 'completed' ||
+                    b.processing_status === 'partial';
+                  const openAIData = () =>
+                    navigate(`/processing/${b.book_id}/ai-data`, {
+                      state: { bookTitle: b.book_title },
+                    });
+                  return (
+                  <TableRow
+                    key={b.book_id}
+                    className={hasAIData ? 'cursor-pointer' : undefined}
+                    onClick={hasAIData ? openAIData : undefined}
+                  >
+                    <TableCell onClick={(e) => e.stopPropagation()}>
                       <Checkbox
                         checked={selected.has(b.book_id)}
                         onCheckedChange={() => toggleSelect(b.book_id)}
@@ -335,7 +345,10 @@ const ProcessingPage = () => {
                     <TableCell className="text-xs text-muted-foreground max-w-[120px] truncate">
                       {b.current_step || '—'}
                     </TableCell>
-                    <TableCell className="text-right">
+                    <TableCell
+                      className="text-right"
+                      onClick={(e) => e.stopPropagation()}
+                    >
                       <div className="flex justify-end gap-1">
                         {(b.processing_status === 'completed' ||
                           b.processing_status === 'partial') && (
@@ -343,7 +356,11 @@ const ProcessingPage = () => {
                             variant="ghost"
                             size="icon"
                             className="h-7 w-7"
-                            onClick={() => setAiDataBook(b)}
+                            onClick={() =>
+                              navigate(`/processing/${b.book_id}/ai-data`, {
+                                state: { bookTitle: b.book_title },
+                              })
+                            }
                             title="View AI Data"
                           >
                             <Database className="h-4 w-4 text-primary" />
@@ -372,7 +389,8 @@ const ProcessingPage = () => {
                       </div>
                     </TableCell>
                   </TableRow>
-                ))
+                  );
+                })
               )}
             </TableBody>
           </Table>
@@ -398,16 +416,6 @@ const ProcessingPage = () => {
         token={token}
         tokenType={tt}
       />
-      {aiDataBook && (
-        <AIDataDialog
-          open={!!aiDataBook}
-          onClose={() => setAiDataBook(null)}
-          bookId={aiDataBook.book_id}
-          bookTitle={aiDataBook.book_title}
-          token={token}
-          tokenType={tt}
-        />
-      )}
     </div>
   );
 };
