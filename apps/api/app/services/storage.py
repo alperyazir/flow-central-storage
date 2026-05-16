@@ -100,6 +100,7 @@ class DeletionReport:
     bucket: str
     key: str
     objects_removed: int
+    bytes_removed: int = 0
     # Legacy alias for trash-based deletions
     @property
     def trash_bucket(self) -> str:
@@ -830,6 +831,7 @@ def delete_prefix_directly(
 
     total = len(objects)
     removed = 0
+    bytes_removed = 0
     for obj in objects:
         try:
             client.remove_object(bucket, obj.object_name)
@@ -837,11 +839,24 @@ def delete_prefix_directly(
             logger.error("Failed deleting object '%s/%s': %s", bucket, obj.object_name, exc)
             raise DirectDeletionError(f"Unable to delete object '{obj.object_name}'") from exc
         removed += 1
+        if obj.size is not None:
+            bytes_removed += int(obj.size)
         if on_progress is not None:
             on_progress(removed, total)
 
-    logger.info("Permanently deleted %d objects from %s/%s", removed, bucket, normalized_prefix)
-    return DeletionReport(bucket=bucket, key=normalized_prefix, objects_removed=removed)
+    logger.info(
+        "Permanently deleted %d objects (%d bytes) from %s/%s",
+        removed,
+        bytes_removed,
+        bucket,
+        normalized_prefix,
+    )
+    return DeletionReport(
+        bucket=bucket,
+        key=normalized_prefix,
+        objects_removed=removed,
+        bytes_removed=bytes_removed,
+    )
 
 
 def restore_prefix_from_trash(

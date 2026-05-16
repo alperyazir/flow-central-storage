@@ -5,13 +5,15 @@ Includes HTTP Range support for efficient audio/video streaming.
 
 from __future__ import annotations
 
+import asyncio
 import io
+import json
 import logging
 import re
 from datetime import timedelta
 from pathlib import PurePosixPath
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
@@ -168,6 +170,39 @@ def _build_teacher_object_key(teacher_id: str, relative_path: str | None = None)
         return f"{teacher_segment}/materials/"
     normalized_path = _normalize_relative_path(relative_path)
     return f"{teacher_segment}/materials/{normalized_path}"
+
+
+ACTIVITY_KINDS = ("images", "audio", "video")
+
+
+def _build_activity_object_key(
+    teacher_id: str,
+    activity_id: str,
+    kind: str | None = None,
+    filename: str | None = None,
+) -> str:
+    """Build the MinIO object key for activity media.
+
+    Path structure: {teacher_id}/activities/{activity_id}/{kind}/{filename}
+    """
+    teacher_segment = _sanitize_segment(teacher_id, "teacher_id")
+    activity_segment = _sanitize_segment(activity_id, "activity_id")
+    base = f"{teacher_segment}/activities/{activity_segment}"
+
+    if kind is None:
+        return f"{base}/"
+
+    if kind not in ACTIVITY_KINDS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"kind must be one of {ACTIVITY_KINDS}",
+        )
+
+    if filename is None:
+        return f"{base}/{kind}/"
+
+    file_segment = _sanitize_segment(filename, "filename")
+    return f"{base}/{kind}/{file_segment}"
 
 
 def _validate_file_type(content_type: str | None, settings) -> str:
@@ -339,6 +374,47 @@ async def list_all_teachers(
         ) from exc
 
     return {"teachers": sorted(teacher_ids)}
+
+
+@router.get("/{teacher_id}/usage")
+async def get_teacher_storage_usage(
+    teacher_id: str,
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+):
+    """Sum every object under a teacher's namespace (materials + activities).
+
+    The LMS uses this to render the storage bar from the actual R2 contents
+    instead of a drift-prone DB counter.
+    """
+    _require_admin(credentials, db)
+    settings = get_settings()
+    client = get_minio_client(settings)
+
+    teacher_segment = _sanitize_segment(teacher_id, "teacher_id")
+    prefix = f"{teacher_segment}/"
+
+    used_bytes = 0
+    object_count = 0
+    try:
+        for obj in client.list_objects(
+            settings.minio_teachers_bucket, prefix=prefix, recursive=True
+        ):
+            object_count += 1
+            if obj.size is not None:
+                used_bytes += int(obj.size)
+    except Exception as exc:
+        logger.error("Failed listing teacher usage '%s': %s", teacher_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to compute storage usage",
+        ) from exc
+
+    return {
+        "teacher_id": teacher_id,
+        "used_bytes": used_bytes,
+        "object_count": object_count,
+    }
 
 
 @router.get("/{teacher_id}/materials")
@@ -537,4 +613,281 @@ async def delete_teacher_material(
         "teacher_id": teacher_id,
         "path": path,
         "objects_removed": report.objects_removed,
+    }
+
+
+@router.post(
+    "/{teacher_id}/activities/{activity_id}/upload",
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_activity_media(
+    teacher_id: str,
+    activity_id: str,
+    file: UploadFile,
+    kind: str = Query(..., description="Media kind: images, audio, or video"),
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+):
+    """Upload a media file into a teacher's activity folder.
+
+    Path: {teacher_id}/activities/{activity_id}/{kind}/{filename}
+    """
+    _require_admin(credentials, db)
+    settings = get_settings()
+
+    if not file.filename:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File must have a filename",
+        )
+
+    if kind not in ACTIVITY_KINDS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"kind must be one of {ACTIVITY_KINDS}",
+        )
+
+    _validate_file_type(file.content_type, settings)
+
+    import os
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(delete=False) as tmp:
+        tmp_path = tmp.name
+        total_bytes = 0
+        while chunk := await file.read(1024 * 1024):
+            tmp.write(chunk)
+            total_bytes += len(chunk)
+            if total_bytes > settings.teacher_max_file_size_bytes:
+                # Outer `finally` re-tries the unlink — both calls are
+                # individually safe because we swallow OSError there.
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=f"File exceeds max size ({settings.teacher_max_file_size_bytes // 1024 // 1024}MB)",
+                )
+
+    try:
+        # Ensure the teacher record exists; activity uploads may precede any
+        # /upload call for new teachers.
+        _teacher_repository.get_or_create_by_teacher_id(db, teacher_id)
+        db.commit()
+
+        client = get_minio_client(settings)
+        object_key = _build_activity_object_key(teacher_id, activity_id, kind, file.filename)
+
+        await asyncio.to_thread(
+            client.fput_object,
+            settings.minio_teachers_bucket,
+            object_key,
+            tmp_path,
+            content_type=file.content_type or "application/octet-stream",
+        )
+
+        # Relative path stored in activity content_json (e.g. "images/q1.jpg").
+        file_segment = _sanitize_segment(file.filename, "filename")
+        relative_path = f"{kind}/{file_segment}"
+
+        logger.info(
+            "Uploaded activity media '%s' (%d bytes)",
+            object_key,
+            total_bytes,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Failed to upload activity media: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to upload file",
+        ) from exc
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+    return {
+        "teacher_id": teacher_id,
+        "activity_id": activity_id,
+        "kind": kind,
+        "path": relative_path,
+        "object_key": object_key,
+        "size": total_bytes,
+        "content_type": file.content_type,
+    }
+
+
+@router.get("/{teacher_id}/activities/{activity_id}/presigned")
+async def get_activity_media_presigned_url(
+    teacher_id: str,
+    activity_id: str,
+    path: str = Query(..., description="Relative path within activity folder, e.g. 'images/q1.jpg'"),
+    expires: int = Query(
+        3600, ge=60, le=86400, description="URL expiry in seconds (default 1h, max 24h)"
+    ),
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+):
+    """Presigned URL for an activity media file."""
+    _require_admin(credentials, db)
+    settings = get_settings()
+
+    normalized = _normalize_relative_path(path)
+    if "/" not in normalized:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="path must include kind segment, e.g. 'images/q1.jpg'",
+        )
+    kind, _, filename = normalized.partition("/")
+    object_key = _build_activity_object_key(teacher_id, activity_id, kind, filename)
+
+    client = get_minio_client(settings)
+    try:
+        client.stat_object(settings.minio_teachers_bucket, object_key)
+    except S3Error as exc:
+        if exc.code == "NoSuchKey":
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="File not found") from exc
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY, detail="Unable to verify object"
+        ) from exc
+
+    external_client = get_minio_client_external(settings)
+    presigned_url = external_client.presigned_get_object(
+        bucket_name=settings.minio_teachers_bucket,
+        object_name=object_key,
+        expires=timedelta(seconds=expires),
+    )
+
+    return {"url": presigned_url, "expires_in": expires}
+
+
+@router.put("/{teacher_id}/activities/{activity_id}/content")
+async def put_activity_content(
+    teacher_id: str,
+    activity_id: str,
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+):
+    """Write the activity's ``content.json`` to R2.
+
+    The body is the raw JSON payload; we store it verbatim alongside the media
+    so the activity folder is self-contained.
+    """
+    _require_admin(credentials, db)
+    settings = get_settings()
+    body = await request.body()
+    if not body:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Empty body")
+
+    object_key = (
+        _build_activity_object_key(teacher_id, activity_id) + "content.json"
+    )
+
+    client = get_minio_client(settings)
+    try:
+        await asyncio.to_thread(
+            client.put_object,
+            settings.minio_teachers_bucket,
+            object_key,
+            io.BytesIO(body),
+            length=len(body),
+            content_type="application/json",
+        )
+    except Exception as exc:
+        logger.error("Failed to write activity content.json '%s': %s", object_key, exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to write content.json",
+        ) from exc
+
+    logger.info("Wrote activity content.json '%s' (%d bytes)", object_key, len(body))
+    return {
+        "teacher_id": teacher_id,
+        "activity_id": activity_id,
+        "object_key": object_key,
+        "size": len(body),
+    }
+
+
+@router.get("/{teacher_id}/activities/{activity_id}/content")
+async def get_activity_content(
+    teacher_id: str,
+    activity_id: str,
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+):
+    """Read the activity's ``content.json`` from R2."""
+    _require_admin(credentials, db)
+    settings = get_settings()
+
+    object_key = (
+        _build_activity_object_key(teacher_id, activity_id) + "content.json"
+    )
+
+    client = get_minio_client(settings)
+    try:
+        obj = client.get_object(settings.minio_teachers_bucket, object_key)
+        try:
+            data = obj.read()
+        finally:
+            obj.close()
+            obj.release_conn()
+    except S3Error as exc:
+        if exc.code == "NoSuchKey":
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="content.json not found") from exc
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to read content.json",
+        ) from exc
+
+    try:
+        return json.loads(data)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="content.json is not valid JSON",
+        ) from exc
+
+
+@router.delete("/{teacher_id}/activities/{activity_id}")
+async def delete_activity_folder(
+    teacher_id: str,
+    activity_id: str,
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+):
+    """Recursively delete every media file under an activity folder."""
+    _require_admin(credentials, db)
+    db.close()
+
+    settings = get_settings()
+    client = get_minio_client(settings)
+
+    prefix = _build_activity_object_key(teacher_id, activity_id)
+
+    try:
+        report = delete_prefix_directly(
+            client=client,
+            bucket=settings.minio_teachers_bucket,
+            prefix=prefix,
+        )
+    except DirectDeletionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to delete activity",
+        ) from exc
+
+    logger.info(
+        "Deleted activity folder '%s'; %d objects removed",
+        prefix,
+        report.objects_removed,
+    )
+
+    return {
+        "deleted": True,
+        "teacher_id": teacher_id,
+        "activity_id": activity_id,
+        "objects_removed": report.objects_removed,
+        "bytes_removed": report.bytes_removed,
     }
