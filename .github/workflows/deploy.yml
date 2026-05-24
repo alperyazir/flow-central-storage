@@ -46,8 +46,12 @@ jobs:
         with:
           context: ./apps/admin-panel
           push: true
+          # Build with a sentinel placeholder; the real API URL is
+          # substituted at container startup from the API_BASE_URL env
+          # var (see apps/admin-panel/docker-entrypoint.sh). One image,
+          # any domain.
           build-args: |
-            VITE_API_BASE_URL=https://storage-api.dreamedtech.com
+            VITE_API_BASE_URL=__VITE_API_BASE_URL__
           tags: |
             ${{ env.ADMIN_IMAGE }}:${{ github.sha }}
             ${{ env.ADMIN_IMAGE }}:latest
