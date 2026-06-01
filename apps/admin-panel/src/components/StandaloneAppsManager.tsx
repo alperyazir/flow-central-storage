@@ -78,6 +78,7 @@ const StandaloneAppsManager = () => {
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadPlat, setUploadPlat] = useState('');
   const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadVersion, setUploadVersion] = useState('');
   const [uploading, setUploading] = useState(false);
   const [uploadFb, setUploadFb] = useState<{
     type: 'success' | 'error';
@@ -115,7 +116,7 @@ const StandaloneAppsManager = () => {
     setUploadOpen(false);
 
     try {
-      await uploadTemplate(uploadPlat, uploadFile, token, tt);
+      await uploadTemplate(uploadPlat, uploadFile, token, tt, uploadVersion);
       updateOperation(opId, { status: 'completed', progress: 100, detail: 'Upload complete' });
       await load();
     } catch (e) {
@@ -147,6 +148,7 @@ const StandaloneAppsManager = () => {
           onClick={() => {
             setUploadPlat('');
             setUploadFile(null);
+            setUploadVersion('');
             setUploadFb(null);
             setUploadOpen(true);
           }}
@@ -172,6 +174,7 @@ const StandaloneAppsManager = () => {
               <TableHeader>
                 <TableRow>
                   <TableHead>Platform</TableHead>
+                  <TableHead>Version</TableHead>
                   <TableHead>File Size</TableHead>
                   <TableHead>Uploaded</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
@@ -181,7 +184,7 @@ const StandaloneAppsManager = () => {
                 {!templates.length ? (
                   <TableRow>
                     <TableCell
-                      colSpan={4}
+                      colSpan={5}
                       className="text-center py-12 text-muted-foreground"
                     >
                       No templates uploaded
@@ -194,6 +197,9 @@ const StandaloneAppsManager = () => {
                         <div className="flex items-center gap-2">
                           {platIcon(t.platform)} {platLabel(t.platform)}
                         </div>
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">
+                        {t.version || '—'}
                       </TableCell>
                       <TableCell>{fmtBytes(t.file_size)}</TableCell>
                       <TableCell>{fmtDate(t.uploaded_at)}</TableCell>
@@ -268,6 +274,23 @@ const StandaloneAppsManager = () => {
                 disabled={uploading}
                 className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm file:border-0 file:bg-transparent file:text-sm file:font-medium"
               />
+            </div>
+            <div className="space-y-2">
+              <Label>Version (optional)</Label>
+              <input
+                type="text"
+                value={uploadVersion}
+                onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                  setUploadVersion(e.target.value)
+                }
+                placeholder="e.g. 1.5.1"
+                disabled={uploading}
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
+              />
+              <p className="text-xs text-muted-foreground">
+                Stamped onto bundles built from this template, so outdated
+                bundles can be spotted later.
+              </p>
             </div>
             {uploading && (
               <Progress value={undefined} className="animate-pulse" />

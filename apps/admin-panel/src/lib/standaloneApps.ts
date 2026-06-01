@@ -7,6 +7,7 @@ export interface TemplateInfo {
   file_size: number;
   uploaded_at: string;
   download_url: string;
+  version?: string | null;
 }
 
 export interface TemplateListResponse {
@@ -17,6 +18,7 @@ export interface TemplateUploadResponse {
   platform: string;
   file_name: string;
   file_size: number;
+  version?: string | null;
   message: string;
 }
 
@@ -87,6 +89,8 @@ export interface BundleInfo {
   created_at: string;
   object_name: string;
   download_url: string | null;
+  version?: string | null;
+  stale?: boolean | null;
 }
 
 export interface BundleListResponse {
@@ -119,10 +123,15 @@ export const uploadTemplate = async (
   file: File,
   token: string,
   tokenType: string = 'Bearer',
+  version?: string,
   client: ApiClient = apiClient
 ): Promise<TemplateUploadResponse> => {
   const formData = new FormData();
   formData.append('file', file);
+  const trimmed = version?.trim();
+  if (trimmed) {
+    formData.append('version', trimmed);
+  }
 
   return client.postForm<TemplateUploadResponse>(
     `/standalone-apps/${platform}/upload`,

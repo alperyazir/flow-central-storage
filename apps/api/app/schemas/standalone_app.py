@@ -16,6 +16,7 @@ class TemplateInfo(BaseModel):
     file_size: int = Field(..., description="Size of the template in bytes")
     uploaded_at: datetime = Field(..., description="Timestamp when template was uploaded")
     download_url: str = Field(..., description="Presigned URL to download the template")
+    version: str | None = Field(None, description="App version string entered at upload (e.g. 1.5.1)")
 
 
 class TemplateListResponse(BaseModel):
@@ -30,6 +31,7 @@ class TemplateUploadResponse(BaseModel):
     platform: str
     file_name: str
     file_size: int
+    version: str | None = None
     message: str = "Template uploaded successfully"
 
 
@@ -64,6 +66,11 @@ class BundleInfo(BaseModel):
     created_at: datetime = Field(..., description="When bundle was created")
     object_name: str = Field(..., description="Full object path in storage")
     download_url: str | None = Field(None, description="Presigned download URL")
+    version: str | None = Field(None, description="App/template version this bundle was built with")
+    stale: bool | None = Field(
+        None,
+        description="True if built with an older version than the current template; None if unknown (no version stamp)",
+    )
 
 
 class BundleListResponse(BaseModel):

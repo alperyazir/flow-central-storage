@@ -14,6 +14,7 @@ import {
   ChevronRight,
   Paperclip,
   BookOpen,
+  AlertTriangle,
 } from 'lucide-react';
 
 import { Card, CardContent } from 'components/ui/card';
@@ -627,8 +628,8 @@ const BundlesPage = () => {
                               {bundles.map((b) => (
                                 <div
                                   key={b.object_name}
-                                  title={`${b.file_name} — ${fmtBytes(b.file_size)}`}
-                                  className="group/chip flex items-center gap-1 rounded-md border bg-background px-2 py-1 text-xs min-w-[150px] hover:bg-accent/30"
+                                  title={`${b.file_name} — ${fmtBytes(b.file_size)}${b.version ? ` — app v${b.version}` : ' — no version stamp'}${b.stale ? ' (STALE: older than current template)' : ''}`}
+                                  className={`group/chip flex items-center gap-1 rounded-md border px-2 py-1 text-xs min-w-[150px] hover:bg-accent/30 ${b.stale ? 'border-amber-500/50 bg-amber-500/5' : 'bg-background'}`}
                                 >
                                   {b.platform === 'mac' ? (
                                     <Apple className="h-3 w-3" />
@@ -638,6 +639,14 @@ const BundlesPage = () => {
                                   <span className="font-medium">
                                     {PLATFORM_LABELS[b.platform as StandalonePlatform] || b.platform}
                                   </span>
+                                  {b.version && (
+                                    <span className="text-[10px] text-muted-foreground tabular-nums">
+                                      v{b.version}
+                                    </span>
+                                  )}
+                                  {b.stale && (
+                                    <AlertTriangle className="h-3 w-3 text-amber-500 shrink-0" />
+                                  )}
                                   <span className="ml-auto text-muted-foreground tabular-nums">
                                     {fmtBytes(b.file_size)}
                                   </span>

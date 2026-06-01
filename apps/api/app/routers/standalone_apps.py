@@ -6,7 +6,7 @@ import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Response, UploadFile, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
@@ -140,6 +140,7 @@ def list_all_templates(
                     file_size=meta.file_size,
                     uploaded_at=meta.uploaded_at,
                     download_url=download_url,
+                    version=meta.version,
                 )
             )
         except Exception as exc:
@@ -152,6 +153,7 @@ def list_all_templates(
 async def upload_template_endpoint(
     platform: str,
     file: UploadFile,
+    version: str | None = Form(default=None),
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
     db: Session = Depends(get_db),
 ) -> TemplateUploadResponse:
@@ -161,6 +163,9 @@ async def upload_template_endpoint(
 
     - **platform**: Target platform (mac, win, linux)
     - **file**: Zip file containing the app template
+    - **version**: Optional app version string (e.g. "1.5.1"). Stored as object
+      metadata and stamped onto bundles built from this template, so stale
+      bundles can be detected later.
     """
     import asyncio
 
@@ -191,6 +196,7 @@ async def upload_template_endpoint(
             platform=platform,
             file_data=file_data,
             file_name=file.filename,
+            version=version,
         )
     except InvalidPlatformError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -205,6 +211,7 @@ async def upload_template_endpoint(
         platform=metadata.platform,
         file_name=metadata.file_name,
         file_size=metadata.file_size,
+        version=metadata.version,
     )
 
 
@@ -521,6 +528,8 @@ def list_bundles_endpoint(
             created_at=b.created_at,
             object_name=b.object_name,
             download_url=b.download_url,
+            version=b.version,
+            stale=b.stale,
         )
         for b in bundles_data
     ]

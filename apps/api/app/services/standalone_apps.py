@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 TEMPLATE_PREFIX = "standalone-templates"
 BUNDLE_PREFIX = "bundles"
 ALLOWED_PLATFORMS = {"mac", "win", "win7-8", "linux"}
+# R2/MinIO user-metadata key holding the app version a template/bundle carries.
+# Stored as x-amz-meta-app-version on the object; read back via stat_object.
+APP_VERSION_META_KEY = "app-version"
 PRESIGNED_URL_EXPIRY_SECONDS = 21600  # 6 hours
 TEMPLATE_CACHE_DIR = Path(tempfile.gettempdir()) / "fcs_template_cache"
 ASSET_DOWNLOAD_WORKERS = 8  # concurrent R2 downloads
@@ -100,6 +103,7 @@ class TemplateMetadata:
     file_size: int
     uploaded_at: datetime
     object_name: str
+    version: str | None = None
 
 
 @dataclass(slots=True)
@@ -114,6 +118,8 @@ class BundleMetadata:
     created_at: datetime
     object_name: str
     download_url: str | None = None
+    version: str | None = None
+    stale: bool | None = None
 
 
 def _get_template_object_name(platform: str) -> str:
@@ -129,12 +135,37 @@ def _validate_platform(platform: str) -> str:
     return normalized
 
 
+def _extract_version_from_metadata(metadata: dict | None) -> str | None:
+    """Pull the app version out of an object's user metadata.
+
+    R2/MinIO surface user metadata as ``x-amz-meta-app-version`` (case varies),
+    so match on the suffix rather than an exact key.
+    """
+    if not metadata:
+        return None
+    for key, value in metadata.items():
+        if key.lower().replace("x-amz-meta-", "") == APP_VERSION_META_KEY:
+            return value or None
+    return None
+
+
+def get_template_version(client: Minio, bucket: str, platform: str) -> str | None:
+    """Return the version stamped on a platform's current template, or None."""
+    try:
+        object_name = _get_template_object_name(_validate_platform(platform))
+        stat = client.stat_object(bucket, object_name)
+        return _extract_version_from_metadata(getattr(stat, "metadata", None))
+    except (S3Error, InvalidPlatformError):
+        return None
+
+
 def upload_template(
     client: Minio,
     bucket: str,
     platform: str,
     file_data: bytes,
     file_name: str,
+    version: str | None = None,
 ) -> TemplateMetadata:
     """Upload a standalone app template to MinIO.
 
@@ -144,6 +175,8 @@ def upload_template(
         platform: Platform identifier (mac, win, linux)
         file_data: Template zip file contents
         file_name: Original filename
+        version: Optional app version string (e.g. "1.5.1") stored as object
+            metadata so bundles built from this template can be stamped with it.
 
     Returns:
         TemplateMetadata with upload information
@@ -157,12 +190,15 @@ def upload_template(
     data_stream = io.BytesIO(file_data)
     file_size = len(file_data)
 
+    version = (version or "").strip() or None
+
     client.put_object(
         bucket_name=bucket,
         object_name=object_name,
         data=data_stream,
         length=file_size,
         content_type="application/zip",
+        metadata={APP_VERSION_META_KEY: version} if version else None,
     )
 
     # Update local cache
@@ -184,6 +220,7 @@ def upload_template(
         file_size=file_size,
         uploaded_at=datetime.now(timezone.utc),
         object_name=object_name,
+        version=version,
     )
 
 
@@ -218,6 +255,14 @@ def list_templates(
             if platform not in ALLOWED_PLATFORMS:
                 continue
 
+            # list_objects doesn't return user metadata (and never does on
+            # S3/R2), so stat the object to read the version stamp.
+            try:
+                stat = client.stat_object(bucket, obj.object_name)
+                version = _extract_version_from_metadata(getattr(stat, "metadata", None))
+            except S3Error:
+                version = None
+
             templates.append(
                 TemplateMetadata(
                     platform=platform,
@@ -225,6 +270,7 @@ def list_templates(
                     file_size=obj.size,
                     uploaded_at=obj.last_modified,
                     object_name=obj.object_name,
+                    version=version,
                 )
             )
 
@@ -380,13 +426,14 @@ def create_bundle(
     normalized_platform = _validate_platform(platform)
     template_object_name = _get_template_object_name(normalized_platform)
 
-    # Check template exists
+    # Check template exists + capture its version stamp to carry onto the bundle
     try:
-        client.stat_object(apps_bucket, template_object_name)
+        template_stat = client.stat_object(apps_bucket, template_object_name)
     except S3Error as exc:
         if exc.code == "NoSuchKey":
             raise TemplateNotFoundError(f"Template for platform '{normalized_platform}' not found") from exc
         raise
+    template_version = _extract_version_from_metadata(getattr(template_stat, "metadata", None))
 
     # Check if bundle already exists (unless force=True)
     if not force:
@@ -530,6 +577,7 @@ def create_bundle(
                 bundle_object_name,
                 bundle_path,
                 content_type="application/zip",
+                metadata={APP_VERSION_META_KEY: template_version} if template_version else None,
             )
 
             # 7. Generate presigned URL
@@ -573,6 +621,9 @@ def list_bundles(
     bundles = []
     prefix = f"{BUNDLE_PREFIX}/"
 
+    # Current template version per platform, to flag stale bundles.
+    current_versions = {p: get_template_version(client, bucket, p) for p in ALLOWED_PLATFORMS}
+
     try:
         objects = client.list_objects(bucket, prefix=prefix, recursive=True)
 
@@ -610,6 +661,17 @@ def list_bundles(
             except S3Error:
                 download_url = None
 
+            # Version stamp (built-with) + staleness vs current template.
+            try:
+                stat = client.stat_object(bucket, obj.object_name)
+                version = _extract_version_from_metadata(getattr(stat, "metadata", None))
+            except S3Error:
+                version = None
+            current = current_versions.get(platform)
+            # Only assert staleness when both versions are known; otherwise
+            # leave it unknown (None) rather than guessing.
+            stale = (version != current) if (version and current) else None
+
             bundles.append(
                 BundleMetadata(
                     publisher_name=publisher_name,
@@ -620,6 +682,8 @@ def list_bundles(
                     created_at=obj.last_modified,
                     object_name=obj.object_name,
                     download_url=download_url,
+                    version=version,
+                    stale=stale,
                 )
             )
 

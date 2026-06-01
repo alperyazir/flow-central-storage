@@ -1874,11 +1874,13 @@ async def create_bundle_task(
     from app.services import get_minio_client, get_minio_client_external
     from app.services.standalone_apps import (
         ALLOWED_PLATFORMS,
+        APP_VERSION_META_KEY,
         BUNDLE_PREFIX,
         PRESIGNED_URL_EXPIRY_SECONDS,
         TEMPLATE_PREFIX,
         InvalidPlatformError,
         TemplateNotFoundError,
+        _extract_version_from_metadata,
         should_skip_bundled_path,
     )
 
@@ -1935,12 +1937,13 @@ async def create_bundle_task(
 
         template_object_name = f"{TEMPLATE_PREFIX}/{normalized_platform}.zip"
 
-        # Check template exists
+        # Check template exists + capture its version stamp for the bundle
         await update_progress(5, "Checking template...")
         try:
-            client.stat_object(apps_bucket, template_object_name)
+            template_stat = client.stat_object(apps_bucket, template_object_name)
         except Exception as exc:
             raise TemplateNotFoundError(f"Template for platform '{normalized_platform}' not found") from exc
+        template_version = _extract_version_from_metadata(getattr(template_stat, "metadata", None))
 
         # Check if bundle already exists (unless force=True)
         if not force:
@@ -2117,6 +2120,7 @@ async def create_bundle_task(
                 bundle_object_name,
                 bundle_path,
                 content_type="application/zip",
+                metadata={APP_VERSION_META_KEY: template_version} if template_version else None,
             )
             await update_progress(98, "Bundle uploaded")
 
