@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import io
 import logging
 import os
@@ -311,20 +312,29 @@ def _update_config_paths(
     rename_map: dict[str, str],
     book_name: str | None = None,
     original_book_folder: str | None = None,
+    known_paths: Iterable[str] | None = None,
 ) -> bytes:
-    """Replace file references in config.json / games.json using the rename map.
+    """Replace file references in config.json / games.json so they match storage.
 
-    Normalizes every path-like string value by applying _normalize_part
-    to each segment. The book folder segment is replaced with the canonical
-    book_name (the actual storage folder) when it can be identified:
-      - it follows a ``books`` segment (case-insensitive), or
-      - it matches ``original_book_folder`` — the root folder stripped from
-        the archive — once both are run through _normalize_part.
+    Each path-like value is rewritten in two parts:
 
-    Matching on the original folder keeps config references in sync with the
-    storage folder even when the path has no ``books/`` marker and the two
-    spellings would otherwise transliterate differently (e.g. config carries
-    the real ``ö`` while the storage folder kept the publisher's ``oe``).
+    1. The book folder segment is replaced with the canonical ``book_name``
+       (the actual storage folder) when it can be identified — it follows a
+       ``books`` segment (case-insensitive) or it matches
+       ``original_book_folder`` (the root folder stripped from the archive)
+       once both are run through ``_normalize_part``.
+
+    2. The remainder (the path *inside* the book folder) is resolved against
+       ``known_paths`` — the relative paths of the files actually uploaded.
+       An exact match after per-segment normalization is preferred; otherwise
+       the closest real file with the same basename and depth is used.
+
+    Resolving against the real files is what fixes publishers whose
+    config.json spells a folder differently from the folder on disk — e.g. the
+    real ``ö`` in config (``Schildkröte`` -> ``Schildkrote``) vs the ``oe``
+    transliteration of the actual folder (``Schildkroete``). Per-segment
+    normalization alone produces two different spellings; matching the uploaded
+    file reconciles them.
     """
     config_text = config_bytes.decode("utf-8")
     config_data = json.loads(config_text)
@@ -336,24 +346,68 @@ def _update_config_paths(
     # to the same value is recognised as the book folder regardless of spelling.
     original_key = _normalize_part(original_book_folder) if original_book_folder else None
 
+    # Index the actually-uploaded relative paths for resolution.
+    known_set: set[str] = set(known_paths or ())
+    by_basename: dict[str, list[str]] = {}
+    for kp in known_set:
+        by_basename.setdefault(kp.rsplit("/", 1)[-1], []).append(kp)
+
+    def _normalize_rel(rel: str) -> str:
+        return "/".join(_normalize_part(p) for p in rel.split("/"))
+
+    def resolve_relative(rel: str) -> str:
+        """Map a config-relative path to the real uploaded file path."""
+        norm = _normalize_rel(rel)
+        if not known_set or norm in known_set:
+            return norm
+        # Spelling mismatch (e.g. ö vs oe): fall back to the closest real file
+        # that shares the basename and directory depth.
+        basename = norm.rsplit("/", 1)[-1]
+        depth = norm.count("/")
+        best, best_ratio = None, 0.0
+        for cand in by_basename.get(basename, ()):
+            if cand.count("/") != depth:
+                continue
+            ratio = difflib.SequenceMatcher(None, norm, cand).ratio()
+            if ratio > best_ratio:
+                best, best_ratio = cand, ratio
+        return best if best is not None and best_ratio >= 0.85 else norm
+
+    def _is_book_folder(part: str, prev_norm: str) -> bool:
+        if not book_name:
+            return False
+        return prev_norm.lower() == "books" or (
+            original_key is not None and _normalize_part(part) == original_key
+        )
+
     def normalize_path_value(val: str) -> str:
         """Normalize a config path like ./books/Countdown 2 SB/images/1.PNG"""
         if not _path_re.search(val):
             return val
         parts = val.split("/")
-        normalized = []
+
+        # Locate the book folder so we can canonicalise it and resolve the rest
+        # of the path against the files that were actually uploaded.
+        normalized: list[str] = []
+        book_idx: int | None = None
         for i, part in enumerate(parts):
             if part in (".", "..") or not part:
                 normalized.append(part)
-            # Replace the book folder name: either it follows a "books" segment,
-            # or it matches the original (pre-normalization) book folder name.
-            elif book_name and (
-                (i > 0 and normalized and normalized[-1].lower() == "books")
-                or (original_key and _normalize_part(part) == original_key)
-            ):
-                normalized.append(book_name)
-            else:
-                normalized.append(_normalize_part(part))
+                continue
+            prev_norm = normalized[-1] if normalized else ""
+            if _is_book_folder(part, prev_norm):
+                book_idx = i
+                break
+            normalized.append(_normalize_part(part))
+
+        if book_idx is None:
+            # No book folder in this path — normalize each segment as before.
+            return "/".join(normalized)
+
+        normalized.append(book_name)
+        rel = "/".join(parts[book_idx + 1:])
+        if rel:
+            normalized.append(resolve_relative(rel))
         return "/".join(normalized)
 
     def replace_paths(obj):
@@ -418,6 +472,10 @@ def upload_book_archive(
         if rename_map:
             logger.info("Normalizing %d filenames during upload", len(rename_map))
 
+        # Relative paths of every file actually uploaded — used to reconcile
+        # config.json references against the real on-disk spelling.
+        known_paths = [rename_map.get(fp, fp) for _entry, fp in entries]
+
         manifest: list[dict[str, object]] = []
         for idx, (entry, final_path) in enumerate(entries):
             # Normalize the filename
@@ -432,7 +490,11 @@ def upload_book_archive(
                 if lower_name.endswith("config.json") or lower_name.endswith("games.json"):
                     try:
                         data = _update_config_paths(
-                            data, rename_map, book_name=book_name, original_book_folder=root_to_strip
+                            data,
+                            rename_map,
+                            book_name=book_name,
+                            original_book_folder=root_to_strip,
+                            known_paths=known_paths,
                         )
                         logger.info("Updated file references in %s", os.path.basename(final_path))
                     except Exception as exc:
