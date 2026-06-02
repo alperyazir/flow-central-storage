@@ -306,18 +306,35 @@ def _build_rename_map(entries: list[tuple[zipfile.ZipInfo, str]]) -> dict[str, s
     return rename_map
 
 
-def _update_config_paths(config_bytes: bytes, rename_map: dict[str, str], book_name: str | None = None) -> bytes:
+def _update_config_paths(
+    config_bytes: bytes,
+    rename_map: dict[str, str],
+    book_name: str | None = None,
+    original_book_folder: str | None = None,
+) -> bytes:
     """Replace file references in config.json / games.json using the rename map.
 
     Normalizes every path-like string value by applying _normalize_part
-    to each segment. The book folder segment (after ./books/) is replaced
-    with the normalized book_name if provided.
+    to each segment. The book folder segment is replaced with the canonical
+    book_name (the actual storage folder) when it can be identified:
+      - it follows a ``books`` segment (case-insensitive), or
+      - it matches ``original_book_folder`` — the root folder stripped from
+        the archive — once both are run through _normalize_part.
+
+    Matching on the original folder keeps config references in sync with the
+    storage folder even when the path has no ``books/`` marker and the two
+    spellings would otherwise transliterate differently (e.g. config carries
+    the real ``ö`` while the storage folder kept the publisher's ``oe``).
     """
     config_text = config_bytes.decode("utf-8")
     config_data = json.loads(config_text)
 
     # Path pattern: starts with ./ or contains / with a file extension
     _path_re = re.compile(r"^\./|/.*\.\w+$")
+
+    # Canonical key for the original book folder, so a segment that normalizes
+    # to the same value is recognised as the book folder regardless of spelling.
+    original_key = _normalize_part(original_book_folder) if original_book_folder else None
 
     def normalize_path_value(val: str) -> str:
         """Normalize a config path like ./books/Countdown 2 SB/images/1.PNG"""
@@ -328,8 +345,12 @@ def _update_config_paths(config_bytes: bytes, rename_map: dict[str, str], book_n
         for i, part in enumerate(parts):
             if part in (".", "..") or not part:
                 normalized.append(part)
-            # Replace the book folder name (segment after "books")
-            elif book_name and i > 0 and normalized and normalized[-1] == "books":
+            # Replace the book folder name: either it follows a "books" segment,
+            # or it matches the original (pre-normalization) book folder name.
+            elif book_name and (
+                (i > 0 and normalized and normalized[-1].lower() == "books")
+                or (original_key and _normalize_part(part) == original_key)
+            ):
                 normalized.append(book_name)
             else:
                 normalized.append(_normalize_part(part))
@@ -410,7 +431,9 @@ def upload_book_archive(
                 lower_name = final_path.lower()
                 if lower_name.endswith("config.json") or lower_name.endswith("games.json"):
                     try:
-                        data = _update_config_paths(data, rename_map, book_name=book_name)
+                        data = _update_config_paths(
+                            data, rename_map, book_name=book_name, original_book_folder=root_to_strip
+                        )
                         logger.info("Updated file references in %s", os.path.basename(final_path))
                     except Exception as exc:
                         logger.warning("Failed to update %s paths: %s", os.path.basename(final_path), exc)
