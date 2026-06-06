@@ -18,6 +18,9 @@ class PublisherBase(BaseModel):
     logo_url: str | None = Field(default=None, max_length=512)
     contact_email: str | None = Field(default=None, max_length=255)
     status: str = Field(default="active", max_length=20)
+    parent_publisher_id: int | None = Field(
+        default=None, description="Parent (umbrella) publisher id; NULL = top-level"
+    )
 
 
 class PublisherCreate(PublisherBase):
@@ -36,6 +39,7 @@ class PublisherUpdate(BaseModel):
     logo_url: str | None = Field(default=None, max_length=512)
     contact_email: str | None = Field(default=None, max_length=255)
     status: str | None = Field(default=None, max_length=20)
+    parent_publisher_id: int | None = Field(default=None)
 
 
 class PublisherRead(PublisherBase):

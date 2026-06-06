@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
+  CornerDownRight,
   Loader2,
   Pencil,
   Plus,
@@ -145,6 +146,40 @@ const PublishersPage = () => {
   const toggleSort = (f: SortField) =>
     setSort((c) => ({ f, d: c.f === f && c.d === 'asc' ? 'desc' : 'asc' }));
 
+  // Lookup parent display name by id for the "Parent" column.
+  const nameById = useMemo(() => {
+    const m: Record<number, string> = {};
+    for (const p of publishers) m[p.id] = p.display_name || p.name;
+    return m;
+  }, [publishers]);
+
+  // Group sub-publishers directly under their parent (umbrella view): each
+  // top-level publisher is followed by its children, indented. A child whose
+  // parent is filtered out falls back to a top-level row. Sibling order keeps
+  // the active column sort (`filtered` is already sorted).
+  const groupedRows = useMemo(() => {
+    const childrenByParent = new Map<number, Publisher[]>();
+    const roots: Publisher[] = [];
+    const presentIds = new Set(filtered.map((p) => p.id));
+    for (const p of filtered) {
+      if (p.parent_publisher_id != null && presentIds.has(p.parent_publisher_id)) {
+        const arr = childrenByParent.get(p.parent_publisher_id) ?? [];
+        arr.push(p);
+        childrenByParent.set(p.parent_publisher_id, arr);
+      } else {
+        roots.push(p);
+      }
+    }
+    const out: { pub: Publisher; depth: number }[] = [];
+    for (const r of roots) {
+      out.push({ pub: r, depth: 0 });
+      for (const c of childrenByParent.get(r.id) ?? []) {
+        out.push({ pub: c, depth: 1 });
+      }
+    }
+    return out;
+  }, [filtered]);
+
   const handleDelete = async () => {
     if (!deleteTarget || !token) return;
     try {
@@ -230,6 +265,7 @@ const PublishersPage = () => {
                     <TableHead className="w-16">Logo</TableHead>
                     <SortHead field="name" label="Name" />
                     <SortHead field="display_name" label="Display Name" />
+                    <TableHead>Parent</TableHead>
                     <TableHead className="text-center">Books</TableHead>
                     <SortHead field="status" label="Status" />
                     <TableHead className="text-right">Actions</TableHead>
@@ -239,14 +275,14 @@ const PublishersPage = () => {
                   {!filtered.length ? (
                     <TableRow>
                       <TableCell
-                        colSpan={6}
+                        colSpan={7}
                         className="text-center py-8 text-muted-foreground"
                       >
                         No publishers found
                       </TableCell>
                     </TableRow>
                   ) : (
-                    filtered.map((p) => (
+                    groupedRows.map(({ pub: p, depth }) => (
                       <TableRow
                         key={p.id}
                         className="cursor-pointer"
@@ -267,8 +303,27 @@ const PublishersPage = () => {
                             </div>
                           )}
                         </TableCell>
-                        <TableCell className="font-medium">{p.name}</TableCell>
+                        <TableCell className="font-medium">
+                          {depth > 0 ? (
+                            <span className="flex items-center gap-1.5 pl-6 text-muted-foreground">
+                              <CornerDownRight className="h-3.5 w-3.5 shrink-0 opacity-60" />
+                              <span className="text-foreground">{p.name}</span>
+                            </span>
+                          ) : (
+                            p.name
+                          )}
+                        </TableCell>
                         <TableCell>{p.display_name || '—'}</TableCell>
+                        <TableCell>
+                          {p.parent_publisher_id != null ? (
+                            <Badge variant="secondary">
+                              {nameById[p.parent_publisher_id] ??
+                                `#${p.parent_publisher_id}`}
+                            </Badge>
+                          ) : (
+                            '—'
+                          )}
+                        </TableCell>
                         <TableCell className="text-center">
                           <Badge variant="outline">
                             {bookCounts[p.id] ?? 0}

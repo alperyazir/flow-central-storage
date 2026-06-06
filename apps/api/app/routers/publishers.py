@@ -181,6 +181,7 @@ def list_publishers(
             description=p.description,
             contact_email=p.contact_email,
             status=p.status,
+            parent_publisher_id=p.parent_publisher_id,
             created_at=p.created_at,
             updated_at=p.updated_at,
             logo_url=f"/publishers/{p.id}/logo",
@@ -214,6 +215,7 @@ def list_trashed_publishers(
             description=p.description,
             contact_email=p.contact_email,
             status=p.status,
+            parent_publisher_id=p.parent_publisher_id,
             created_at=p.created_at,
             updated_at=p.updated_at,
             logo_url=f"/publishers/{p.id}/logo",
@@ -281,6 +283,14 @@ def update_publisher(
     update_data = payload.model_dump(exclude_unset=True)
     if not update_data:
         return PublisherRead.model_validate(publisher)
+
+    # Guard against a publisher being its own parent. Hierarchy is single-level
+    # so deeper cycle checks aren't needed.
+    if update_data.get("parent_publisher_id") == publisher_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A publisher cannot be its own parent",
+        )
 
     try:
         updated = _publisher_repository.update(db, publisher, data=update_data)

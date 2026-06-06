@@ -24,6 +24,7 @@ import { Separator } from 'components/ui/separator';
 import { Alert, AlertDescription } from 'components/ui/alert';
 import {
   createPublisher,
+  fetchPublishers,
   updatePublisher,
   type Publisher,
 } from 'lib/publishers';
@@ -59,6 +60,9 @@ export function PublisherFormDialog({
   const [description, setDescription] = useState('');
   const [contactEmail, setContactEmail] = useState('');
   const [status, setStatus] = useState<string>('active');
+  // Umbrella hierarchy: parent ("şemsiye") publisher. 'none' = top-level.
+  const [parentPublisherId, setParentPublisherId] = useState<string>('none');
+  const [parentOptions, setParentOptions] = useState<Publisher[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [emailError, setEmailError] = useState('');
@@ -71,12 +75,23 @@ export function PublisherFormDialog({
 
   useEffect(() => {
     if (!open) return;
+    // Load publishers to populate the parent dropdown.
+    if (token && tokenType) {
+      fetchPublishers(token, tokenType)
+        .then(setParentOptions)
+        .catch(() => setParentOptions([]));
+    }
     if (publisher) {
       setName(publisher.name);
       setDisplayName(publisher.display_name || '');
       setDescription(publisher.description || '');
       setContactEmail(publisher.contact_email || '');
       setStatus(publisher.status);
+      setParentPublisherId(
+        publisher.parent_publisher_id != null
+          ? String(publisher.parent_publisher_id)
+          : 'none'
+      );
       // Load AI settings
       if (token && tokenType) {
         setAiSettingsLoading(true);
@@ -97,6 +112,7 @@ export function PublisherFormDialog({
       setDescription('');
       setContactEmail('');
       setStatus('active');
+      setParentPublisherId('none');
       setAiAutoProcess(null);
       setAiPriority('');
       setAiAudioLanguages([]);
@@ -132,6 +148,8 @@ export function PublisherFormDialog({
         description: description.trim() || undefined,
         contact_email: contactEmail.trim() || undefined,
         status,
+        parent_publisher_id:
+          parentPublisherId === 'none' ? null : Number(parentPublisherId),
       };
 
       let publisherId: number;
@@ -238,6 +256,31 @@ export function PublisherFormDialog({
                 <SelectItem value="suspended">Suspended</SelectItem>
               </SelectContent>
             </Select>
+          </div>
+          <div className="space-y-2">
+            <Label>Parent Publisher</Label>
+            <Select
+              value={parentPublisherId}
+              onValueChange={setParentPublisherId}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">None (top-level)</SelectItem>
+                {parentOptions
+                  .filter((p) => !publisher || p.id !== publisher.id)
+                  .map((p) => (
+                    <SelectItem key={p.id} value={String(p.id)}>
+                      {p.display_name || p.name}
+                    </SelectItem>
+                  ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              Group this publisher under an umbrella publisher. Leave as
+              "None" for a standalone / top-level publisher.
+            </p>
           </div>
 
           <Separator />

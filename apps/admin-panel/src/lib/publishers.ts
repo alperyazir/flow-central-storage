@@ -9,6 +9,7 @@ export interface Publisher {
   logo_url: string | null;
   contact_email: string | null;
   status: 'active' | 'inactive' | 'suspended';
+  parent_publisher_id: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -20,6 +21,7 @@ export interface PublisherCreate {
   logo_url?: string;
   contact_email?: string;
   status?: string;
+  parent_publisher_id?: number | null;
 }
 
 export interface PublisherUpdate {
@@ -29,6 +31,7 @@ export interface PublisherUpdate {
   logo_url?: string;
   contact_email?: string;
   status?: string;
+  parent_publisher_id?: number | null;
 }
 
 export interface PublisherBook {
