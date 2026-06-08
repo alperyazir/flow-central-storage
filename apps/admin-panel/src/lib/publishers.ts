@@ -1,5 +1,6 @@
 import { ApiClient, apiClient } from './api';
 import { buildAuthHeaders } from './http';
+import type { AIProcessingStatus } from './books';
 
 export interface Publisher {
   id: number;
@@ -49,6 +50,8 @@ export interface PublisherBook {
   parent_book_id?: number | null;
   book_type?: 'standard' | 'pdf';
   child_count?: number;
+  ai_processing_status?: AIProcessingStatus | null;
+  ai_processed_at?: string | null;
   created_at?: string;
   updated_at?: string;
 }

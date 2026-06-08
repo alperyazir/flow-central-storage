@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import List, Optional
 
@@ -25,6 +26,7 @@ from app.schemas.processing import (
 )
 from app.services import get_minio_client
 from app.services.ai_data import get_ai_data_cleanup_manager, get_ai_data_retrieval_service
+from app.services.ai_processing.book_status import set_book_ai_status
 from app.services.queue.models import (
     JobAlreadyExistsError,
     JobPriority,
@@ -212,6 +214,8 @@ async def trigger_processing(
             detail="Active processing job already exists for this book",
         )
 
+    await asyncio.to_thread(set_book_ai_status, book.id, "queued")
+
     logger.info(
         "Triggered AI processing for book %s (job_id=%s, type=%s, priority=%s)",
         book_id,
@@ -274,6 +278,22 @@ async def get_processing_status(
     jobs = await queue_service.list_jobs(book_id=str(book.id), limit=1)
 
     if not jobs:
+        # No live job (e.g. the Redis record expired). Fall back to the
+        # persistent status mirrored on the Book row so callers can still tell
+        # a finished/failed run apart from a never-processed book.
+        if book.ai_processing_status:
+            finished = book.ai_processing_status in ("completed", "partial")
+            return ProcessingStatusResponse(
+                job_id="",
+                book_id=str(book.id),
+                status=ProcessingStatus(book.ai_processing_status),
+                progress=100 if finished else 0,
+                current_step="",
+                error_message=None,
+                created_at=book.ai_processed_at or book.updated_at,
+                started_at=None,
+                completed_at=book.ai_processed_at,
+            )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="No processing jobs found for this book",
@@ -765,6 +785,7 @@ async def bulk_reprocess(
             )
             job_ids.append(job.job_id)
             triggered += 1
+            await asyncio.to_thread(set_book_ai_status, book.id, "queued")
         except JobAlreadyExistsError:
             skipped += 1
         except Exception as e:

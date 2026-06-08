@@ -34,6 +34,7 @@ import {
   DialogDescription,
 } from 'components/ui/dialog';
 import ProcessingDialog from 'components/ProcessingDialog';
+import AIStatusBadge from 'components/AIStatusBadge';
 import { useAuthStore } from 'stores/auth';
 import {
   fetchBooks,
@@ -69,6 +70,8 @@ interface BookRow {
   status: string;
   childCount: number;
   bookType: 'standard' | 'pdf';
+  aiStatus?: BookRecord['ai_processing_status'];
+  aiProcessedAt?: string | null;
 }
 
 const BooksPage = () => {
@@ -261,6 +264,8 @@ const BooksPage = () => {
           status: r.status,
           childCount: r.child_count ?? 0,
           bookType: r.book_type,
+          aiStatus: r.ai_processing_status,
+          aiProcessedAt: r.ai_processed_at,
         }))
       );
     } catch (e) {
@@ -433,6 +438,11 @@ const BooksPage = () => {
                             +{b.childCount}
                           </Badge>
                         )}
+                        <AIStatusBadge
+                          status={b.aiStatus}
+                          processedAt={b.aiProcessedAt}
+                          className="gap-1"
+                        />
                       </div>
                       {b.bookTitle !== b.bookName && (
                         <span className="block text-xs text-muted-foreground">

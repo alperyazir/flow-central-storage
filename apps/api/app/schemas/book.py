@@ -89,6 +89,8 @@ class BookRead(BookBase):
     parent_book_name: str | None = None
     r2_prefix: str | None = None
     child_count: int = 0
+    ai_processing_status: str | None = None  # queued|processing|completed|partial|failed; null = never
+    ai_processed_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 

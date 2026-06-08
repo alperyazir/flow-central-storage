@@ -207,6 +207,33 @@ def test_update_book_title_requires_authentication() -> None:
     assert response.status_code in {401, 403}
 
 
+def test_book_read_exposes_ai_processing_status() -> None:
+    from datetime import datetime, timezone
+
+    headers = _create_admin_token()
+    client = TestClient(app)
+
+    create_response = client.post(
+        "/books",
+        json={"publisher": "Dream Press", "book_name": "Sky_Tales", "language": "en", "status": "draft"},
+        headers=headers,
+    )
+    book_id = create_response.json()["id"]
+    # Never processed -> null.
+    assert create_response.json()["ai_processing_status"] is None
+    assert create_response.json()["ai_processed_at"] is None
+
+    with TestingSessionLocal() as session:
+        book = session.get(Book, book_id)
+        book.ai_processing_status = "completed"
+        book.ai_processed_at = datetime.now(timezone.utc)
+        session.commit()
+
+    got = client.get(f"/books/{book_id}", headers=headers)
+    assert got.json()["ai_processing_status"] == "completed"
+    assert got.json()["ai_processed_at"] is not None
+
+
 def test_invalid_token_is_rejected() -> None:
     headers = {"Authorization": "Bearer invalid.token.string"}
     client = TestClient(app)

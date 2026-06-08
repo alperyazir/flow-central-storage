@@ -161,6 +161,12 @@ class AutoProcessingService:
                 },
             )
 
+            import asyncio
+
+            from app.services.ai_processing.book_status import set_book_ai_status
+
+            await asyncio.to_thread(set_book_ai_status, book_id, "queued")
+
             logger.info(
                 "Auto-triggered processing job %s for book %s (publisher: %s)",
                 job.job_id,

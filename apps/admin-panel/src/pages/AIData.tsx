@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import {
   ArrowLeft,
@@ -40,11 +40,14 @@ import {
   getAIModules,
   getAIModuleDetail,
   getAIVocabulary,
+  getProcessingStatus,
   type AIMetadata,
   type ModuleSummary,
   type ModuleDetail,
   type VocabularyWord,
+  type ProcessingStatusResponse,
 } from 'lib/processing';
+import { Progress } from 'components/ui/progress';
 import {
   listAIContent,
   getAIContent,
@@ -115,6 +118,10 @@ const AIDataPage = () => {
   const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [liveStatus, setLiveStatus] = useState<ProcessingStatusResponse | null>(
+    null
+  );
+  const statusPollRef = useRef<ReturnType<typeof setInterval>>();
 
   const loadData = useCallback(async () => {
     if (!token || !bookId || Number.isNaN(bookId)) return;
@@ -153,6 +160,39 @@ const AIDataPage = () => {
       .then((b) => setBookTitle(b.book_title || b.book_name))
       .catch(() => {});
   }, [bookId, bookTitle, token, tt]);
+
+  // Live processing status: fetch once, then poll while a run is active so the
+  // banner reflects "running now" vs "completed" without a manual refresh.
+  useEffect(() => {
+    if (!token || !bookId || Number.isNaN(bookId)) return;
+    let cancelled = false;
+    const stop = () => {
+      if (statusPollRef.current) {
+        clearInterval(statusPollRef.current);
+        statusPollRef.current = undefined;
+      }
+    };
+    const tick = async () => {
+      try {
+        const s = await getProcessingStatus(bookId, token, tt);
+        if (cancelled) return;
+        setLiveStatus(s);
+        const active = s.status === 'processing' || s.status === 'queued';
+        if (!active) {
+          stop();
+          if (s.status === 'completed' || s.status === 'partial') loadData();
+        }
+      } catch {
+        if (!cancelled) setLiveStatus(null);
+      }
+    };
+    tick();
+    statusPollRef.current = setInterval(tick, 4000);
+    return () => {
+      cancelled = true;
+      stop();
+    };
+  }, [bookId, token, tt, loadData]);
 
   const toggleModule = async (moduleId: number) => {
     if (expandedModule === moduleId) {
@@ -302,6 +342,72 @@ const AIDataPage = () => {
           )}
         </Button>
       </div>
+
+      {(() => {
+        const s = liveStatus?.status ?? metadata?.processing_status ?? null;
+        if (!s) return null;
+        const active = s === 'processing' || s === 'queued';
+        if (active) {
+          return (
+            <Card className="border-primary/40">
+              <CardContent className="space-y-2 py-4">
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                  {s === 'queued'
+                    ? 'AI processing queued…'
+                    : `AI processing running${
+                        liveStatus?.current_step
+                          ? ` — ${liveStatus.current_step}`
+                          : '…'
+                      }`}
+                  {typeof liveStatus?.progress === 'number' && (
+                    <span className="ml-auto text-muted-foreground">
+                      {liveStatus.progress}%
+                    </span>
+                  )}
+                </div>
+                {typeof liveStatus?.progress === 'number' && (
+                  <Progress value={liveStatus.progress} />
+                )}
+                <p className="text-xs text-muted-foreground">
+                  This page refreshes automatically when processing finishes.
+                </p>
+              </CardContent>
+            </Card>
+          );
+        }
+        if (s === 'completed') {
+          return (
+            <Alert>
+              <AlertDescription className="flex items-center gap-2">
+                <CheckCircle className="h-4 w-4 text-green-600" />
+                AI processing complete
+                {metadata?.processing_completed_at &&
+                  ` · ${fmtDate(metadata.processing_completed_at)}`}
+              </AlertDescription>
+            </Alert>
+          );
+        }
+        if (s === 'partial') {
+          return (
+            <Alert variant="destructive">
+              <AlertDescription className="flex items-center gap-2">
+                <XCircle className="h-4 w-4" />
+                AI processing finished with some failed stages — see Metadata.
+              </AlertDescription>
+            </Alert>
+          );
+        }
+        return (
+          <Alert variant="destructive">
+            <AlertDescription className="flex items-center gap-2">
+              <XCircle className="h-4 w-4" />
+              AI processing failed
+              {liveStatus?.error_message ? ` — ${liveStatus.error_message}` : '.'}
+            </AlertDescription>
+          </Alert>
+        );
+      })()}
 
       {loading ? (
         <div className="flex justify-center py-16">

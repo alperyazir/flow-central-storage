@@ -26,6 +26,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _mirror_book_ai_status(book_id: str, status: str) -> None:
+    """Best-effort mirror of the processing status onto the Book DB row."""
+    from app.services.ai_processing.book_status import set_book_ai_status
+
+    set_book_ai_status(book_id, status)
+
+
 class AIDataMetadataService:
     """
     Service for managing AI processing metadata.
@@ -104,6 +111,7 @@ class AIDataMetadataService:
                 book_id,
                 path,
             )
+            _mirror_book_ai_status(book_id, ProcessingStatus.PROCESSING.value)
             return metadata
         except S3Error as e:
             logger.error("Failed to create metadata %s: %s", path, e)
@@ -282,6 +290,7 @@ class AIDataMetadataService:
                 final_status.value,
                 book_id,
             )
+            _mirror_book_ai_status(book_id, final_status.value)
             return metadata
         except S3Error as e:
             logger.error("Failed to finalize metadata %s: %s", path, e)

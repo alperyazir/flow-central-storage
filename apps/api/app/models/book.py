@@ -77,6 +77,13 @@ class Book(Base):
         String(20), nullable=False, default=BookTypeEnum.STANDARD.value, server_default=BookTypeEnum.STANDARD.value
     )
 
+    # AI processing state, mirrored from the worker so every view can show a
+    # reliable badge without depending on the (TTL-bound) Redis job. Values:
+    # queued | processing | completed | partial | failed. NULL = never processed.
+    ai_processing_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # When the last AI processing run finished (completed or partial).
+    ai_processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     # Relationship to Publisher model
     publisher_rel: Mapped["Publisher"] = relationship("Publisher", back_populates="books")
 

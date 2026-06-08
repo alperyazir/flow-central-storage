@@ -20,9 +20,19 @@ export interface BookRecord {
   parent_book_id?: number | null;
   book_type: BookType;
   child_count?: number;
+  ai_processing_status?: AIProcessingStatus | null;
+  ai_processed_at?: string | null;
   created_at?: string;
   updated_at?: string;
 }
+
+// Mirrored from the worker; null = never processed.
+export type AIProcessingStatus =
+  | 'queued'
+  | 'processing'
+  | 'completed'
+  | 'partial'
+  | 'failed';
 
 export interface FetchBooksOptions {
   publisherId?: number;

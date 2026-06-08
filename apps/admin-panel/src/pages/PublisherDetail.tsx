@@ -27,6 +27,7 @@ import { Checkbox } from 'components/ui/checkbox';
 import { Label } from 'components/ui/label';
 import { Alert, AlertDescription } from 'components/ui/alert';
 import AuthenticatedImage from 'components/AuthenticatedImage';
+import AIStatusBadge from 'components/AIStatusBadge';
 import {
   Dialog,
   DialogContent,
@@ -414,6 +415,11 @@ const PublisherDetailPage = () => {
                             +{b.child_count}
                           </Badge>
                         )}
+                        <AIStatusBadge
+                          status={b.ai_processing_status}
+                          processedAt={b.ai_processed_at}
+                          className="gap-1"
+                        />
                       </div>
                     </TableCell>
                     <TableCell>
