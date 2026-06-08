@@ -28,6 +28,8 @@ import { Label } from 'components/ui/label';
 import { Alert, AlertDescription } from 'components/ui/alert';
 import AuthenticatedImage from 'components/AuthenticatedImage';
 import AIStatusBadge from 'components/AIStatusBadge';
+import BookBundlesCell from 'components/BookBundlesCell';
+import { fetchBundleCoverage, type BundleCoverage } from 'lib/standaloneApps';
 import {
   Dialog,
   DialogContent,
@@ -87,6 +89,7 @@ const PublisherDetailPage = () => {
   const [editTitle, setEditTitle] = useState('');
   const [savingTitle, setSavingTitle] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
+  const [coverage, setCoverage] = useState<BundleCoverage | null>(null);
 
   useEffect(() => {
     if (!deleteTarget || !token || !(deleteTarget.child_count ?? 0)) {
@@ -132,8 +135,17 @@ const PublisherDetailPage = () => {
     }
   };
 
+  const loadCoverage = useCallback(() => {
+    if (!token) return;
+    fetchBundleCoverage(token, tt)
+      .then(setCoverage)
+      .catch(() => setCoverage(null));
+  }, [token, tt]);
+
   useEffect(() => {
     load();
+    loadCoverage();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, id]);
 
   const filteredBooks = useMemo(() => {
@@ -386,6 +398,7 @@ const PublisherDetailPage = () => {
                 <TableHead>Category</TableHead>
                 <TableHead className="text-center">Activities</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead>Bundles</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
@@ -393,7 +406,7 @@ const PublisherDetailPage = () => {
               {!filteredBooks.length ? (
                 <TableRow>
                   <TableCell
-                    colSpan={6}
+                    colSpan={7}
                     className="text-center py-8 text-muted-foreground"
                   >
                     No books found
@@ -433,6 +446,21 @@ const PublisherDetailPage = () => {
                     </TableCell>
                     <TableCell>
                       <Badge variant="outline">{b.status}</Badge>
+                    </TableCell>
+                    <TableCell onClick={(e) => e.stopPropagation()}>
+                      <BookBundlesCell
+                        bookId={b.id}
+                        bookType={b.book_type ?? 'standard'}
+                        expected={coverage?.expected ?? []}
+                        coverage={
+                          coverage?.byKey[
+                            `${b.publisher_slug ?? ''}/${b.book_name}`
+                          ]
+                        }
+                        token={token}
+                        tokenType={tt}
+                        onChanged={loadCoverage}
+                      />
                     </TableCell>
                     <TableCell
                       className="text-right space-x-1"

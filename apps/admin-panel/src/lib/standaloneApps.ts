@@ -303,3 +303,37 @@ export const PLATFORM_LABELS: Record<StandalonePlatform, string> = {
   'win7-8': 'Windows 7/8',
   linux: 'Linux',
 };
+
+export interface BundleCoverage {
+  /** Platforms that have a template (i.e. are expected to be bundled). */
+  expected: StandalonePlatform[];
+  /** Keyed by `${publisher_slug}/${book_name}`. */
+  byKey: Record<string, { present: string[]; stale: string[] }>;
+}
+
+/**
+ * Fetch which platforms each book has a bundle for, plus the set of expected
+ * platforms (those with a template). Bundles are keyed by
+ * `${publisher_slug}/${book_name}` — the same key the storage path uses.
+ */
+export const fetchBundleCoverage = async (
+  token: string,
+  tokenType: string = 'Bearer',
+  client: ApiClient = apiClient
+): Promise<BundleCoverage> => {
+  const [tpls, bundles] = await Promise.all([
+    listTemplates(token, tokenType, client),
+    listBundles(token, tokenType, client),
+  ]);
+  const have = new Set(tpls.templates.map((t) => t.platform));
+  const expected = STANDALONE_PLATFORMS.filter((p) => have.has(p));
+
+  const byKey: BundleCoverage['byKey'] = {};
+  for (const b of bundles.bundles) {
+    const key = `${b.publisher_name}/${b.book_name}`;
+    const entry = (byKey[key] ??= { present: [], stale: [] });
+    if (!entry.present.includes(b.platform)) entry.present.push(b.platform);
+    if (b.stale && !entry.stale.includes(b.platform)) entry.stale.push(b.platform);
+  }
+  return { expected, byKey };
+};

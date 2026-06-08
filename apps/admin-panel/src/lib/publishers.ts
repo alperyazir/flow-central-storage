@@ -38,6 +38,7 @@ export interface PublisherUpdate {
 export interface PublisherBook {
   id: number;
   publisher_id: number;
+  publisher_slug?: string;
   book_name: string;
   book_title?: string;
   book_cover?: string;

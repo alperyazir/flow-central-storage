@@ -35,6 +35,8 @@ import {
 } from 'components/ui/dialog';
 import ProcessingDialog from 'components/ProcessingDialog';
 import AIStatusBadge from 'components/AIStatusBadge';
+import BookBundlesCell from 'components/BookBundlesCell';
+import { fetchBundleCoverage, type BundleCoverage } from 'lib/standaloneApps';
 import { useAuthStore } from 'stores/auth';
 import {
   fetchBooks,
@@ -64,6 +66,7 @@ interface BookRow {
   bookTitle: string;
   publisher: string;
   publisherId: number;
+  publisherSlug: string;
   language: string;
   category: string;
   activityCount: number;
@@ -89,6 +92,7 @@ const BooksPage = () => {
     f: 'bookTitle',
     d: 'asc',
   });
+  const [coverage, setCoverage] = useState<BundleCoverage | null>(null);
   const [processingBook, setProcessingBook] = useState<BookRow | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<SyncR2Response | null>(null);
@@ -258,6 +262,7 @@ const BooksPage = () => {
           bookTitle: r.book_title || r.book_name,
           publisher: r.publisher,
           publisherId: r.publisher_id,
+          publisherSlug: r.publisher_slug ?? '',
           language: r.language,
           category: r.category || '',
           activityCount: r.activity_count || 0,
@@ -275,8 +280,17 @@ const BooksPage = () => {
     }
   };
 
+  const loadCoverage = useCallback(() => {
+    if (!token) return;
+    fetchBundleCoverage(token, tt)
+      .then(setCoverage)
+      .catch(() => setCoverage(null));
+  }, [token, tt]);
+
   useEffect(() => {
     load();
+    loadCoverage();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
   const pubs = useMemo(
@@ -409,6 +423,7 @@ const BooksPage = () => {
                 <SortHead field="language" label="Lang" />
                 <SortHead field="category" label="Category" />
                 <SortHead field="activityCount" label="Activities" />
+                <TableHead>Bundles</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
@@ -416,7 +431,7 @@ const BooksPage = () => {
               {!filtered.length ? (
                 <TableRow>
                   <TableCell
-                    colSpan={6}
+                    colSpan={7}
                     className="text-center py-8 text-muted-foreground"
                   >
                     No books found
@@ -459,6 +474,17 @@ const BooksPage = () => {
                     <TableCell>{b.category || '—'}</TableCell>
                     <TableCell>
                       <Badge variant="secondary">{b.activityCount}</Badge>
+                    </TableCell>
+                    <TableCell onClick={(e) => e.stopPropagation()}>
+                      <BookBundlesCell
+                        bookId={b.id}
+                        bookType={b.bookType}
+                        expected={coverage?.expected ?? []}
+                        coverage={coverage?.byKey[`${b.publisherSlug}/${b.bookName}`]}
+                        token={token}
+                        tokenType={tt}
+                        onChanged={loadCoverage}
+                      />
                     </TableCell>
                     <TableCell
                       className="text-right space-x-1"
