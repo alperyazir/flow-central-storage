@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Loader2, Cpu, RefreshCw, Download, Trash2, Paperclip } from 'lucide-react';
+import { Loader2, Cpu, RefreshCw, Download, Trash2, Paperclip, Pencil } from 'lucide-react';
 
 import { Card, CardContent } from 'components/ui/card';
 import {
@@ -42,6 +42,7 @@ import {
   getDownloadStatus,
   deleteBook,
   getDeleteStatus,
+  updateBookTitle,
   type BookRecord,
   type SyncR2Response,
 } from 'lib/books';
@@ -96,6 +97,10 @@ const BooksPage = () => {
   const [delProgress, setDelProgress] = useState(0);
   const [delStep, setDelStep] = useState('');
   const [delError, setDelError] = useState<string | null>(null);
+  const [editTarget, setEditTarget] = useState<BookRow | null>(null);
+  const [editTitle, setEditTitle] = useState('');
+  const [savingTitle, setSavingTitle] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval>>();
   const delPollRef = useRef<ReturnType<typeof setInterval>>();
 
@@ -176,6 +181,26 @@ const BooksPage = () => {
       setDelError(e instanceof Error ? e.message : 'Delete failed');
     }
   }, [token, tt, delTarget, delBundles]);
+
+  const handleSaveTitle = useCallback(async () => {
+    if (!token || !editTarget) return;
+    const next = editTitle.trim();
+    if (!next || next === editTarget.bookTitle) {
+      setEditTarget(null);
+      return;
+    }
+    setSavingTitle(true);
+    setEditError(null);
+    try {
+      await updateBookTitle(editTarget.id, next, token, tt);
+      setEditTarget(null);
+      load();
+    } catch (e) {
+      setEditError(e instanceof Error ? e.message : 'Failed to update title');
+    } finally {
+      setSavingTitle(false);
+    }
+  }, [token, tt, editTarget, editTitle]);
 
   useEffect(() => {
     return () => {
@@ -433,6 +458,19 @@ const BooksPage = () => {
                         variant="ghost"
                         size="icon"
                         className="h-7 w-7"
+                        onClick={() => {
+                          setEditTarget(b);
+                          setEditTitle(b.bookTitle);
+                          setEditError(null);
+                        }}
+                        title="Edit title"
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
                         onClick={() => handleDownload(b.id)}
                         disabled={downloadingId === b.id}
                         title="Download"
@@ -558,6 +596,55 @@ const BooksPage = () => {
                 <Trash2 className="h-4 w-4" />
               )}{' '}
               Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={!!editTarget}
+        onOpenChange={(o) => !savingTitle && !o && setEditTarget(null)}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit Book Title</DialogTitle>
+            <DialogDescription>
+              Updates the display title only. The storage folder name
+              {editTarget ? ` (${editTarget.bookName})` : ''} is unchanged.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="edit-title">Title</Label>
+            <Input
+              id="edit-title"
+              value={editTitle}
+              onChange={(e) => setEditTitle(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleSaveTitle();
+              }}
+              placeholder="Enter book title"
+              disabled={savingTitle}
+              autoFocus
+            />
+            {editError && (
+              <Alert variant="destructive">
+                <AlertDescription>{editError}</AlertDescription>
+              </Alert>
+            )}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setEditTarget(null)}
+              disabled={savingTitle}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSaveTitle}
+              disabled={savingTitle || !editTitle.trim()}
+            >
+              {savingTitle && <Loader2 className="h-4 w-4 animate-spin" />} Save
             </Button>
           </DialogFooter>
         </DialogContent>

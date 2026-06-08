@@ -38,6 +38,19 @@ class BookCreate(BookBase):
     )
 
 
+class BookTitleUpdate(BaseModel):
+    """Payload for editing just a book's display title.
+
+    Only ``book_title`` (the human-facing name) changes; ``book_name`` — the
+    storage folder identifier — is intentionally left untouched so no files
+    have to move in R2.
+    """
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    book_title: str = Field(..., min_length=1, max_length=255)
+
+
 class BookUpdate(BaseModel):
     """Payload for updating existing book metadata.
 

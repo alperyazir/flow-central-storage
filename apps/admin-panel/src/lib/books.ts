@@ -79,6 +79,22 @@ export const createChildBook = (
     headers: buildAuthHeaders(token, tokenType),
   });
 
+export const updateBookTitle = (
+  bookId: number,
+  title: string,
+  token: string,
+  tokenType: string = 'Bearer',
+  client: ApiClient = apiClient
+): Promise<BookRecord> =>
+  client.request<BookRecord>(`/books/${bookId}/title`, {
+    method: 'PATCH',
+    headers: {
+      ...buildAuthHeaders(token, tokenType),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ book_title: title }),
+  });
+
 export interface PdfUrlResponse {
   download_url: string;
   filename: string;

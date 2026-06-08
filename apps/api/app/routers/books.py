@@ -25,7 +25,7 @@ from app.models.webhook import WebhookEventType
 from app.repositories.book import BookRepository
 from app.repositories.publisher import PublisherRepository
 from app.repositories.user import UserRepository
-from app.schemas.book import BookCreate, BookRead, BookUpdate
+from app.schemas.book import BookCreate, BookRead, BookTitleUpdate, BookUpdate
 from app.services import (
     DirectDeletionError,
     RelocationError,
@@ -702,6 +702,42 @@ def update_book(
     background_tasks.add_task(_trigger_webhook, book_id, WebhookEventType.BOOK_UPDATED)
     _invalidate_book_cache()
     logger.debug(f"[WEBHOOK-TRIGGER] BOOK_UPDATED webhook task added to background queue for book_id={book_id}")
+
+    return BookRead.model_validate(updated)
+
+
+@router.patch("/{book_id}/title", response_model=BookRead)
+def update_book_title(
+    book_id: int,
+    payload: BookTitleUpdate,
+    background_tasks: BackgroundTasks,
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+) -> BookRead:
+    """Edit a book's display title.
+
+    Changes only ``book_title`` (the human-facing name). ``book_name`` — the
+    storage folder identifier behind ``r2_prefix`` — is left untouched, so no
+    R2 objects move and existing config/asset/bundle links stay valid.
+
+    Fires a ``BOOK_UPDATED`` webhook so consumers (e.g. Learn) pick up the new
+    title; the webhook payload carries ``book_title`` (see
+    ``WebhookService.broadcast_event``).
+    """
+
+    _require_admin(credentials, db)
+    book = _book_repository.get_by_id(db, book_id)
+    if book is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+
+    updated = _book_repository.update(db, book, data={"book_title": payload.book_title})
+
+    logger.info(
+        f"[WEBHOOK-TRIGGER] Scheduling BOOK_UPDATED webhook for book_id={book_id} "
+        f"after title edit -> '{payload.book_title}'"
+    )
+    background_tasks.add_task(_trigger_webhook, book_id, WebhookEventType.BOOK_UPDATED)
+    _invalidate_book_cache()
 
     return BookRead.model_validate(updated)
 

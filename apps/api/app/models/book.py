@@ -6,7 +6,7 @@ import enum
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import BigInteger, DateTime, Enum, ForeignKey, String, func
+from sqlalchemy import JSON, BigInteger, DateTime, Enum, ForeignKey, String, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -41,7 +41,10 @@ class Book(Base):
     book_title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     book_cover: Mapped[str | None] = mapped_column(String(512), nullable=True)
     activity_count: Mapped[int | None] = mapped_column(nullable=True)
-    activity_details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # JSONB on PostgreSQL; falls back to JSON on SQLite (used by the test suite).
+    activity_details: Mapped[dict | None] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=True
+    )
     total_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     language: Mapped[str] = mapped_column(String(64), nullable=False)
     category: Mapped[str | None] = mapped_column(String(128), nullable=True)

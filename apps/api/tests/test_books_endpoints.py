@@ -17,6 +17,7 @@ from app.main import app
 from app.models.book import Book, BookStatusEnum
 from app.models.publisher import Publisher
 from app.models.user import User
+from app.models.webhook import WebhookEventType
 from app.services import RelocationError, RelocationReport
 
 TEST_DATABASE_URL = "sqlite+pysqlite:///:memory:"
@@ -137,6 +138,73 @@ def test_update_book_modifies_fields() -> None:
     updated = update_response.json()
     assert updated["publisher"] == "Nightfall Publishing"
     assert updated["status"] == "published"
+
+
+def test_update_book_title_changes_only_title_and_fires_webhook(monkeypatch) -> None:
+    headers = _create_admin_token()
+    client = TestClient(app)
+
+    from app.routers import books as books_router
+
+    triggered: list[tuple[int, object]] = []
+    monkeypatch.setattr(
+        books_router, "_trigger_webhook", lambda book_id, event: triggered.append((book_id, event))
+    )
+
+    create_response = client.post(
+        "/books",
+        json={
+            "publisher": "Dream Press",
+            "book_name": "Sky_Tales",
+            "book_title": "Old Title",
+            "language": "en",
+            "status": "draft",
+        },
+        headers=headers,
+    )
+    book_id = create_response.json()["id"]
+
+    response = client.patch(
+        f"/books/{book_id}/title",
+        json={"book_title": "  Brand New Title  "},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["book_title"] == "Brand New Title"  # stripped
+    assert body["book_name"] == "Sky_Tales"  # storage identifier untouched
+    # BOOK_UPDATED webhook scheduled so Learn picks up the new title.
+    # (triggered[0] is the BOOK_CREATED from the create call above.)
+    assert triggered[-1] == (book_id, WebhookEventType.BOOK_UPDATED)
+
+
+def test_update_book_title_rejects_empty() -> None:
+    headers = _create_admin_token()
+    client = TestClient(app)
+
+    create_response = client.post(
+        "/books",
+        json={"publisher": "Dream Press", "book_name": "Sky_Tales", "language": "en", "status": "draft"},
+        headers=headers,
+    )
+    book_id = create_response.json()["id"]
+
+    response = client.patch(f"/books/{book_id}/title", json={"book_title": "   "}, headers=headers)
+    assert response.status_code == 422
+
+
+def test_update_book_title_404_when_missing() -> None:
+    headers = _create_admin_token()
+    client = TestClient(app)
+    response = client.patch("/books/999/title", json={"book_title": "X"}, headers=headers)
+    assert response.status_code == 404
+
+
+def test_update_book_title_requires_authentication() -> None:
+    client = TestClient(app)
+    response = client.patch("/books/1/title", json={"book_title": "X"})
+    assert response.status_code in {401, 403}
 
 
 def test_invalid_token_is_rejected() -> None:
