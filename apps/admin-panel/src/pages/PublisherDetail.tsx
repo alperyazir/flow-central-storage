@@ -39,7 +39,13 @@ import PublisherFormDialog from 'components/PublisherFormDialog';
 import PublisherUploadDialog from 'components/PublisherUploadDialog';
 import { useAuthStore } from 'stores/auth';
 import { useOperationsStore } from 'stores/operations';
-import { deleteBook, fetchBooks, getDeleteStatus, type BookRecord } from 'lib/books';
+import {
+  deleteBook,
+  fetchBooks,
+  getDeleteStatus,
+  updateBookTitle,
+  type BookRecord,
+} from 'lib/books';
 import {
   fetchPublisher,
   fetchPublisherBooks,
@@ -76,6 +82,10 @@ const PublisherDetailPage = () => {
   const [deleteTarget, setDeleteTarget] = useState<PublisherBook | null>(null);
   const [delBundles, setDelBundles] = useState(true);
   const [deleteChildren, setDeleteChildren] = useState<BookRecord[] | null>(null);
+  const [editTarget, setEditTarget] = useState<PublisherBook | null>(null);
+  const [editTitle, setEditTitle] = useState('');
+  const [savingTitle, setSavingTitle] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!deleteTarget || !token || !(deleteTarget.child_count ?? 0)) {
@@ -204,6 +214,27 @@ const PublisherDetailPage = () => {
   }, [deleteTarget, token, tt, delBundles, addOperation, updateOperation, load]);
 
   useEffect(() => () => clearInterval(pollRef.current), []);
+
+  const handleSaveTitle = useCallback(async () => {
+    if (!token || !editTarget) return;
+    const next = editTitle.trim();
+    const current = editTarget.book_title || editTarget.book_name;
+    if (!next || next === current) {
+      setEditTarget(null);
+      return;
+    }
+    setSavingTitle(true);
+    setEditError(null);
+    try {
+      await updateBookTitle(editTarget.id, next, token, tt);
+      setEditTarget(null);
+      load();
+    } catch (e) {
+      setEditError(e instanceof Error ? e.message : 'Failed to update title');
+    } finally {
+      setSavingTitle(false);
+    }
+  }, [token, tt, editTarget, editTitle]);
 
   if (loading)
     return (
@@ -398,9 +429,22 @@ const PublisherDetailPage = () => {
                       <Badge variant="outline">{b.status}</Badge>
                     </TableCell>
                     <TableCell
-                      className="text-right"
+                      className="text-right space-x-1"
                       onClick={(e) => e.stopPropagation()}
                     >
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        onClick={() => {
+                          setEditTarget(b);
+                          setEditTitle(b.book_title || b.book_name);
+                          setEditError(null);
+                        }}
+                        title="Edit title"
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </Button>
                       <Button
                         variant="ghost"
                         size="icon"
@@ -409,6 +453,7 @@ const PublisherDetailPage = () => {
                           setDeleteTarget(b);
                           setDelBundles(true);
                         }}
+                        title="Delete"
                       >
                         <Trash2 className="h-4 w-4 text-destructive" />
                       </Button>
@@ -493,6 +538,55 @@ const PublisherDetailPage = () => {
             </Button>
             <Button variant="destructive" onClick={handleDeleteBook}>
               Delete Permanently
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={!!editTarget}
+        onOpenChange={(o) => !savingTitle && !o && setEditTarget(null)}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit Book Title</DialogTitle>
+            <DialogDescription>
+              Updates the display title only. The storage folder name
+              {editTarget ? ` (${editTarget.book_name})` : ''} is unchanged.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="edit-pub-book-title">Title</Label>
+            <Input
+              id="edit-pub-book-title"
+              value={editTitle}
+              onChange={(e) => setEditTitle(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleSaveTitle();
+              }}
+              placeholder="Enter book title"
+              disabled={savingTitle}
+              autoFocus
+            />
+            {editError && (
+              <Alert variant="destructive">
+                <AlertDescription>{editError}</AlertDescription>
+              </Alert>
+            )}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setEditTarget(null)}
+              disabled={savingTitle}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSaveTitle}
+              disabled={savingTitle || !editTitle.trim()}
+            >
+              {savingTitle && <Loader2 className="h-4 w-4 animate-spin" />} Save
             </Button>
           </DialogFooter>
         </DialogContent>
