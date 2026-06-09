@@ -45,6 +45,14 @@ import {
   type ExtendedProcessingStatus,
 } from 'lib/processing';
 
+const fmtProcessedAt = (s: string) =>
+  new Date(s).toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+
 const statusVariant = (s: string) => {
   if (s === 'completed') return 'success' as const;
   if (s === 'processing' || s === 'queued') return 'default' as const;
@@ -332,6 +340,13 @@ const ProcessingPage = () => {
                       <Badge variant={statusVariant(b.processing_status)}>
                         {getExtendedStatusLabel(b.processing_status)}
                       </Badge>
+                      {(b.processing_status === 'completed' ||
+                        b.processing_status === 'partial') &&
+                        b.last_processed_at && (
+                          <span className="block text-xs text-muted-foreground">
+                            {fmtProcessedAt(b.last_processed_at)}
+                          </span>
+                        )}
                     </TableCell>
                     <TableCell className="w-24">
                       {b.processing_status === 'processing' ? (

@@ -410,6 +410,37 @@ class TestJobRepository:
         assert len(jobs) == 2
 
     @pytest.mark.asyncio
+    async def test_list_jobs_filters_out_bundle_jobs(self, job_repository):
+        """AI status must not be polluted by bundle jobs sharing the book_id."""
+        from app.services.queue.models import AI_BOOK_JOB_TYPES
+
+        ai_job = ProcessingJob(
+            job_id="ai-1",
+            book_id="book-9",
+            publisher_id="pub-1",
+            job_type=ProcessingJobType.UNIFIED,
+        )
+        bundle_job = ProcessingJob(
+            job_id="auto-bundle-9-win7-8",
+            book_id="book-9",
+            publisher_id="pub-1",
+            job_type=ProcessingJobType.BUNDLE,
+        )
+        await job_repository.create_job(ai_job)
+        # Bundle jobs are created alongside the AI job (same book_id) with the
+        # duplicate guard disabled — exactly as the auto-bundle path does.
+        await job_repository.create_job(bundle_job, check_duplicate=False)
+
+        # Unfiltered: both jobs are present.
+        assert len(await job_repository.list_jobs(book_id="book-9")) == 2
+
+        # AI-only filter: only the AI job, even though the bundle exists.
+        ai_only = await job_repository.list_jobs(
+            book_id="book-9", job_types=AI_BOOK_JOB_TYPES
+        )
+        assert [j.job_id for j in ai_only] == ["ai-1"]
+
+    @pytest.mark.asyncio
     async def test_delete_job(self, job_repository, sample_job):
         """Test deleting a job."""
         await job_repository.create_job(sample_job)

@@ -59,6 +59,20 @@ class ProcessingJobType(str, Enum):
     VOCABULARY_ONLY = "vocabulary_only"  # Legacy: vocabulary extraction only
 
 
+# AI book-processing job types — everything that contributes to a book's AI
+# processing state. Deliberately EXCLUDES BUNDLE (and material) jobs, which
+# share the same book_id but must not pollute the book's AI status.
+AI_BOOK_JOB_TYPES: set["ProcessingJobType"] = {
+    ProcessingJobType.FULL,
+    ProcessingJobType.TEXT_ONLY,
+    ProcessingJobType.LLM_ONLY,
+    ProcessingJobType.AUDIO_ONLY,
+    ProcessingJobType.UNIFIED,
+    ProcessingJobType.ANALYSIS_ONLY,
+    ProcessingJobType.VOCABULARY_ONLY,
+}
+
+
 class JobPriority(str, Enum):
     """Priority level for job execution."""
 

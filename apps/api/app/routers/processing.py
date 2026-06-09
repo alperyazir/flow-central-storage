@@ -28,6 +28,7 @@ from app.services import get_minio_client
 from app.services.ai_data import get_ai_data_cleanup_manager, get_ai_data_retrieval_service
 from app.services.ai_processing.book_status import set_book_ai_status
 from app.services.queue.models import (
+    AI_BOOK_JOB_TYPES,
     JobAlreadyExistsError,
     JobPriority,
     ProcessingJobType,
@@ -273,9 +274,11 @@ async def get_processing_status(
             detail="Book not found",
         )
 
-    # Get most recent job for this book
+    # Get most recent AI job for this book (exclude bundle jobs).
     queue_service = await get_queue_service()
-    jobs = await queue_service.list_jobs(book_id=str(book.id), limit=1)
+    jobs = await queue_service.list_jobs(
+        book_id=str(book.id), limit=1, job_types=AI_BOOK_JOB_TYPES
+    )
 
     if not jobs:
         # No live job (e.g. the Redis record expired). Fall back to the
@@ -547,8 +550,11 @@ async def list_books_with_processing_status(
         pub = publishers_by_id.get(book.publisher_id)
         publisher_name = pub.name if pub else ""
         pub_slug = pub.slug if pub else str(book.publisher_id)
-        # Get most recent job for this book
-        jobs = await queue_service.list_jobs(book_id=str(book.id), limit=1)
+        # Most recent AI job for this book (bundle jobs are excluded so they
+        # never pollute the AI status).
+        jobs = await queue_service.list_jobs(
+            book_id=str(book.id), limit=1, job_types=AI_BOOK_JOB_TYPES
+        )
 
         processing_status = "not_started"
         progress = 0
@@ -557,19 +563,48 @@ async def list_books_with_processing_status(
         job_id = None
         last_processed_at = None
 
-        if jobs:
-            job = jobs[0]
-            processing_status = job.status.value if hasattr(job.status, "value") else str(job.status)
-            progress = job.progress
-            current_step = job.current_step
-            error_message = job.error_message
-            job_id = job.job_id
-            if job.completed_at:
+        live_job = jobs[0] if jobs else None
+        live_active = live_job is not None and live_job.status in (
+            ProcessingStatus.QUEUED,
+            ProcessingStatus.PROCESSING,
+        )
+
+        if live_active:
+            # A run is happening right now: show its live progress/step.
+            processing_status = live_job.status.value
+            progress = live_job.progress
+            current_step = live_job.current_step
+            error_message = live_job.error_message
+            job_id = live_job.job_id
+        elif book.ai_processing_status:
+            # Persistent AI status mirrored on the Book row (TTL-independent).
+            processing_status = book.ai_processing_status
+            progress = 100 if book.ai_processing_status in ("completed", "partial") else 0
+            if book.ai_processed_at:
                 last_processed_at = (
-                    job.completed_at.isoformat() if hasattr(job.completed_at, "isoformat") else str(job.completed_at)
+                    book.ai_processed_at.isoformat()
+                    if hasattr(book.ai_processed_at, "isoformat")
+                    else str(book.ai_processed_at)
+                )
+            if live_job is not None:
+                job_id = live_job.job_id
+                error_message = live_job.error_message
+        elif live_job is not None:
+            # Finished AI job still in Redis, but no mirrored column yet.
+            processing_status = live_job.status.value
+            progress = live_job.progress
+            current_step = live_job.current_step
+            error_message = live_job.error_message
+            job_id = live_job.job_id
+            if live_job.completed_at:
+                last_processed_at = (
+                    live_job.completed_at.isoformat()
+                    if hasattr(live_job.completed_at, "isoformat")
+                    else str(live_job.completed_at)
                 )
         else:
-            # Check if metadata exists (means it was processed at some point)
+            # No live job and no column — fall back to metadata.json (covers
+            # books processed before the Book column existed).
             metadata = retrieval_service.get_metadata(pub_slug, str(book.id), book.book_name)
             if metadata:
                 processing_status = metadata.processing_status.value
@@ -625,9 +660,14 @@ async def get_processing_queue(
 
     queue_service = await get_queue_service()
 
-    # Get queued and processing jobs
-    queued_jobs = await queue_service.list_jobs(status=ProcessingStatus.QUEUED, limit=100)
-    processing_jobs = await queue_service.list_jobs(status=ProcessingStatus.PROCESSING, limit=100)
+    # Get queued and processing AI jobs (bundle jobs are excluded — this page
+    # is AI-only).
+    queued_jobs = await queue_service.list_jobs(
+        status=ProcessingStatus.QUEUED, limit=100, job_types=AI_BOOK_JOB_TYPES
+    )
+    processing_jobs = await queue_service.list_jobs(
+        status=ProcessingStatus.PROCESSING, limit=100, job_types=AI_BOOK_JOB_TYPES
+    )
 
     all_jobs = processing_jobs + queued_jobs  # Processing first, then queued
 

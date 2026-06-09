@@ -283,6 +283,7 @@ class JobRepository:
         book_id: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
+        job_types: Optional[set[ProcessingJobType]] = None,
     ) -> list[ProcessingJob]:
         """List jobs with optional filtering.
 
@@ -291,9 +292,11 @@ class JobRepository:
             book_id: Filter by book ID
             limit: Maximum results
             offset: Skip first N results
+            job_types: If given, keep only jobs whose ``job_type`` is in this set
+                (e.g. AI-processing types, excluding bundle jobs).
 
         Returns:
-            List of jobs
+            List of jobs, most recent first.
         """
         job_ids: set = set()
 
@@ -307,20 +310,23 @@ class JobRepository:
                 ids = await self._redis.smembers(self._status_index_key(s))
                 job_ids.update(ids)
 
+        # Fetch and filter ALL matching jobs, then sort, then page — so that
+        # type/status filtering and "most recent" (limit) compose correctly.
         jobs = []
-        for job_id in list(job_ids)[offset : offset + limit]:
+        for job_id in job_ids:
             try:
                 job = await self.get_job(job_id)
-                # Apply status filter if filtering by book_id
-                if status and job.status != status:
-                    continue
-                jobs.append(job)
             except JobNotFoundError:
                 continue
+            if status and job.status != status:
+                continue
+            if job_types is not None and job.job_type not in job_types:
+                continue
+            jobs.append(job)
 
-        # Sort by created_at descending
+        # Sort by created_at descending, then apply offset/limit.
         jobs.sort(key=lambda j: j.created_at, reverse=True)
-        return jobs
+        return jobs[offset : offset + limit]
 
     async def delete_job(self, job_id: str) -> bool:
         """Delete a job.

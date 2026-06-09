@@ -356,6 +356,7 @@ class QueueService:
         book_id: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
+        job_types: Optional[set[ProcessingJobType]] = None,
     ) -> list[ProcessingJob]:
         """List jobs with filtering.
 
@@ -364,6 +365,7 @@ class QueueService:
             book_id: Filter by book ID
             limit: Maximum results
             offset: Skip first N results
+            job_types: Keep only these job types (e.g. AI types, excluding bundles)
 
         Returns:
             List of jobs
@@ -373,6 +375,7 @@ class QueueService:
             book_id=book_id,
             limit=limit,
             offset=offset,
+            job_types=job_types,
         )
 
     def get_progress_reporter(self, job_id: str) -> ProgressReporter:
