@@ -123,13 +123,18 @@ const ProcessingPage = () => {
   }, [queueStats.queued, queueStats.processing, fetchData]);
 
   const filtered = useMemo(() => {
-    if (!search) return books;
     const q = search.toLowerCase();
-    return books.filter(
-      (b) =>
-        b.book_title.toLowerCase().includes(q) ||
-        b.book_name.toLowerCase().includes(q) ||
-        b.publisher_name.toLowerCase().includes(q)
+    const matched = search
+      ? books.filter(
+          (b) =>
+            b.book_title.toLowerCase().includes(q) ||
+            b.book_name.toLowerCase().includes(q) ||
+            b.publisher_name.toLowerCase().includes(q)
+        )
+      : books;
+    // Alphabetical (A→Z) by display title.
+    return [...matched].sort((a, b) =>
+      (a.book_title || a.book_name).localeCompare(b.book_title || b.book_name)
     );
   }, [books, search]);
 

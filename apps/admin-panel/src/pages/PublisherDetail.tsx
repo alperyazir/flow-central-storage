@@ -149,12 +149,17 @@ const PublisherDetailPage = () => {
   }, [token, id]);
 
   const filteredBooks = useMemo(() => {
-    if (!bookSearch) return books;
     const q = bookSearch.toLowerCase();
-    return books.filter(
-      (b) =>
-        (b.book_title || b.book_name).toLowerCase().includes(q) ||
-        b.book_name.toLowerCase().includes(q)
+    const matched = bookSearch
+      ? books.filter(
+          (b) =>
+            (b.book_title || b.book_name).toLowerCase().includes(q) ||
+            b.book_name.toLowerCase().includes(q)
+        )
+      : books;
+    // Alphabetical (A→Z) by display title.
+    return [...matched].sort((a, b) =>
+      (a.book_title || a.book_name).localeCompare(b.book_title || b.book_name)
     );
   }, [books, bookSearch]);
 
