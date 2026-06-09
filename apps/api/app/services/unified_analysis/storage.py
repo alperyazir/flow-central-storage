@@ -7,42 +7,10 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-from cefrpy import CEFRAnalyzer
-
 from app.core.config import get_settings
+from app.services.cefr import resolve_cefr_level
 from app.services.unified_analysis.models import UnifiedAnalysisResult, VocabularyWord
 from app.services.vocabulary_extraction.dedup import deduplicate_by_word
-
-_cefr_analyzer = CEFRAnalyzer()
-
-_POS_TO_CEFRPY = {
-    "noun": "NN",
-    "verb": "VB",
-    "adjective": "JJ",
-    "adverb": "RB",
-}
-
-
-def _get_cefr_level(word: str, pos: str) -> str:
-    """Get CEFR level from cefrpy, using POS-specific level when available."""
-    word_lower = word.lower()
-    # cefrpy packs each char as a single byte (ord <= 255); non-ASCII words
-    # (e.g. Turkish ğ/ş/ç) raise struct.error. CEFR is English-only anyway.
-    if not word_lower.isascii():
-        return ""
-    if not _cefr_analyzer.is_word_in_database(word_lower):
-        return ""
-
-    cefrpy_pos = _POS_TO_CEFRPY.get(pos)
-    if cefrpy_pos:
-        level = _cefr_analyzer.get_word_pos_level_CEFR(word_lower, cefrpy_pos)
-        if level:
-            return level.name if hasattr(level, "name") else str(level)
-
-    avg = _cefr_analyzer.get_average_word_level_CEFR(word_lower)
-    if avg:
-        return avg.name if hasattr(avg, "name") else str(avg)
-    return ""
 
 if TYPE_CHECKING:
     from app.core.config import Settings
@@ -124,8 +92,10 @@ class UnifiedAnalysisStorage:
 
         vocab_words = []
         for idx, (v, module_id, module_title) in enumerate(deduplicated, start=1):
-            # Get CEFR level from cefrpy (reliable), fallback to LLM value
-            level = _get_cefr_level(v.word, v.part_of_speech) or v.difficulty
+            # Language-aware CEFR: cefrpy for English, frequency band otherwise.
+            level = resolve_cefr_level(
+                v.word, v.part_of_speech, result.primary_language, v.difficulty
+            )
 
             vocab_words.append(
                 {

@@ -427,6 +427,7 @@ async def _run_processing_stage(
             book_name=metadata.get("book_name", ""),
             progress=progress,
             text_extraction_result=stage_results.get("text_extraction"),
+            book_language=metadata.get("book_language"),
         )
 
     if stage == "chunked_analysis":
@@ -437,6 +438,7 @@ async def _run_processing_stage(
             book_name=metadata.get("book_name", ""),
             progress=progress,
             text_extraction_result=stage_results.get("text_extraction"),
+            book_language=metadata.get("book_language"),
         )
 
     if stage == "topic_analysis":
@@ -653,6 +655,7 @@ async def _run_unified_analysis(
     book_name: str,
     progress: ProgressReporter,
     text_extraction_result: dict[str, Any] | None = None,
+    book_language: str | None = None,
 ) -> dict[str, Any]:
     """Run unified AI analysis stage.
 
@@ -721,6 +724,11 @@ async def _run_unified_analysis(
         progress_callback=on_progress,
     )
 
+    # Config language is authoritative (drives CEFR + audio voice); override the
+    # LLM-detected language when we have it.
+    if book_language:
+        result.primary_language = book_language
+
     # Report progress at 70%
     await progress.report_progress("unified_analysis", 70)
 
@@ -758,6 +766,7 @@ async def _run_chunked_analysis(
     book_name: str,
     progress: ProgressReporter,
     text_extraction_result: dict[str, Any] | None = None,
+    book_language: str | None = None,
 ) -> dict[str, Any]:
     """Run chunked AI analysis stage.
 
@@ -845,6 +854,10 @@ async def _run_chunked_analysis(
         progress_callback=None,
         detailed_progress_callback=sync_detailed_progress,
     )
+
+    # Config language is authoritative (drives CEFR + audio voice).
+    if book_language:
+        result.primary_language = book_language
 
     # Report progress at 90%
     await progress.report_progress("chunked_analysis", 90)

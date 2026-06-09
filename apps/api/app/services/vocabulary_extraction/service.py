@@ -8,9 +8,8 @@ import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
-from cefrpy import CEFRAnalyzer
-
 from app.core.config import get_settings
+from app.services.cefr import resolve_cefr_level
 from app.services.llm import LLMProviderError, get_llm_service
 from app.services.vocabulary_extraction.dedup import deduplicate_by_word
 from app.services.vocabulary_extraction.models import (
@@ -59,70 +58,18 @@ class VocabularyExtractionService:
         """
         self.settings = settings or get_settings()
         self._llm_service = llm_service
-        self._cefr_analyzer = CEFRAnalyzer()
-
-    # Map our POS labels to cefrpy Penn Treebank tags
-    POS_TO_CEFRPY = {
-        "noun": "NN",
-        "verb": "VB",
-        "adjective": "JJ",
-        "adverb": "RB",
-    }
 
     def _get_cefr_level(self, word: str, pos: str) -> str:
-        """Get CEFR level from cefrpy, using POS-specific level when available."""
-        word_lower = word.lower()
-        # cefrpy packs each char as a single byte (ord <= 255); non-ASCII words
-        # (e.g. Turkish ğ/ş/ç) raise struct.error. CEFR is English-only anyway.
-        if not word_lower.isascii():
-            return ""
-        if not self._cefr_analyzer.is_word_in_database(word_lower):
-            return ""
+        """CEFR level from cefrpy (English-only). Thin wrapper over shared logic."""
+        from app.services.cefr import cefrpy_level
 
-        # Try POS-specific level first
-        cefrpy_pos = self.POS_TO_CEFRPY.get(pos)
-        if cefrpy_pos:
-            level = self._cefr_analyzer.get_word_pos_level_CEFR(word_lower, cefrpy_pos)
-            if level:
-                return level.name if hasattr(level, "name") else str(level)
-
-        # Fallback to average level
-        avg = self._cefr_analyzer.get_average_word_level_CEFR(word_lower)
-        if avg:
-            return avg.name if hasattr(avg, "name") else str(avg)
-        return ""
+        return cefrpy_level(word, pos)
 
     def _cefr_from_frequency(self, word: str, language: str) -> str:
-        """Approximate a CEFR level from word frequency (language-aware).
+        """CEFR level from word frequency. Thin wrapper over shared logic."""
+        from app.services.cefr import frequency_level
 
-        Used as a last-resort fallback for non-English languages where cefrpy
-        (English-only) gives nothing and the LLM omitted a level. Maps the
-        ``wordfreq`` Zipf score (commonness) to a CEFR band: very common words
-        are beginner level, rare words advanced. Returns "" when wordfreq is
-        unavailable or the word/language is unknown.
-        """
-        lang = (language or "en").strip().lower().replace("_", "-").split("-")[0]
-        try:
-            from wordfreq import zipf_frequency
-        except Exception:  # pragma: no cover - dependency missing
-            return ""
-        try:
-            zipf = zipf_frequency(word, lang)
-        except Exception:
-            return ""
-        if zipf <= 0:
-            return ""  # unknown word or unsupported language
-        if zipf >= 5.0:
-            return "A1"
-        if zipf >= 4.5:
-            return "A2"
-        if zipf >= 4.0:
-            return "B1"
-        if zipf >= 3.5:
-            return "B2"
-        if zipf >= 3.0:
-            return "C1"
-        return "C2"
+        return frequency_level(word, language)
 
     @property
     def llm_service(self) -> LLMService:
@@ -242,20 +189,10 @@ class VocabularyExtractionService:
             if pos not in valid_pos:
                 pos = ""
 
-            # CEFR level resolution:
-            #   English: cefrpy (curated) -> LLM -> wordfreq band
-            #   Other  : LLM -> wordfreq band
-            # cefrpy is English-only; using it for other languages can return a
-            # misleading English level for an ASCII word that happens to be in
-            # its database (e.g. German "Schule"), so it is skipped there.
-            is_english = language.strip().lower().replace("_", "-").split("-")[0] == "en"
-            level = self._get_cefr_level(word, pos) if is_english else ""
-            if not level:
-                level = str(item.get("level", "")).upper()
-                if level not in ["A1", "A2", "B1", "B2", "C1", "C2"]:
-                    level = ""
-            if not level:
-                level = self._cefr_from_frequency(word, language)
+            # Language-aware CEFR resolution (shared with unified analysis):
+            #   English  -> cefrpy (curated) -> LLM -> wordfreq band
+            #   Other    -> wordfreq band -> LLM
+            level = resolve_cefr_level(word, pos, language, item.get("level"))
 
             vocab_word = VocabularyWord(
                 word=word,
