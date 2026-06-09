@@ -19,7 +19,8 @@ class TTSProviderType(str, Enum):
 # Voice Mapping
 # =============================================================================
 
-# Default voice mapping per language for each provider
+# Default voice mapping per language for each provider. Voice IDs are valid for
+# both Edge TTS and Azure Speech. Add a new language here to support it.
 VOICE_MAPPING: dict[str, dict[str, str]] = {
     "en": {
         "edge": "en-US-JennyNeural",
@@ -29,13 +30,35 @@ VOICE_MAPPING: dict[str, dict[str, str]] = {
         "edge": "tr-TR-EmelNeural",
         "azure": "tr-TR-EmelNeural",
     },
+    "de": {
+        "edge": "de-DE-KatjaNeural",
+        "azure": "de-DE-KatjaNeural",
+    },
+    "es": {
+        "edge": "es-ES-ElviraNeural",
+        "azure": "es-ES-ElviraNeural",
+    },
+    "fr": {
+        "edge": "fr-FR-DeniseNeural",
+        "azure": "fr-FR-DeniseNeural",
+    },
 }
 
 # Alternative voices for variety
 ALTERNATIVE_VOICES: dict[str, list[str]] = {
     "en": ["en-GB-SoniaNeural", "en-US-GuyNeural"],
     "tr": ["tr-TR-AhmetNeural"],
+    "de": ["de-DE-ConradNeural", "de-AT-IngridNeural"],
+    "es": ["es-ES-AlvaroNeural", "es-MX-DaliaNeural"],
+    "fr": ["fr-FR-HenriNeural", "fr-CA-SylvieNeural"],
 }
+
+
+def normalize_language(language: str | None) -> str:
+    """Reduce a language value to a short lookup code (e.g. ``de-DE`` -> ``de``)."""
+    if not language:
+        return "en"
+    return language.strip().lower().replace("_", "-").split("-")[0]
 
 
 def get_default_voice(language: str, provider: str) -> str:
@@ -43,13 +66,15 @@ def get_default_voice(language: str, provider: str) -> str:
     Get the default voice for a language and provider.
 
     Args:
-        language: Language code (e.g., "en", "tr")
+        language: Language code (e.g., "en", "tr", "de", "es", "fr")
         provider: Provider name (e.g., "edge", "azure")
 
     Returns:
-        Voice ID string (e.g., "en-US-JennyNeural")
+        Voice ID string (e.g., "en-US-JennyNeural"). Falls back to English when
+        the language has no mapping.
     """
-    lang_voices = VOICE_MAPPING.get(language, VOICE_MAPPING.get("en", {}))
+    lang = normalize_language(language)
+    lang_voices = VOICE_MAPPING.get(lang, VOICE_MAPPING.get("en", {}))
     return lang_voices.get(provider, lang_voices.get("edge", "en-US-JennyNeural"))
 
 

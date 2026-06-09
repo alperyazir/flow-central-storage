@@ -115,9 +115,27 @@ async def process_book_task(
         finally:
             _session.close()
 
+    # Authoritative content language from the Book record (config.json). Used so
+    # vocabulary + audio target the real language instead of relying on LLM
+    # detection (which only recognised en/tr).
+    book_language = job_metadata.get("book_language")
+    if not book_language:
+        from app.db import SessionLocal
+        from app.models.book import Book
+
+        _bsession = SessionLocal()
+        try:
+            _book = _bsession.get(Book, int(book_id)) if str(book_id).isdigit() else None
+            book_language = (_book.language if _book and _book.language else "en")
+        except Exception:
+            book_language = "en"
+        finally:
+            _bsession.close()
+
     # Store in metadata so stage functions can access it
     job_metadata["publisher_id_int"] = pub_id
     job_metadata["publisher_slug"] = pub_slug
+    job_metadata["book_language"] = book_language
 
     logger.info(
         "Starting processing job %s for book %s (type: %s, publisher_id: %s)",
@@ -439,6 +457,7 @@ async def _run_processing_stage(
             book_name=metadata.get("book_name", ""),
             progress=progress,
             topic_analysis_result=stage_results.get("topic_analysis") or stage_results.get("unified_analysis"),
+            book_language=metadata.get("book_language"),
         )
 
     if stage == "audio_generation":
@@ -449,6 +468,7 @@ async def _run_processing_stage(
             book_name=metadata.get("book_name", ""),
             progress=progress,
             vocabulary_result=stage_results.get("vocabulary"),
+            book_language=metadata.get("book_language"),
         )
 
     await progress.report_progress(stage, 50)
@@ -1020,6 +1040,7 @@ async def _run_vocabulary_extraction(
     book_name: str,
     progress: ProgressReporter,
     topic_analysis_result: dict[str, Any] | None = None,
+    book_language: str | None = None,
 ) -> dict[str, Any]:
     """Run vocabulary extraction stage.
 
@@ -1076,14 +1097,16 @@ async def _run_vocabulary_extraction(
         }
 
     # Determine language from topic analysis or unified analysis result
-    primary_language = "en"
     translation_language = "tr"
+    # Authoritative content language: config (book_language) wins over LLM
+    # detection, which historically only knew en/tr.
+    detected_language = None
     if topic_analysis_result:
-        primary_language = (
+        detected_language = (
             topic_analysis_result.get("primary_language")
             or topic_analysis_result.get("language")
-            or "en"
         )
+    primary_language = book_language or detected_language or "en"
 
     # Progress tracking
     def on_progress(current: int, total: int) -> None:
@@ -1137,6 +1160,7 @@ async def _run_audio_generation(
     book_name: str,
     progress: ProgressReporter,
     vocabulary_result: dict[str, Any] | None = None,
+    book_language: str | None = None,
 ) -> dict[str, Any]:
     """Run audio generation stage.
 
@@ -1205,8 +1229,9 @@ async def _run_audio_generation(
             "translation_language": vocabulary_data.get("translation_language", "tr"),
         }
 
-    # Get language settings
-    primary_language = vocabulary_data.get("language", "en")
+    # Get language settings. Config language (book_language) is authoritative so
+    # the word is voiced in its real language, not an LLM-detected fallback.
+    primary_language = book_language or vocabulary_data.get("language", "en")
     translation_language = vocabulary_data.get("translation_language", "tr")
 
     # Progress tracking

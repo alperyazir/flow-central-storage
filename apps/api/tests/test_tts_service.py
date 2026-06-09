@@ -147,8 +147,8 @@ class TestVoiceMapping:
     """Tests for voice mapping functions."""
 
     def test_voice_mapping_exists(self):
-        assert "en" in VOICE_MAPPING
-        assert "tr" in VOICE_MAPPING
+        for lang in ("en", "tr", "de", "es", "fr"):
+            assert lang in VOICE_MAPPING
 
     def test_get_default_voice_english(self):
         voice = get_default_voice("en", "edge")
@@ -158,9 +158,19 @@ class TestVoiceMapping:
         voice = get_default_voice("tr", "azure")
         assert voice == "tr-TR-EmelNeural"
 
+    def test_get_default_voice_german_spanish_french(self):
+        assert get_default_voice("de", "edge") == "de-DE-KatjaNeural"
+        assert get_default_voice("es", "edge") == "es-ES-ElviraNeural"
+        assert get_default_voice("fr", "edge") == "fr-FR-DeniseNeural"
+
+    def test_get_default_voice_normalizes_region_codes(self):
+        # "de-DE" / "ES_es" reduce to the base language code.
+        assert get_default_voice("de-DE", "edge") == "de-DE-KatjaNeural"
+        assert get_default_voice("ES_es", "edge") == "es-ES-ElviraNeural"
+
     def test_get_default_voice_unknown_language(self):
-        voice = get_default_voice("fr", "edge")
-        # Should fall back to English
+        # A truly unmapped language still falls back to English.
+        voice = get_default_voice("it", "edge")
         assert voice == "en-US-JennyNeural"
 
 
