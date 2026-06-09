@@ -92,6 +92,38 @@ class VocabularyExtractionService:
             return avg.name if hasattr(avg, "name") else str(avg)
         return ""
 
+    def _cefr_from_frequency(self, word: str, language: str) -> str:
+        """Approximate a CEFR level from word frequency (language-aware).
+
+        Used as a last-resort fallback for non-English languages where cefrpy
+        (English-only) gives nothing and the LLM omitted a level. Maps the
+        ``wordfreq`` Zipf score (commonness) to a CEFR band: very common words
+        are beginner level, rare words advanced. Returns "" when wordfreq is
+        unavailable or the word/language is unknown.
+        """
+        lang = (language or "en").strip().lower().replace("_", "-").split("-")[0]
+        try:
+            from wordfreq import zipf_frequency
+        except Exception:  # pragma: no cover - dependency missing
+            return ""
+        try:
+            zipf = zipf_frequency(word, lang)
+        except Exception:
+            return ""
+        if zipf <= 0:
+            return ""  # unknown word or unsupported language
+        if zipf >= 5.0:
+            return "A1"
+        if zipf >= 4.5:
+            return "A2"
+        if zipf >= 4.0:
+            return "B1"
+        if zipf >= 3.5:
+            return "B2"
+        if zipf >= 3.0:
+            return "C1"
+        return "C2"
+
     @property
     def llm_service(self) -> LLMService:
         """Get or create LLM service instance."""
@@ -169,6 +201,7 @@ class VocabularyExtractionService:
         module_id: int,
         max_words: int,
         min_word_length: int,
+        language: str = "en",
     ) -> list[VocabularyWord]:
         """
         Extract VocabularyWord objects from parsed JSON response.
@@ -209,12 +242,20 @@ class VocabularyExtractionService:
             if pos not in valid_pos:
                 pos = ""
 
-            # Get CEFR level from cefrpy (reliable), fallback to LLM
-            level = self._get_cefr_level(word, pos)
+            # CEFR level resolution:
+            #   English: cefrpy (curated) -> LLM -> wordfreq band
+            #   Other  : LLM -> wordfreq band
+            # cefrpy is English-only; using it for other languages can return a
+            # misleading English level for an ASCII word that happens to be in
+            # its database (e.g. German "Schule"), so it is skipped there.
+            is_english = language.strip().lower().replace("_", "-").split("-")[0] == "en"
+            level = self._get_cefr_level(word, pos) if is_english else ""
             if not level:
                 level = str(item.get("level", "")).upper()
                 if level not in ["A1", "A2", "B1", "B2", "C1", "C2"]:
                     level = ""
+            if not level:
+                level = self._cefr_from_frequency(word, language)
 
             vocab_word = VocabularyWord(
                 word=word,
@@ -309,7 +350,7 @@ class VocabularyExtractionService:
 
             # Parse response
             parsed = self._parse_json_array_response(response, module_id, book_id)
-            words = self._extract_vocabulary_words(parsed, module_id, max_words, min_word_length)
+            words = self._extract_vocabulary_words(parsed, module_id, max_words, min_word_length, language)
 
             logger.info(
                 "Module %d vocabulary extracted: %d words",
@@ -348,7 +389,7 @@ class VocabularyExtractionService:
                 )
 
                 parsed = self._parse_json_array_response(response, module_id, book_id)
-                words = self._extract_vocabulary_words(parsed, module_id, max_words, min_word_length)
+                words = self._extract_vocabulary_words(parsed, module_id, max_words, min_word_length, language)
 
                 return ModuleVocabularyResult(
                     module_id=module_id,

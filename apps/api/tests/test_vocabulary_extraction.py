@@ -386,6 +386,27 @@ class TestVocabularyExtractionService:
             llm_service=mock_llm_service,
         )
 
+    def test_cefr_from_frequency_is_language_aware(self, service):
+        """wordfreq fallback bands common words low and rare words high, per language."""
+        pytest.importorskip("wordfreq")
+        # Common German/Spanish/French words -> beginner; rare -> advanced.
+        assert service._cefr_from_frequency("Schule", "de") == "A1"
+        assert service._cefr_from_frequency("casa", "es") == "A1"
+        assert service._cefr_from_frequency("maison", "fr") == "A1"
+        assert service._cefr_from_frequency("Schildkröte", "de") in {"B2", "C1", "C2"}
+        # Region codes normalize; unknown words / langs return "".
+        assert service._cefr_from_frequency("Haus", "de-DE") == "A1"
+        assert service._cefr_from_frequency("zzxqwords", "de") == ""
+
+    def test_extract_words_uses_frequency_fallback_for_german(self, service):
+        """When cefrpy and the LLM give no level, the frequency band fills it in."""
+        pytest.importorskip("wordfreq")
+        parsed = [
+            {"word": "Schule", "translation": "okul", "part_of_speech": "noun", "level": ""},
+        ]
+        words = service._extract_vocabulary_words(parsed, module_id=1, max_words=10, min_word_length=1, language="de")
+        assert words and words[0].level == "A1"
+
     @pytest.mark.asyncio
     async def test_extract_module_vocabulary_success(self, service, mock_llm_service):
         """Test successful vocabulary extraction from a module."""
