@@ -14,6 +14,7 @@ from app.core.config import get_settings
 from app.core.security import decode_access_token, verify_api_key_from_db
 from app.db import get_db
 from app.repositories.book import BookRepository
+from app.repositories.bundle import BundleRepository
 from app.repositories.publisher import PublisherRepository
 from app.schemas.standalone_app import (
     AsyncBundleRequest,
@@ -23,6 +24,7 @@ from app.schemas.standalone_app import (
     BundleJobResult,
     BundleJobStatus,
     BundleListResponse,
+    BundleReconcileResult,
     BundleRequest,
     BundleResponse,
     TemplateInfo,
@@ -36,12 +38,14 @@ from app.services.standalone_apps import (
     BundleNotFoundError,
     InvalidPlatformError,
     TemplateNotFoundError,
+    bundle_rows_to_metadata,
     create_bundle,
     delete_bundle,
     delete_template,
+    get_bundle_version,
     get_template_download_url,
-    list_bundles,
     list_templates,
+    reconcile_bundles,
     template_exists,
     upload_template,
 )
@@ -50,6 +54,7 @@ router = APIRouter(prefix="/standalone-apps", tags=["Standalone Apps"])
 _bearer_scheme = HTTPBearer(auto_error=True)
 _book_repository = BookRepository()
 _publisher_repository = PublisherRepository()
+_bundle_repository = BundleRepository()
 
 logger = logging.getLogger(__name__)
 
@@ -347,6 +352,26 @@ async def create_bundle_endpoint(
                         object_name=obj.object_name,
                         expires=timedelta(seconds=PRESIGNED_URL_EXPIRY_SECONDS),
                     )
+                    # Self-heal the index: this serving path returns an R2
+                    # bundle without going through create_bundle_task, so without
+                    # this upsert the bundle would stay invisible in the panel
+                    # (DB-backed list) until a manual reconcile.
+                    try:
+                        _bundle_repository.upsert(
+                            db,
+                            object_name=obj.object_name,
+                            publisher_slug=publisher.slug,
+                            book_name=book.book_name,
+                            platform=normalized_platform,
+                            file_name=file_name,
+                            file_size=obj.size or 0,
+                            app_version=get_bundle_version(client, settings.minio_apps_bucket, obj.object_name),
+                            book_id=book.id,
+                        )
+                        db.commit()
+                    except Exception as idx_exc:
+                        db.rollback()
+                        logger.warning("Failed to index cached bundle %s: %s", obj.object_name, idx_exc)
                     expires_at = datetime.now(timezone.utc) + timedelta(seconds=PRESIGNED_URL_EXPIRY_SECONDS)
                     response.status_code = status.HTTP_200_OK
                     return BundleResponse(
@@ -512,7 +537,11 @@ def list_bundles_endpoint(
     client = get_minio_client(settings)
     external_client = get_minio_client_external(settings)
 
-    bundles_data = list_bundles(
+    # Read from the bundle index (DB) instead of scanning R2 per request.
+    # Use the "Reconcile with R2" action to repair drift.
+    rows = _bundle_repository.list_all(db)
+    bundles_data = bundle_rows_to_metadata(
+        rows,
         client=client,
         external_client=external_client,
         bucket=settings.minio_apps_bucket,
@@ -535,6 +564,32 @@ def list_bundles_endpoint(
     ]
 
     return BundleListResponse(bundles=bundles)
+
+
+@router.post("/bundles/reconcile", response_model=BundleReconcileResult)
+def reconcile_bundles_endpoint(
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+) -> BundleReconcileResult:
+    """Reconcile the bundle index against R2 (three-way diff) and return counts.
+
+    R2 is the source of truth; this repairs any drift between storage and the
+    DB index (e.g. bundles created/deleted out-of-band).
+    """
+    _require_admin(credentials, db)
+
+    settings = get_settings()
+    client = get_minio_client(settings)
+    external_client = get_minio_client_external(settings)
+
+    result = reconcile_bundles(
+        db,
+        _bundle_repository,
+        client=client,
+        external_client=external_client,
+        bucket=settings.minio_apps_bucket,
+    )
+    return BundleReconcileResult(**result)
 
 
 @router.get("/bundle/jobs", response_model=BundleJobListResponse)
@@ -910,6 +965,13 @@ def delete_bundle_endpoint(
             object_name=object_name,
         )
     except BundleNotFoundError as exc:
+        # Already gone from R2 — still drop any stale index row before 404.
+        _bundle_repository.delete_by_object_name(db, object_name)
+        db.commit()
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    # Keep the index in sync with R2.
+    _bundle_repository.delete_by_object_name(db, object_name)
+    db.commit()
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)

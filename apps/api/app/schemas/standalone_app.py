@@ -79,6 +79,15 @@ class BundleListResponse(BaseModel):
     bundles: list[BundleInfo] = Field(default_factory=list)
 
 
+class BundleReconcileResult(BaseModel):
+    """Counts returned after reconciling the bundle index against R2."""
+
+    created: int = Field(0, description="Rows inserted (present in R2, missing in DB)")
+    updated: int = Field(0, description="Rows updated (metadata changed)")
+    removed: int = Field(0, description="Rows deleted (missing from R2)")
+    total: int = Field(0, description="Total bundles found in R2 after reconcile")
+
+
 class AsyncBundleRequest(BaseModel):
     """Request payload for creating a bundle asynchronously."""
 

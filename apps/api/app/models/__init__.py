@@ -1,7 +1,9 @@
 """Database models package."""
 
 from .api_key import ApiKey
+from .app_setting import AppSetting
 from .book import Book
+from .bundle import Bundle
 from .material import Material
 from .publisher import Publisher  # Must be imported before Book due to relationship
 from .teacher import Teacher  # Must be imported before Material due to relationship
@@ -10,7 +12,9 @@ from .webhook import WebhookDeliveryLog, WebhookEventType, WebhookSubscription
 
 __all__ = [
     "ApiKey",
+    "AppSetting",
     "Book",
+    "Bundle",
     "Material",
     "Publisher",
     "Teacher",

@@ -1983,6 +1983,28 @@ async def create_bundle_task(
             raise TemplateNotFoundError(f"Template for platform '{normalized_platform}' not found") from exc
         template_version = _extract_version_from_metadata(getattr(template_stat, "metadata", None))
 
+        def _record_bundle_row(object_name: str, file_name: str, file_size: int, version: str | None) -> None:
+            """Upsert this bundle into the DB index (best-effort; never fails the job)."""
+            from app.db import SessionLocal
+            from app.repositories.bundle import BundleRepository
+
+            try:
+                with SessionLocal() as session:
+                    BundleRepository().upsert(
+                        session,
+                        object_name=object_name,
+                        publisher_slug=publisher_slug,
+                        book_name=book_name,
+                        platform=normalized_platform,
+                        file_name=file_name,
+                        file_size=file_size,
+                        app_version=version,
+                        book_id=book_id,
+                    )
+                    session.commit()
+            except Exception as exc:  # noqa: BLE001 - index is best-effort
+                logger.warning("Failed to index bundle %s: %s", object_name, exc)
+
         # Check if bundle already exists (unless force=True)
         if not force:
             bundle_prefix = f"{BUNDLE_PREFIX}/{publisher_slug}/{book_name}/"
@@ -2004,6 +2026,16 @@ async def create_bundle_task(
                         )
 
                         await update_progress(100, "Bundle ready (cached)")
+                        # Index with the cached bundle's OWN stamped version (not
+                        # the current template's) so staleness stays correct.
+                        from app.services.standalone_apps import get_bundle_version
+
+                        cached_version = await asyncio.to_thread(
+                            get_bundle_version, client, apps_bucket, obj.object_name
+                        )
+                        await asyncio.to_thread(
+                            _record_bundle_row, obj.object_name, file_name, obj.size, cached_version
+                        )
                         await repository.update_job_status(job_id, ProcessingStatus.COMPLETED)
 
                         return {
@@ -2170,6 +2202,16 @@ async def create_bundle_task(
             )
 
             await update_progress(100, "Bundle ready")
+
+            # Index the freshly built bundle so the panel can list it without
+            # scanning R2.
+            await asyncio.to_thread(
+                _record_bundle_row,
+                bundle_object_name,
+                f"{bundle_name}.zip",
+                bundle_size,
+                template_version,
+            )
 
             # Store download_url in job hash so bundle-status can return it
             job_key = f"dcs:job:{job_id}"

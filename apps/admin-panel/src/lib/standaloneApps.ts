@@ -97,6 +97,13 @@ export interface BundleListResponse {
   bundles: BundleInfo[];
 }
 
+export interface BundleReconcileResult {
+  created: number;
+  updated: number;
+  removed: number;
+  total: number;
+}
+
 export interface TemplateDownloadResponse {
   download_url: string;
   platform: string;
@@ -197,6 +204,22 @@ export const listBundles = (
   client.get<BundleListResponse>('/standalone-apps/bundles', {
     headers: buildAuthHeaders(token, tokenType),
   });
+
+/**
+ * Reconcile the bundle index against R2 (three-way diff). Returns counts.
+ */
+export const reconcileBundles = (
+  token: string,
+  tokenType: string = 'Bearer',
+  client: ApiClient = apiClient
+): Promise<BundleReconcileResult> =>
+  client.post<BundleReconcileResult>(
+    '/standalone-apps/bundles/reconcile',
+    undefined,
+    {
+      headers: buildAuthHeaders(token, tokenType),
+    }
+  );
 
 /**
  * Delete a bundle by its object path

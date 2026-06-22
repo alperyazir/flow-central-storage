@@ -27,6 +27,7 @@ import {
 } from 'lib/books';
 import { uploadChildBookChunked } from 'lib/uploads';
 import { useOperationsStore } from 'stores/operations';
+import { useSettingsStore } from 'stores/settings';
 import { appConfig } from 'config/environment';
 
 interface ChildBookUploadDialogProps {
@@ -62,6 +63,7 @@ const ChildBookUploadDialog = ({
   const inputRef = useRef<HTMLInputElement>(null);
   const addOperation = useOperationsStore((s) => s.addOperation);
   const updateOperation = useOperationsStore((s) => s.updateOperation);
+  const defaultAutoBundle = useSettingsStore((s) => s.settings.default_auto_bundle);
 
   const acceptSuffix = bookType === 'pdf' ? '.pdf' : '.zip';
 
@@ -147,7 +149,7 @@ const ChildBookUploadDialog = ({
             detail: s.detail || s.step,
           });
         },
-        { autoBundle: bookType === 'standard' },
+        { autoBundle: bookType === 'standard' && defaultAutoBundle },
         appConfig.apiBaseUrl
       );
       promise

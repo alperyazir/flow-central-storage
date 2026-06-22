@@ -8,6 +8,7 @@ import {
   Monitor,
   Apple,
   RefreshCw,
+  Database,
   XCircle,
   Eraser,
   ChevronDown,
@@ -57,6 +58,7 @@ import {
   createBundleAsync,
   getBundleJobStatus,
   deleteBundle,
+  reconcileBundles,
   cancelBundleJob,
   deleteBundleJob,
   clearBundleJobs,
@@ -110,6 +112,8 @@ const BundlesPage = () => {
   const [jobError, setJobError] = useState<string | null>(null);
   const [delTarget, setDelTarget] = useState<BundleInfo | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [reconciling, setReconciling] = useState(false);
+  const [reconcileMsg, setReconcileMsg] = useState<string | null>(null);
 
   const load = async () => {
     if (!token) return;
@@ -130,6 +134,24 @@ const BundlesPage = () => {
       setError(e instanceof Error ? e.message : 'Failed to load');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleReconcile = async () => {
+    if (!token) return;
+    setReconciling(true);
+    setReconcileMsg(null);
+    setError(null);
+    try {
+      const r = await reconcileBundles(token, tt);
+      setReconcileMsg(
+        `Reconciled with R2 — added ${r.created}, updated ${r.updated}, removed ${r.removed} (R2 total: ${r.total}).`
+      );
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Reconcile failed');
+    } finally {
+      setReconciling(false);
     }
   };
 
@@ -377,11 +399,29 @@ const BundlesPage = () => {
           >
             <RefreshCw className="h-4 w-4" /> Refresh
           </Button>
+          <Button
+            variant="outline"
+            onClick={handleReconcile}
+            disabled={reconciling}
+            title="Repair the bundle index from R2 storage"
+          >
+            {reconciling ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Database className="h-4 w-4" />
+            )}{' '}
+            Reconcile with R2
+          </Button>
           <Button onClick={openCreate}>
             <Plus className="h-4 w-4" /> Create Bundle
           </Button>
         </div>
       </div>
+      {reconcileMsg && (
+        <Alert>
+          <AlertDescription>{reconcileMsg}</AlertDescription>
+        </Alert>
+      )}
       {error && (
         <Alert variant="destructive">
           <AlertDescription>{error}</AlertDescription>

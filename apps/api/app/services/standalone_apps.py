@@ -159,6 +159,20 @@ def get_template_version(client: Minio, bucket: str, platform: str) -> str | Non
         return None
 
 
+def get_bundle_version(client: Minio, bucket: str, object_name: str) -> str | None:
+    """Return the app version stamped on an existing bundle object, or None.
+
+    Reads the bundle's own ``x-amz-meta-app-version`` (set when it was built),
+    NOT the current template's — so cached/existing bundles are indexed with the
+    version they actually carry and staleness is computed correctly.
+    """
+    try:
+        stat = client.stat_object(bucket, object_name)
+        return _extract_version_from_metadata(getattr(stat, "metadata", None))
+    except S3Error:
+        return None
+
+
 def upload_template(
     client: Minio,
     bucket: str,
@@ -728,3 +742,105 @@ def delete_bundle(
     client.remove_object(bucket, object_name)
     logger.info("Deleted bundle: %s", object_name)
     return True
+
+
+def bundle_rows_to_metadata(
+    rows: "list",
+    client: Minio,
+    external_client: Minio,
+    bucket: str,
+) -> list[BundleMetadata]:
+    """Turn indexed bundle rows into :class:`BundleMetadata` for the API.
+
+    Avoids the per-bundle ``stat_object`` that the R2-scanning ``list_bundles``
+    pays: the only storage calls are the current template-version lookups (4,
+    one per platform) plus presigning each row's download URL (a local HMAC, no
+    network round-trip).
+    """
+    current_versions = {p: get_template_version(client, bucket, p) for p in ALLOWED_PLATFORMS}
+
+    metadata: list[BundleMetadata] = []
+    for row in rows:
+        try:
+            download_url = external_client.presigned_get_object(
+                bucket_name=bucket,
+                object_name=row.object_name,
+                expires=timedelta(seconds=PRESIGNED_URL_EXPIRY_SECONDS),
+            )
+        except S3Error:
+            download_url = None
+
+        current = current_versions.get(row.platform)
+        stale = (row.app_version != current) if (row.app_version and current) else None
+
+        metadata.append(
+            BundleMetadata(
+                publisher_name=row.publisher_slug,
+                book_name=row.book_name,
+                platform=row.platform,
+                file_name=row.file_name,
+                file_size=row.file_size,
+                created_at=row.created_at,
+                object_name=row.object_name,
+                download_url=download_url,
+                version=row.app_version,
+                stale=stale,
+            )
+        )
+    return metadata
+
+
+def reconcile_bundles(
+    session,
+    repo,
+    client: Minio,
+    external_client: Minio,
+    bucket: str,
+) -> dict[str, int]:
+    """Self-heal the bundle index against R2 (three-way diff).
+
+    - present in R2, missing in DB  -> insert
+    - present in both, fields differ -> update
+    - present in DB, missing in R2  -> delete
+
+    Returns counts. Commits once at the end.
+    """
+    r2_by_obj = {b.object_name: b for b in list_bundles(client, external_client, bucket)}
+    db_by_obj = {r.object_name: r for r in repo.list_all(session)}
+
+    created = updated = removed = 0
+
+    for object_name, b in r2_by_obj.items():
+        existing = db_by_obj.get(object_name)
+        changed = existing is None or (
+            existing.file_size != b.file_size
+            or existing.app_version != b.version
+            or existing.publisher_slug != b.publisher_name
+            or existing.book_name != b.book_name
+            or existing.file_name != b.file_name
+            or existing.platform != b.platform
+        )
+        if not changed:
+            continue
+        repo.upsert(
+            session,
+            object_name=object_name,
+            publisher_slug=b.publisher_name,
+            book_name=b.book_name,
+            platform=b.platform,
+            file_name=b.file_name,
+            file_size=b.file_size,
+            app_version=b.version,
+        )
+        if existing is None:
+            created += 1
+        else:
+            updated += 1
+
+    for object_name in db_by_obj:
+        if object_name not in r2_by_obj:
+            repo.delete_by_object_name(session, object_name)
+            removed += 1
+
+    session.commit()
+    return {"created": created, "updated": updated, "removed": removed, "total": len(r2_by_obj)}

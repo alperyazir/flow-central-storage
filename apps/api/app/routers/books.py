@@ -23,6 +23,7 @@ from app.models.book import Book, BookStatusEnum, BookTypeEnum
 from app.models.publisher import Publisher
 from app.models.webhook import WebhookEventType
 from app.repositories.book import BookRepository
+from app.repositories.bundle import BundleRepository
 from app.repositories.publisher import PublisherRepository
 from app.repositories.user import UserRepository
 from app.schemas.book import BookCreate, BookRead, BookTitleUpdate, BookUpdate
@@ -51,6 +52,7 @@ _bearer_scheme = HTTPBearer(auto_error=True)
 _book_repository = BookRepository()
 _publisher_repository = PublisherRepository()
 _user_repository = UserRepository()
+_bundle_repository = BundleRepository()
 _webhook_service = WebhookService()
 logger = logging.getLogger(__name__)
 
@@ -840,6 +842,22 @@ def delete_book(
                         logger.warning(
                             "Failed to delete bundles for child %s: %s", child_name, exc
                         )
+
+                # Drop the corresponding bundle index rows so the panel stops
+                # listing bundles whose R2 objects were just removed.
+                try:
+                    prefixes = [f"bundles/{book_publisher_slug}/{book_name}/"]
+                    prefixes += [
+                        f"bundles/{book_publisher_slug}/{child_name}/"
+                        for child_name, child_type in children_info
+                        if child_type == BookTypeEnum.STANDARD.value
+                    ]
+                    with SessionLocal() as bundle_session:
+                        for prefix in prefixes:
+                            _bundle_repository.delete_by_prefix(bundle_session, prefix)
+                        bundle_session.commit()
+                except Exception as exc:
+                    logger.warning("Failed to prune bundle index for book %s: %s", book_name, exc)
 
             set_deletion_progress(job_id, 85, "database", "Removing database record...")
 

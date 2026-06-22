@@ -1,4 +1,4 @@
-import { ChangeEvent, useEffect, useReducer, useState } from 'react';
+import { ChangeEvent, useEffect, useReducer, useRef, useState } from 'react';
 import { Loader2, Upload, CheckCircle, XCircle } from 'lucide-react';
 
 import {
@@ -32,6 +32,7 @@ import {
 } from 'lib/uploads';
 import { ApiError } from 'lib/api';
 import { useOperationsStore } from 'stores/operations';
+import { useSettingsStore } from 'stores/settings';
 
 interface PublisherUploadDialogProps {
   open: boolean;
@@ -163,7 +164,8 @@ export function PublisherUploadDialog({
   const [loadingPubs, setLoadingPubs] = useState(false);
   const [fileError, setFileError] = useState('');
   const [overrideExisting, setOverrideExisting] = useState(false);
-  const [autoBundle, setAutoBundle] = useState(true);
+  const defaultAutoBundle = useSettingsStore((s) => s.settings.default_auto_bundle);
+  const [autoBundle, setAutoBundle] = useState(defaultAutoBundle);
 
   useEffect(() => {
     if (open && token) {
@@ -175,14 +177,20 @@ export function PublisherUploadDialog({
     }
   }, [open, token, tokenType]);
 
+  const prevOpenRef = useRef(false);
   useEffect(() => {
     if (!open) {
       dispatch({ type: 'RESET', initialPublisherId });
       setFileError('');
       setOverrideExisting(false);
-      setAutoBundle(true);
+    } else if (!prevOpenRef.current) {
+      // Seed the auto-bundle checkbox from the saved default only on the
+      // closed->open transition, so a settings fetch completing while the
+      // dialog is already open doesn't clobber the user's in-session toggle.
+      setAutoBundle(defaultAutoBundle);
     }
-  }, [open, initialPublisherId]);
+    prevOpenRef.current = open;
+  }, [open, initialPublisherId, defaultAutoBundle]);
 
   const selectedPub = publishers.find((p) => p.id === state.publisherId);
   const effectiveType =

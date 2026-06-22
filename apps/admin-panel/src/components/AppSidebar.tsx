@@ -10,6 +10,7 @@ import {
   KeyRound,
   Calculator,
   Settings,
+  SlidersHorizontal,
   Sun,
   Moon,
   LogOut,
@@ -52,6 +53,7 @@ const navItems = [
   { label: 'Teachers', icon: GraduationCap, path: '/teachers' },
   { label: 'API Keys', icon: KeyRound, path: '/api-keys' },
   { label: 'Calculate', icon: Calculator, path: '/calculate' },
+  { label: 'Settings', icon: SlidersHorizontal, path: '/settings' },
   { label: 'System Info', icon: Settings, path: '/system' },
 ];
 
