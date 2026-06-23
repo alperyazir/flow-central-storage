@@ -552,6 +552,7 @@ def list_bundles_endpoint(
             download_url=b.download_url,
             version=b.version,
             stale=b.stale,
+            group_id=b.group_id,
         )
         for b in bundles_data
     ]

@@ -136,6 +136,7 @@ class BundleMetadata:
     download_url: str | None = None
     version: str | None = None
     stale: bool | None = None
+    group_id: int | None = None
 
 
 def _get_template_object_name(platform: str) -> str:
@@ -801,6 +802,7 @@ def bundle_rows_to_metadata(
                 download_url=download_url,
                 version=row.app_version,
                 stale=stale,
+                group_id=row.group_id,
             )
         )
     return metadata

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.models.book import Book, BookStatusEnum
 from app.models.publisher import Publisher
@@ -32,7 +32,13 @@ class BookRepository(BaseRepository[Book]):
         top_level_only: bool = False,
     ) -> list[Book]:
         """List non-archived books, optionally scoped to a parent or top-level only."""
-        statement = select(Book).where(Book.status != BookStatusEnum.ARCHIVED)
+        # Eager-load group_rel so the BookRead.group_name property doesn't fire a
+        # per-row lazy SELECT when serializing the list.
+        statement = (
+            select(Book)
+            .where(Book.status != BookStatusEnum.ARCHIVED)
+            .options(selectinload(Book.group_rel))
+        )
         if top_level_only:
             statement = statement.where(Book.parent_book_id.is_(None))
         elif parent_book_id is not None:
@@ -50,9 +56,13 @@ class BookRepository(BaseRepository[Book]):
         top_level_only: bool = False,
     ) -> list[Book]:
         """List non-archived books for a specific publisher."""
-        statement = select(Book).where(
-            Book.publisher_id == publisher_id,
-            Book.status != BookStatusEnum.ARCHIVED,
+        statement = (
+            select(Book)
+            .where(
+                Book.publisher_id == publisher_id,
+                Book.status != BookStatusEnum.ARCHIVED,
+            )
+            .options(selectinload(Book.group_rel))
         )
         if top_level_only:
             statement = statement.where(Book.parent_book_id.is_(None))

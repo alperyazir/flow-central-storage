@@ -71,6 +71,10 @@ class BundleInfo(BaseModel):
         None,
         description="True if built with an older version than the current template; None if unknown (no version stamp)",
     )
+    group_id: int | None = Field(
+        None,
+        description="Book group this bundle packages (None for single-book bundles); lets clients match a grouped book to its group bundle",
+    )
 
 
 class BundleListResponse(BaseModel):

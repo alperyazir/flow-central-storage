@@ -129,6 +129,15 @@ class Book(Base):
         return self.parent_rel.book_name
 
     @property
+    def group_name(self) -> str | None:
+        """Name of the book's group (Student's Book + Workbook, etc.); None when
+        ungrouped. Lets clients label a grouped book by its group without a
+        second fetch. Lazy-loads ``group_rel`` only when ``group_id`` is set."""
+        if self.group_id is None or self.group_rel is None:
+            return None
+        return self.group_rel.name
+
+    @property
     def r2_prefix(self) -> str:
         """R2 object prefix for this book's content in the publishers bucket.
 
