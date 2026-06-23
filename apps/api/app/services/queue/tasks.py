@@ -1948,6 +1948,54 @@ async def create_bundle_task(
 
     book_r2_prefix = await asyncio.to_thread(_resolve_book_prefix)
 
+    # If the book belongs to a group, the bundle packages ALL group members
+    # under data/books/<member>/ and is stored under the group's name. Grouped
+    # books never get an individual bundle.
+    def _resolve_group():
+        from sqlalchemy import select as _select
+        from sqlalchemy.orm import selectinload as _selectinload
+
+        from app.models.book import BookTypeEnum as _BookType
+        from app.models.book_group import BookGroup as _BookGroup
+
+        with SessionLocal() as session:
+            b = session.get(_Book, book_id)
+            if b is None or b.group_id is None:
+                return None
+            group = session.get(_BookGroup, b.group_id)
+            if group is None:
+                return None
+            # Eager-load publisher_rel/parent_rel since r2_prefix touches them;
+            # otherwise each member triggers an extra lazy query (N+1).
+            members = session.scalars(
+                _select(_Book)
+                .where(_Book.group_id == b.group_id)
+                .options(_selectinload(_Book.publisher_rel), _selectinload(_Book.parent_rel))
+            ).all()
+            items = [
+                (m.book_name, m.r2_prefix)
+                for m in members
+                if m.book_type == _BookType.STANDARD.value
+            ]
+            return {"id": b.group_id, "name": group.name, "books": items}
+
+    group_info = await asyncio.to_thread(_resolve_group)
+
+    if group_info and group_info["books"]:
+        from app.services.storage import normalize_book_name as _normalize_group
+
+        is_group = True
+        group_id_val: int | None = group_info["id"]
+        display_name = group_info["name"]
+        bundle_key = _normalize_group(display_name)
+        build_items: list[tuple[str, str]] = group_info["books"]
+    else:
+        is_group = False
+        group_id_val = None
+        display_name = book_name
+        bundle_key = book_name
+        build_items = [(book_name, book_r2_prefix)]
+
     logger.info(
         "Starting bundle creation job %s for book %s (platform: %s, publisher: %s, prefix: %s)",
         job_id,
@@ -1994,12 +2042,13 @@ async def create_bundle_task(
                         session,
                         object_name=object_name,
                         publisher_slug=publisher_slug,
-                        book_name=book_name,
+                        book_name=display_name,
                         platform=normalized_platform,
                         file_name=file_name,
                         file_size=file_size,
                         app_version=version,
                         book_id=book_id,
+                        group_id=group_id_val,
                     )
                     session.commit()
             except Exception as exc:  # noqa: BLE001 - index is best-effort
@@ -2007,7 +2056,7 @@ async def create_bundle_task(
 
         # Check if bundle already exists (unless force=True)
         if not force:
-            bundle_prefix = f"{BUNDLE_PREFIX}/{publisher_slug}/{book_name}/"
+            bundle_prefix = f"{BUNDLE_PREFIX}/{publisher_slug}/{bundle_key}/"
             try:
                 existing_bundles = list(client.list_objects(apps_bucket, prefix=bundle_prefix, recursive=True))
                 for obj in existing_bundles:
@@ -2092,77 +2141,77 @@ async def create_bundle_task(
             if not os.path.isdir(data_dir):
                 os.makedirs(data_dir, exist_ok=True)
 
-            book_dir = os.path.join(data_dir, "books", book_name)
-            os.makedirs(book_dir, exist_ok=True)
+            # 5. Download assets for every book in the bundle into
+            # data/books/<member>/. For a single (ungrouped) book this is one
+            # iteration; for a group it's one per member. The local-cache fast
+            # path only applies to the single uploaded book.
+            await update_progress(25, "Downloading book assets...")
 
-            # 5. Get book assets: local cache (fast) or R2 download (fallback)
-            use_local_cache = local_book_path and os.path.isdir(local_book_path)
+            def _download_all_members() -> int:
+                count = 0
+                for member_name, member_prefix in build_items:
+                    member_dir = os.path.join(data_dir, "books", member_name)
+                    os.makedirs(member_dir, exist_ok=True)
 
-            if use_local_cache:
-                await update_progress(25, "Copying from local cache...")
-
-                # Copy all files from local cache to book_dir
-                asset_count = 0
-                for root, _dirs, files in os.walk(local_book_path):
-                    for file in files:
-                        if file.startswith("."):  # Skip .platform_count etc.
+                    if not is_group and local_book_path and os.path.isdir(local_book_path):
+                        copied = 0
+                        for root, _dirs, files in os.walk(local_book_path):
+                            for file in files:
+                                if file.startswith("."):  # Skip .platform_count etc.
+                                    continue
+                                src = os.path.join(root, file)
+                                rel = os.path.relpath(src, local_book_path)
+                                if should_skip_bundled_path(rel):
+                                    continue
+                                dst = os.path.join(member_dir, rel)
+                                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                                shutil.copy2(src, dst)
+                                copied += 1
+                        if copied > 0:
+                            count += copied
+                            logger.info("Copied %d assets from local cache for %s", copied, member_name)
                             continue
-                        src = os.path.join(root, file)
-                        rel = os.path.relpath(src, local_book_path)
-                        if should_skip_bundled_path(rel):
+                        logger.warning("Local cache empty for %s, falling back to R2 download", local_book_path)
+
+                    objects = [
+                        obj for obj in client.list_objects(publishers_bucket, prefix=member_prefix, recursive=True)
+                        if not obj.is_dir and obj.object_name[len(member_prefix):]
+                    ]
+                    download_tasks = []
+                    for obj in objects:
+                        relative_path = obj.object_name[len(member_prefix):]
+                        if should_skip_bundled_path(relative_path):
                             continue
-                        dst = os.path.join(book_dir, rel)
-                        os.makedirs(os.path.dirname(dst), exist_ok=True)
-                        shutil.copy2(src, dst)
-                        asset_count += 1
+                        dest_path = os.path.join(member_dir, relative_path)
+                        download_tasks.append((publishers_bucket, obj.object_name, dest_path))
 
-                if asset_count == 0:
-                    logger.warning("Local cache empty for %s, falling back to R2 download", local_book_path)
-                    use_local_cache = False
-                else:
-                    logger.info("Copied %d assets from local cache for book %s/%s", asset_count, publisher_slug, book_name)
-                    await update_progress(70, f"Copied {asset_count} assets from cache")
+                    with ThreadPoolExecutor(max_workers=ASSET_DOWNLOAD_WORKERS) as executor:
+                        futures = {
+                            executor.submit(_download_asset, client, bucket, obj_name, dest): obj_name
+                            for bucket, obj_name, dest in download_tasks
+                        }
+                        for future in as_completed(futures):
+                            future.result()
+                            count += 1
+                return count
 
-            if not use_local_cache:
-                await update_progress(25, "Downloading book assets...")
-                # Use the nested-aware prefix resolved from the Book record.
-                book_prefix = book_r2_prefix
-                objects = [
-                    obj for obj in client.list_objects(publishers_bucket, prefix=book_prefix, recursive=True)
-                    if not obj.is_dir and obj.object_name[len(book_prefix):]
-                ]
+            # Off the event loop so downloads don't stall other jobs.
+            total_assets = await asyncio.to_thread(_download_all_members)
 
-                download_tasks = []
-                for obj in objects:
-                    relative_path = obj.object_name[len(book_prefix):]
-                    if should_skip_bundled_path(relative_path):
-                        continue
-                    dest_path = os.path.join(book_dir, relative_path)
-                    download_tasks.append((publishers_bucket, obj.object_name, dest_path))
-                total_objects = len(download_tasks)
-
-                asset_count = 0
-                with ThreadPoolExecutor(max_workers=ASSET_DOWNLOAD_WORKERS) as executor:
-                    futures = {
-                        executor.submit(_download_asset, client, bucket, obj_name, dest): obj_name
-                        for bucket, obj_name, dest in download_tasks
-                    }
-                    for future in as_completed(futures):
-                        future.result()
-                        asset_count += 1
-                        if total_objects > 0:
-                            pct = 25 + int(asset_count / total_objects * 45)
-                            await update_progress(pct, f"Downloaded {asset_count}/{total_objects} assets")
-
-                logger.info("Downloaded %d assets in parallel for book %s/%s", asset_count, publisher_slug, book_name)
-                await update_progress(70, f"Downloaded {asset_count} assets")
+            logger.info(
+                "Prepared %d assets for %s (%s)",
+                total_assets,
+                bundle_key,
+                "group" if is_group else "single",
+            )
+            await update_progress(70, f"Downloaded {total_assets} assets")
 
             # 6. Rename app folder and create bundle ZIP
             await update_progress(75, "Creating bundle...")
             if app_folder_name:
-                bundle_name = f"{app_folder_name} - {book_name}"
+                bundle_name = f"{app_folder_name} - {display_name}"
             else:
-                bundle_name = f"({normalized_platform}) FlowBook - {book_name}"
+                bundle_name = f"({normalized_platform}) FlowBook - {display_name}"
 
             # Rename the app folder so ZIP root matches bundle name
             if app_folder_name and app_folder_name != bundle_name:
@@ -2172,20 +2221,27 @@ async def create_bundle_task(
 
             bundle_path = os.path.join(temp_dir, f"{bundle_name}.zip")
 
-            with zipfile.ZipFile(bundle_path, "w", zipfile.ZIP_STORED) as zf:
-                for root, _dirs, files in os.walk(extract_dir):
-                    for file in files:
-                        file_path = os.path.join(root, file)
-                        arcname = os.path.relpath(file_path, extract_dir)
-                        zf.write(file_path, arcname)
+            # Zip + upload are heavy/blocking; run them off the event loop via
+            # asyncio.to_thread so one large bundle (group bundles are 600MB+)
+            # doesn't freeze the whole worker and stall every other job.
+            def _build_zip() -> None:
+                with zipfile.ZipFile(bundle_path, "w", zipfile.ZIP_STORED) as zf:
+                    for root, _dirs, files in os.walk(extract_dir):
+                        for file in files:
+                            file_path = os.path.join(root, file)
+                            arcname = os.path.relpath(file_path, extract_dir)
+                            zf.write(file_path, arcname)
+
+            await asyncio.to_thread(_build_zip)
             await update_progress(90, "Bundle created")
 
             # 7. Upload bundle (90-100%)
             await update_progress(92, "Uploading bundle...")
-            bundle_object_name = f"{BUNDLE_PREFIX}/{publisher_slug}/{book_name}/{bundle_name}.zip"
+            bundle_object_name = f"{BUNDLE_PREFIX}/{publisher_slug}/{bundle_key}/{bundle_name}.zip"
             bundle_size = os.path.getsize(bundle_path)
 
-            client.fput_object(
+            await asyncio.to_thread(
+                client.fput_object,
                 apps_bucket,
                 bundle_object_name,
                 bundle_path,

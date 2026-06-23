@@ -88,6 +88,13 @@ class BundleReconcileResult(BaseModel):
     total: int = Field(0, description="Total bundles found in R2 after reconcile")
 
 
+class IncompleteUploadsCleanResult(BaseModel):
+    """Result of aborting incomplete multipart uploads left in R2."""
+
+    aborted: int = Field(0, description="Number of incomplete multipart uploads aborted")
+    names: list[str] = Field(default_factory=list, description="Object names that were aborted")
+
+
 class AsyncBundleRequest(BaseModel):
     """Request payload for creating a bundle asynchronously."""
 

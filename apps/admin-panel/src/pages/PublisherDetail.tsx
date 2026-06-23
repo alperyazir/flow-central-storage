@@ -9,6 +9,7 @@ import {
   Trash2,
   Upload,
   Paperclip,
+  Layers,
 } from 'lucide-react';
 
 import { Card, CardContent, CardHeader, CardTitle } from 'components/ui/card';
@@ -59,6 +60,7 @@ import {
   type AssetTypeInfo,
   type AssetFileInfo,
 } from 'lib/publishers';
+import { listBookGroups } from 'lib/bookGroups';
 
 const fmtBytes = (n?: number) => {
   if (!n) return '0 B';
@@ -76,6 +78,7 @@ const PublisherDetailPage = () => {
 
   const [publisher, setPublisher] = useState<Publisher | null>(null);
   const [books, setBooks] = useState<PublisherBook[]>([]);
+  const [groupNames, setGroupNames] = useState<Map<number, string>>(new Map());
   const [assets, setAssets] = useState<AssetTypeInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -118,16 +121,18 @@ const PublisherDetailPage = () => {
     setLoading(true);
     setError('');
     try {
-      const [pub, bks, ast] = await Promise.all([
+      const [pub, bks, ast, grps] = await Promise.all([
         fetchPublisher(Number(id), token, tt),
         fetchPublisherBooks(Number(id), token, tt),
         fetchPublisherAssets(Number(id), token, tt).catch(() => ({
           asset_types: [] as AssetTypeInfo[],
         })),
+        listBookGroups(token, tt, Number(id)).catch(() => ({ groups: [] })),
       ]);
       setPublisher(pub);
       setBooks(bks);
       setAssets(ast.asset_types);
+      setGroupNames(new Map(grps.groups.map((g) => [g.id, g.name])));
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load');
     } finally {
@@ -431,6 +436,12 @@ const PublisherDetailPage = () => {
                           <Badge variant="secondary" className="gap-1">
                             <Paperclip className="h-3 w-3" />
                             +{b.child_count}
+                          </Badge>
+                        )}
+                        {b.group_id != null && groupNames.has(b.group_id) && (
+                          <Badge variant="outline" className="gap-1">
+                            <Layers className="h-3 w-3" />
+                            {groupNames.get(b.group_id)}
                           </Badge>
                         )}
                         <AIStatusBadge

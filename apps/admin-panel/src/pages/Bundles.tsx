@@ -51,14 +51,16 @@ import {
 } from 'components/ui/dialog';
 import { useAuthStore } from 'stores/auth';
 import { fetchBooks, type BookRecord } from 'lib/books';
+import { listBookGroups } from 'lib/bookGroups';
+import BundleTargetPicker from 'components/BundleTargetPicker';
 import {
   listBundles,
   listTemplates,
   listBundleJobs,
   createBundleAsync,
-  getBundleJobStatus,
   deleteBundle,
   reconcileBundles,
+  cleanIncompleteUploads,
   cancelBundleJob,
   deleteBundleJob,
   clearBundleJobs,
@@ -66,7 +68,6 @@ import {
   type StandalonePlatform,
   type BundleInfo,
   type TemplateInfo,
-  type BundleJobResult,
   type BundleJobStatus,
 } from 'lib/standaloneApps';
 
@@ -103,17 +104,18 @@ const BundlesPage = () => {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [platform, setPlatform] = useState('');
   const [books, setBooks] = useState<BookRecord[]>([]);
+  const [bundleGroupNames, setBundleGroupNames] = useState<Map<number, string>>(
+    new Map()
+  );
   const [selectedBookId, setSelectedBookId] = useState('');
   const [force, setForce] = useState(false);
   const [creating, setCreating] = useState(false);
-  const [jobProgress, setJobProgress] = useState(0);
-  const [jobStep, setJobStep] = useState('');
-  const [jobResult, setJobResult] = useState<BundleJobResult | null>(null);
   const [jobError, setJobError] = useState<string | null>(null);
   const [delTarget, setDelTarget] = useState<BundleInfo | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [reconciling, setReconciling] = useState(false);
   const [reconcileMsg, setReconcileMsg] = useState<string | null>(null);
+  const [cleaning, setCleaning] = useState(false);
 
   const load = async () => {
     if (!token) return;
@@ -152,6 +154,25 @@ const BundlesPage = () => {
       setError(e instanceof Error ? e.message : 'Reconcile failed');
     } finally {
       setReconciling(false);
+    }
+  };
+
+  const handleCleanIncomplete = async () => {
+    if (!token) return;
+    setCleaning(true);
+    setReconcileMsg(null);
+    setError(null);
+    try {
+      const r = await cleanIncompleteUploads(token, tt);
+      setReconcileMsg(
+        r.aborted > 0
+          ? `Aborted ${r.aborted} incomplete upload${r.aborted === 1 ? '' : 's'} in R2.`
+          : 'No incomplete uploads found in R2.'
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Cleanup failed');
+    } finally {
+      setCleaning(false);
     }
   };
 
@@ -301,17 +322,18 @@ const BundlesPage = () => {
     setPlatform('');
     setSelectedBookId('');
     setForce(false);
-    setJobResult(null);
     setJobError(null);
-    setJobProgress(0);
-    setJobStep('');
     setCreateOpen(true);
     if (token) {
       try {
-        const bks = await fetchBooks(token, tt);
+        const [bks, grps] = await Promise.all([
+          fetchBooks(token, tt),
+          listBookGroups(token, tt).catch(() => ({ groups: [] })),
+        ]);
         setBooks(
           bks.filter((b) => b.status === 'published' || b.status === 'active')
         );
+        setBundleGroupNames(new Map(grps.groups.map((g) => [g.id, g.name])));
       } catch {
         /* ignored */
       }
@@ -322,9 +344,8 @@ const BundlesPage = () => {
     if (!token || !platform || !selectedBookId) return;
     setCreating(true);
     setJobError(null);
-    setJobResult(null);
     try {
-      const { job_id } = await createBundleAsync(
+      const res = await createBundleAsync(
         {
           platform: platform as 'mac' | 'win' | 'win7-8' | 'linux',
           book_id: Number(selectedBookId),
@@ -333,33 +354,20 @@ const BundlesPage = () => {
         token,
         tt
       );
-      let polls = 0;
-      const poll = async (): Promise<void> => {
-        if (polls++ > 600) {
-          setJobError('Timeout');
-          setCreating(false);
-          return;
-        }
-        const r = await getBundleJobStatus(job_id, token, tt);
-        setJobProgress(r.progress);
-        setJobStep(r.current_step);
-        if (r.status === 'completed') {
-          setJobResult(r);
-          setCreating(false);
-          load();
-          return;
-        }
-        if (r.status === 'failed') {
-          setJobError(r.error_message || 'Build failed');
-          setCreating(false);
-          return;
-        }
-        await new Promise((res) => setTimeout(res, 1000));
-        return poll();
-      };
-      await poll();
+      // Close the dialog and surface progress in the page-level jobs panel at
+      // the top of the page (kept live by fetchJobs + the auto-poll effect).
+      setCreateOpen(false);
+      const jobId = (res as { job_id?: string }).job_id;
+      if (jobId) {
+        await fetchJobs();
+      } else {
+        // Cached bundle returned immediately (no job) — just refresh the list.
+        await load();
+      }
     } catch (e) {
+      // Keep the dialog open so the error is visible next to the form.
       setJobError(e instanceof Error ? e.message : 'Failed');
+    } finally {
       setCreating(false);
     }
   };
@@ -411,6 +419,19 @@ const BundlesPage = () => {
               <Database className="h-4 w-4" />
             )}{' '}
             Reconcile with R2
+          </Button>
+          <Button
+            variant="outline"
+            onClick={handleCleanIncomplete}
+            disabled={cleaning}
+            title="Abort incomplete multipart uploads left in R2 by killed/stuck builds"
+          >
+            {cleaning ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Eraser className="h-4 w-4" />
+            )}{' '}
+            Clean incomplete
           </Button>
           <Button onClick={openCreate}>
             <Plus className="h-4 w-4" /> Create Bundle
@@ -756,7 +777,7 @@ const BundlesPage = () => {
         open={createOpen}
         onOpenChange={(o) => !creating && !o && setCreateOpen(false)}
       >
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>Create Bundle</DialogTitle>
           </DialogHeader>
@@ -782,23 +803,13 @@ const BundlesPage = () => {
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>Book</Label>
-              <Select
+              <Label>Book or group</Label>
+              <BundleTargetPicker
+                books={books}
+                groupNames={bundleGroupNames}
                 value={selectedBookId}
-                onValueChange={setSelectedBookId}
-                disabled={creating}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Select book..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {books.map((b) => (
-                    <SelectItem key={b.id} value={String(b.id)}>
-                      {b.book_title || b.book_name} ({b.publisher})
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                onChange={setSelectedBookId}
+              />
             </div>
             <div className="flex items-center space-x-2">
               <Checkbox
@@ -811,29 +822,6 @@ const BundlesPage = () => {
                 Force recreate (bypass cache)
               </Label>
             </div>
-            {creating && (
-              <div className="space-y-1">
-                <Progress value={jobProgress} />
-                <p className="text-xs text-muted-foreground">
-                  {jobProgress}% — {jobStep}
-                </p>
-              </div>
-            )}
-            {jobResult?.download_url && (
-              <Alert>
-                <AlertDescription>
-                  Bundle ready!{' '}
-                  <a
-                    href={jobResult.download_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="underline text-primary"
-                  >
-                    Download
-                  </a>
-                </AlertDescription>
-              </Alert>
-            )}
             {jobError && (
               <Alert variant="destructive">
                 <AlertDescription>{jobError}</AlertDescription>

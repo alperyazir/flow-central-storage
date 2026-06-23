@@ -3,6 +3,7 @@
 from .api_key import ApiKey
 from .app_setting import AppSetting
 from .book import Book
+from .book_group import BookGroup
 from .bundle import Bundle
 from .material import Material
 from .publisher import Publisher  # Must be imported before Book due to relationship
@@ -14,6 +15,7 @@ __all__ = [
     "ApiKey",
     "AppSetting",
     "Book",
+    "BookGroup",
     "Bundle",
     "Material",
     "Publisher",

@@ -104,6 +104,11 @@ export interface BundleReconcileResult {
   total: number;
 }
 
+export interface IncompleteUploadsCleanResult {
+  aborted: number;
+  names: string[];
+}
+
 export interface TemplateDownloadResponse {
   download_url: string;
   platform: string;
@@ -215,6 +220,22 @@ export const reconcileBundles = (
 ): Promise<BundleReconcileResult> =>
   client.post<BundleReconcileResult>(
     '/standalone-apps/bundles/reconcile',
+    undefined,
+    {
+      headers: buildAuthHeaders(token, tokenType),
+    }
+  );
+
+/**
+ * Abort incomplete multipart uploads left in R2 by killed/stuck bundle builds.
+ */
+export const cleanIncompleteUploads = (
+  token: string,
+  tokenType: string = 'Bearer',
+  client: ApiClient = apiClient
+): Promise<IncompleteUploadsCleanResult> =>
+  client.post<IncompleteUploadsCleanResult>(
+    '/standalone-apps/bundles/clean-incomplete',
     undefined,
     {
       headers: buildAuthHeaders(token, tokenType),

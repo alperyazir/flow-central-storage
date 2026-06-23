@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Loader2, Cpu, RefreshCw, Download, Trash2, Paperclip, Pencil } from 'lucide-react';
+import { Loader2, Cpu, RefreshCw, Download, Trash2, Paperclip, Pencil, Layers } from 'lucide-react';
 
 import { Card, CardContent } from 'components/ui/card';
 import {
@@ -36,6 +36,7 @@ import {
 import ProcessingDialog from 'components/ProcessingDialog';
 import AIStatusBadge from 'components/AIStatusBadge';
 import BookBundlesCell from 'components/BookBundlesCell';
+import { listBookGroups } from 'lib/bookGroups';
 import { fetchBundleCoverage, type BundleCoverage } from 'lib/standaloneApps';
 import { useAuthStore } from 'stores/auth';
 import {
@@ -75,6 +76,8 @@ interface BookRow {
   bookType: 'standard' | 'pdf';
   aiStatus?: BookRecord['ai_processing_status'];
   aiProcessedAt?: string | null;
+  groupId?: number | null;
+  groupName?: string;
 }
 
 const BooksPage = () => {
@@ -254,7 +257,11 @@ const BooksPage = () => {
     setLoading(true);
     setError('');
     try {
-      const recs = await fetchBooks(token, tt, undefined, { topLevelOnly: true });
+      const [recs, groupsResp] = await Promise.all([
+        fetchBooks(token, tt, undefined, { topLevelOnly: true }),
+        listBookGroups(token, tt),
+      ]);
+      const groupNameById = new Map(groupsResp.groups.map((g) => [g.id, g.name]));
       setBooks(
         recs.map((r) => ({
           id: r.id,
@@ -271,6 +278,8 @@ const BooksPage = () => {
           bookType: r.book_type,
           aiStatus: r.ai_processing_status,
           aiProcessedAt: r.ai_processed_at,
+          groupId: r.group_id ?? null,
+          groupName: r.group_id != null ? groupNameById.get(r.group_id) : undefined,
         }))
       );
     } catch (e) {
@@ -453,6 +462,12 @@ const BooksPage = () => {
                             +{b.childCount}
                           </Badge>
                         )}
+                        {b.groupName && (
+                          <Badge variant="outline" className="gap-1">
+                            <Layers className="h-3 w-3" />
+                            {b.groupName}
+                          </Badge>
+                        )}
                         <AIStatusBadge
                           status={b.aiStatus}
                           processedAt={b.aiProcessedAt}
@@ -480,7 +495,13 @@ const BooksPage = () => {
                         bookId={b.id}
                         bookType={b.bookType}
                         expected={coverage?.expected ?? []}
-                        coverage={coverage?.byKey[`${b.publisherSlug}/${b.bookName}`]}
+                        coverage={
+                          coverage?.byKey[
+                            // Grouped books bundle under the group name, so the
+                            // bundle coverage is keyed by the group, not the book.
+                            `${b.publisherSlug}/${b.groupName ?? b.bookName}`
+                          ]
+                        }
                         token={token}
                         tokenType={tt}
                         onChanged={loadCoverage}

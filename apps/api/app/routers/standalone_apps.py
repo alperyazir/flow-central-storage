@@ -27,6 +27,7 @@ from app.schemas.standalone_app import (
     BundleReconcileResult,
     BundleRequest,
     BundleResponse,
+    IncompleteUploadsCleanResult,
     TemplateInfo,
     TemplateListResponse,
     TemplateUploadResponse,
@@ -38,6 +39,7 @@ from app.services.standalone_apps import (
     BundleNotFoundError,
     InvalidPlatformError,
     TemplateNotFoundError,
+    abort_incomplete_bundle_uploads,
     bundle_rows_to_metadata,
     create_bundle,
     delete_bundle,
@@ -338,10 +340,23 @@ async def create_bundle_endpoint(
     # Check for existing bundle — return immediately if found
     if not payload.force:
         normalized_platform = payload.platform.lower()
-        # Bundles are written under bundles/{publisher_slug}/{book_name}/ —
-        # using publisher.id here is a pre-existing bug that caused cache
-        # checks to always miss, regenerating bundles every call.
-        bundle_prefix = f"bundles/{publisher.slug}/{book.book_name}/"
+        # Bundles are written under bundles/{publisher_slug}/{key}/. For a
+        # grouped book the key is the normalized GROUP name (the whole group is
+        # packaged together), so the cache check must use the group — otherwise
+        # it always misses and re-queues a full ~1GB rebuild.
+        if book.group_id is not None:
+            from app.models.book_group import BookGroup
+            from app.services.storage import normalize_book_name
+
+            group = db.get(BookGroup, book.group_id)
+            bundle_key = normalize_book_name(group.name) if group else book.book_name
+            display_name = group.name if group else book.book_name
+            group_id_val: int | None = book.group_id
+        else:
+            bundle_key = book.book_name
+            display_name = book.book_name
+            group_id_val = None
+        bundle_prefix = f"bundles/{publisher.slug}/{bundle_key}/"
         try:
             found_objects = list(client.list_objects(settings.minio_apps_bucket, prefix=bundle_prefix, recursive=True))
             for obj in found_objects:
@@ -361,12 +376,13 @@ async def create_bundle_endpoint(
                             db,
                             object_name=obj.object_name,
                             publisher_slug=publisher.slug,
-                            book_name=book.book_name,
+                            book_name=display_name,
                             platform=normalized_platform,
                             file_name=file_name,
                             file_size=obj.size or 0,
                             app_version=get_bundle_version(client, settings.minio_apps_bucket, obj.object_name),
                             book_id=book.id,
+                            group_id=group_id_val,
                         )
                         db.commit()
                     except Exception as idx_exc:
@@ -592,6 +608,24 @@ def reconcile_bundles_endpoint(
     return BundleReconcileResult(**result)
 
 
+@router.post("/bundles/clean-incomplete", response_model=IncompleteUploadsCleanResult)
+def clean_incomplete_uploads_endpoint(
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+) -> IncompleteUploadsCleanResult:
+    """Abort incomplete multipart uploads left in R2 by killed/stuck bundle builds.
+
+    These show as "ongoing" uploads and consume storage without appearing as
+    objects; the bundle prefix delete can't remove them.
+    """
+    _require_admin(credentials, db)
+
+    settings = get_settings()
+    client = get_minio_client(settings)
+    names = abort_incomplete_bundle_uploads(client, settings.minio_apps_bucket)
+    return IncompleteUploadsCleanResult(aborted=len(names), names=names)
+
+
 @router.get("/bundle/jobs", response_model=BundleJobListResponse)
 async def list_bundle_jobs(
     status_filter: str | None = None,
@@ -667,10 +701,18 @@ async def cancel_bundle_job(
     settings = get_settings()
     try:
         from app.services.queue.redis import get_redis_connection
+        from app.services.queue.repository import JobRepository
         from app.services.queue.service import QueueService
 
         redis_conn = await get_redis_connection(url=settings.redis_url)
-        service = QueueService(redis_conn.client, settings)
+        repository = JobRepository(
+            redis_client=redis_conn.client,
+            job_ttl_seconds=settings.queue_job_ttl_seconds,
+        )
+        # NB: QueueService(redis_connection, repository) — passing settings as the
+        # 2nd arg was the cause of the old "'Settings' object has no attribute
+        # 'get_job'" error.
+        service = QueueService(redis_conn, repository)
         job = await service.cancel_job(job_id)
         return {"job_id": job.job_id, "status": job.status.value}
     except Exception as exc:

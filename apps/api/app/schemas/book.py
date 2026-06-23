@@ -85,6 +85,7 @@ class BookRead(BookBase):
 
     id: int
     publisher_id: int
+    group_id: int | None = None
     publisher_slug: str | None = None
     parent_book_name: str | None = None
     r2_prefix: str | None = None

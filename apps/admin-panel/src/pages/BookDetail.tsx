@@ -46,6 +46,7 @@ import {
 } from 'lib/books';
 import { useAuthStore } from 'stores/auth';
 import ChildBookUploadDialog from 'components/ChildBookUploadDialog';
+import GroupBooksCard from 'components/GroupBooksCard';
 
 const formatBytes = (bytes: number | undefined): string => {
   if (!bytes) return '—';
@@ -260,6 +261,10 @@ const BookDetailPage = () => {
           </div>
         </CardContent>
       </Card>
+
+      {(book.parent_book_id === null || book.parent_book_id === undefined) && (
+        <GroupBooksCard book={book} token={token} tokenType={tt} onChanged={load} />
+      )}
 
       {book.parent_book_id === null || book.parent_book_id === undefined ? (
         <Card>

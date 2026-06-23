@@ -41,6 +41,14 @@ _BUNDLE_SKIP_PREFIXES: tuple[str, ...] = (
     "ai-content/",
 )
 
+# Exceptions to the skip rules above: paths that must stay IN the bundle even
+# though their folder is otherwise excluded. The new flowbook template embeds
+# the book's source PDF, so the original is kept while the rest of ``raw/`` is
+# still dropped. Matched case-insensitively against the book-relative path, so
+# only the top-level ``raw/original.pdf`` is kept (a child book's nested
+# ``additional-resources/.../raw/original.pdf`` stays excluded).
+_BUNDLE_KEEP_PATHS: frozenset[str] = frozenset({"raw/original.pdf"})
+
 
 def should_skip_bundled_path(relative_path: str) -> bool:
     """Return True for paths that must be excluded from a standalone bundle.
@@ -68,6 +76,10 @@ def should_skip_bundled_path(relative_path: str) -> bool:
         return True
     if bn_lower.endswith(_BUNDLE_JUNK_SUFFIXES):
         return True
+
+    # Keep explicitly-allowlisted files even when their folder is skipped.
+    if norm.lower() in _BUNDLE_KEEP_PATHS:
+        return False
 
     for prefix in _BUNDLE_SKIP_PREFIXES:
         if norm.startswith(prefix):
@@ -844,3 +856,37 @@ def reconcile_bundles(
 
     session.commit()
     return {"created": created, "updated": updated, "removed": removed, "total": len(r2_by_obj)}
+
+
+def abort_incomplete_bundle_uploads(client: Minio, bucket: str, prefix: str = f"{BUNDLE_PREFIX}/") -> list[str]:
+    """Abort incomplete multipart uploads under ``prefix`` and return their names.
+
+    Killed/stuck bundle builds (large group bundles especially) leave behind
+    incomplete multipart uploads in R2 that show as "ongoing" and consume
+    storage without appearing as objects. minio-py 7.2 dropped the high-level
+    ``list/remove_incomplete_upload`` helpers, so we use the low-level S3
+    multipart calls (``_list_multipart_uploads`` / ``_abort_multipart_upload``).
+    """
+    aborted: list[str] = []
+    key_marker: str | None = None
+    upload_id_marker: str | None = None
+    try:
+        # Page through ListMultipartUploads (caps at ~1000/page) so a large
+        # backlog of stuck uploads is fully cleared, not just the first page.
+        while True:
+            result = client._list_multipart_uploads(
+                bucket, prefix=prefix, key_marker=key_marker, upload_id_marker=upload_id_marker
+            )
+            for upload in result.uploads or []:
+                try:
+                    client._abort_multipart_upload(bucket, upload.object_name, upload.upload_id)
+                    aborted.append(upload.object_name)
+                except Exception as exc:  # noqa: BLE001 - best-effort per upload
+                    logger.warning("Failed to abort multipart upload %s: %s", upload.object_name, exc)
+            if not getattr(result, "is_truncated", False):
+                break
+            key_marker = result.next_key_marker
+            upload_id_marker = result.next_upload_id_marker
+    except Exception as exc:  # noqa: BLE001 - best-effort
+        logger.warning("Failed to list incomplete uploads under %s: %s", prefix, exc)
+    return aborted

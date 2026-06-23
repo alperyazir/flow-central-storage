@@ -27,6 +27,7 @@ from app.routers import (
     teachers_crud,
     webhooks,
 )
+from app.routers import book_groups
 from app.routers import settings as settings_router
 from app.scripts.create_admin import create_admin_user
 from app.services import ensure_buckets, get_minio_client
@@ -143,6 +144,7 @@ app.include_router(teachers.router)
 app.include_router(teachers_crud.router)
 app.include_router(webhooks.router)
 app.include_router(settings_router.router)
+app.include_router(book_groups.router)
 app.include_router(health.router, prefix="/health")
 app.include_router(monitoring_router)
 

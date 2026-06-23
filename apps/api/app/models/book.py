@@ -13,6 +13,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
 
 if TYPE_CHECKING:
+    from app.models.book_group import BookGroup
     from app.models.publisher import Publisher
 
 
@@ -77,6 +78,12 @@ class Book(Base):
         String(20), nullable=False, default=BookTypeEnum.STANDARD.value, server_default=BookTypeEnum.STANDARD.value
     )
 
+    # Optional membership in a book group (e.g. Student's Book + Workbook).
+    # ondelete=SET NULL: deleting the group detaches the book, doesn't delete it.
+    group_id: Mapped[int | None] = mapped_column(
+        ForeignKey("book_groups.id", ondelete="SET NULL"), nullable=True, index=True, default=None
+    )
+
     # AI processing state, mirrored from the worker so every view can show a
     # reliable badge without depending on the (TTL-bound) Redis job. Values:
     # queued | processing | completed | partial | failed. NULL = never processed.
@@ -86,6 +93,9 @@ class Book(Base):
 
     # Relationship to Publisher model
     publisher_rel: Mapped["Publisher"] = relationship("Publisher", back_populates="books")
+
+    # Relationship to the book's group (if any).
+    group_rel: Mapped["BookGroup | None"] = relationship("BookGroup", back_populates="books")
 
     parent_rel: Mapped["Book | None"] = relationship(
         "Book", remote_side="Book.id", back_populates="children_rel"
