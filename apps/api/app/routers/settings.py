@@ -4,53 +4,19 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
-from app.core.security import decode_access_token, verify_api_key_from_db
+from app.core.auth import require_admin as _require_admin
 from app.db import get_db
 from app.repositories.app_setting import AppSettingRepository
-from app.repositories.user import UserRepository
 from app.schemas.setting import DEFAULT_SETTINGS, AppSettingsRead, AppSettingsUpdate
 
 router = APIRouter(prefix="/settings", tags=["Settings"])
 _bearer_scheme = HTTPBearer(auto_error=True)
 _settings_repository = AppSettingRepository()
-_user_repository = UserRepository()
 logger = logging.getLogger(__name__)
-
-
-def _require_admin(credentials: HTTPAuthorizationCredentials, db: Session) -> int:
-    """Validate JWT token or API key and ensure authentication is valid."""
-
-    token = credentials.credentials
-
-    # Try JWT first
-    try:
-        payload = decode_access_token(token, settings=get_settings())
-        subject = payload.get("sub")
-        if subject is not None:
-            try:
-                user_id = int(subject)
-                user = _user_repository.get(db, user_id)
-                if user is not None:
-                    return user_id
-            except (TypeError, ValueError):
-                pass
-    except ValueError:
-        pass  # JWT failed, try API key
-
-    # Try API key
-    api_key_info = verify_api_key_from_db(token, db)
-    if api_key_info is not None:
-        return -1
-
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Invalid token",
-    )
 
 
 def _current_settings(db: Session) -> AppSettingsRead:

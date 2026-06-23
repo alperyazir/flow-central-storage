@@ -8,14 +8,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
+from app.core.auth import require_admin as _require_admin
 from app.core.config import get_settings
-from app.core.security import decode_access_token, verify_api_key_from_db
 from app.db import get_db
 from app.models.book_group import BookGroup
 from app.repositories.book_group import BookGroupRepository
 from app.repositories.bundle import BundleRepository
 from app.repositories.publisher import PublisherRepository
-from app.repositories.user import UserRepository
 from app.schemas.book import BookRead
 from app.schemas.book_group import (
     BookGroupAddBooks,
@@ -32,7 +31,6 @@ router = APIRouter(prefix="/book-groups", tags=["Book Groups"])
 _bearer_scheme = HTTPBearer(auto_error=True)
 _group_repository = BookGroupRepository()
 _publisher_repository = PublisherRepository()
-_user_repository = UserRepository()
 _bundle_repository = BundleRepository()
 logger = logging.getLogger(__name__)
 
@@ -62,29 +60,6 @@ def _delete_group_bundles(db: Session, group: BookGroup) -> None:
         db.commit()
     except Exception as exc:
         logger.warning("Group bundle cleanup failed for group %s: %s", getattr(group, "id", "?"), exc)
-
-
-def _require_admin(credentials: HTTPAuthorizationCredentials, db: Session) -> int:
-    """Validate JWT token or API key and ensure authentication is valid."""
-    token = credentials.credentials
-
-    try:
-        payload = decode_access_token(token, settings=get_settings())
-        subject = payload.get("sub")
-        if subject is not None:
-            try:
-                user_id = int(subject)
-                if _user_repository.get(db, user_id) is not None:
-                    return user_id
-            except (TypeError, ValueError):
-                pass
-    except ValueError:
-        pass
-
-    if verify_api_key_from_db(token, db) is not None:
-        return -1
-
-    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
 
 def _invalidate_book_cache() -> None:

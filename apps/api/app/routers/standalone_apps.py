@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Response, UploadFil
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
+from app.core.auth import require_admin as _require_admin
 from app.core.config import get_settings
 from app.core.security import decode_access_token, verify_api_key_from_db
 from app.db import get_db
@@ -35,13 +36,11 @@ from app.schemas.standalone_app import (
 from app.services import get_minio_client, get_minio_client_external
 from app.services.standalone_apps import (
     PRESIGNED_URL_EXPIRY_SECONDS,
-    BundleCreationError,
     BundleNotFoundError,
     InvalidPlatformError,
     TemplateNotFoundError,
     abort_incomplete_bundle_uploads,
     bundle_rows_to_metadata,
-    create_bundle,
     delete_bundle,
     delete_template,
     get_bundle_version,
@@ -59,28 +58,6 @@ _publisher_repository = PublisherRepository()
 _bundle_repository = BundleRepository()
 
 logger = logging.getLogger(__name__)
-
-
-def _require_admin(credentials: HTTPAuthorizationCredentials, db: Session) -> int:
-    """Validate JWT token or API key."""
-    token = credentials.credentials
-
-    try:
-        payload = decode_access_token(token, settings=get_settings())
-        subject = payload.get("sub")
-        if subject is not None:
-            try:
-                return int(subject)
-            except (TypeError, ValueError):
-                pass
-    except ValueError:
-        pass
-
-    api_key_info = verify_api_key_from_db(token, db)
-    if api_key_info is not None:
-        return -1
-
-    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
 
 def _require_api_key_or_admin(credentials: HTTPAuthorizationCredentials, db: Session) -> int:
