@@ -14,13 +14,14 @@ const SettingsPage = () => {
   const tt = tokenType ?? 'Bearer';
   const { settings, loaded, load, save } = useSettingsStore();
 
-  // Local draft so the toggle is responsive before saving.
+  // Local drafts so the toggles are responsive before saving.
   const [autoBundle, setAutoBundle] = useState(settings.default_auto_bundle);
+  const [includePdf, setIncludePdf] = useState(settings.bundle_include_source_pdf);
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState(false);
   const [error, setError] = useState('');
 
-  // Load settings once on mount, then sync local draft to the loaded value.
+  // Load settings once on mount, then sync local drafts to the loaded value.
   useEffect(() => {
     if (token && !loaded) {
       load(token, tt);
@@ -29,9 +30,12 @@ const SettingsPage = () => {
 
   useEffect(() => {
     setAutoBundle(settings.default_auto_bundle);
-  }, [settings.default_auto_bundle]);
+    setIncludePdf(settings.bundle_include_source_pdf);
+  }, [settings.default_auto_bundle, settings.bundle_include_source_pdf]);
 
-  const dirty = autoBundle !== settings.default_auto_bundle;
+  const dirty =
+    autoBundle !== settings.default_auto_bundle ||
+    includePdf !== settings.bundle_include_source_pdf;
 
   const handleSave = async () => {
     if (!token) return;
@@ -39,7 +43,14 @@ const SettingsPage = () => {
     setError('');
     setSavedAt(false);
     try {
-      await save({ default_auto_bundle: autoBundle }, token, tt);
+      await save(
+        {
+          default_auto_bundle: autoBundle,
+          bundle_include_source_pdf: includePdf,
+        },
+        token,
+        tt
+      );
       setSavedAt(true);
     } catch {
       setError('Failed to save settings. Please try again.');
@@ -79,6 +90,27 @@ const SettingsPage = () => {
               checked={autoBundle}
               onCheckedChange={(v) => {
                 setAutoBundle(v);
+                setSavedAt(false);
+              }}
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-4 rounded-lg border p-4">
+            <div className="space-y-0.5">
+              <Label htmlFor="include-source-pdf" className="text-sm font-medium">
+                Include source PDF in bundles
+              </Label>
+              <p className="text-sm text-muted-foreground">
+                Keeps <code>raw/original.pdf</code> (often ~200&nbsp;MB) inside each
+                bundle for the new template. Turn off to make bundles ~2× smaller
+                and faster to build/upload.
+              </p>
+            </div>
+            <Switch
+              id="include-source-pdf"
+              checked={includePdf}
+              onCheckedChange={(v) => {
+                setIncludePdf(v);
                 setSavedAt(false);
               }}
             />

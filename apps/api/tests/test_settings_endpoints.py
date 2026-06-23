@@ -38,7 +38,7 @@ def test_get_settings_returns_defaults_when_unset(
 
     assert response.status_code == 200
     # Default for default_auto_bundle is True.
-    assert response.json() == {"default_auto_bundle": True}
+    assert response.json()["default_auto_bundle"] is True
 
 
 @patch("app.routers.settings._require_admin")
@@ -57,7 +57,7 @@ def test_get_settings_applies_stored_override(
     response = client.get("/settings", headers={"Authorization": "Bearer mock"})
 
     assert response.status_code == 200
-    assert response.json() == {"default_auto_bundle": False}
+    assert response.json()["default_auto_bundle"] is False
 
 
 @patch("app.routers.settings._require_admin")
@@ -81,7 +81,7 @@ def test_update_settings_persists_and_returns_merged(
     )
 
     assert response.status_code == 200
-    assert response.json() == {"default_auto_bundle": False}
+    assert response.json()["default_auto_bundle"] is False
     mock_repo.set_many.assert_called_once_with(ANY, {"default_auto_bundle": False})
 
 

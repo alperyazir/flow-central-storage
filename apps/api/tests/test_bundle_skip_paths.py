@@ -39,3 +39,12 @@ from app.services.standalone_apps import should_skip_bundled_path
 )
 def test_should_skip_bundled_path(path: str, skip: bool) -> None:
     assert should_skip_bundled_path(path) is skip
+
+
+def test_keep_source_pdf_false_drops_original() -> None:
+    """With keep_source_pdf=False the source PDF is excluded too (smaller bundle)."""
+    assert should_skip_bundled_path("raw/original.pdf", keep_source_pdf=False) is True
+    # Other content is unaffected by the flag.
+    assert should_skip_bundled_path("config.json", keep_source_pdf=False) is False
+    # Default still keeps it.
+    assert should_skip_bundled_path("raw/original.pdf") is False

@@ -4,6 +4,8 @@ import { buildAuthHeaders } from './http';
 export interface AppSettings {
   /** Default state of the "auto-create bundles after upload" checkbox. */
   default_auto_bundle: boolean;
+  /** Include the source PDF (raw/original.pdf, ~200MB) in bundles. */
+  bundle_include_source_pdf: boolean;
 }
 
 export type AppSettingsUpdate = Partial<AppSettings>;

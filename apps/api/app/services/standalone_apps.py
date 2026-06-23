@@ -50,12 +50,16 @@ _BUNDLE_SKIP_PREFIXES: tuple[str, ...] = (
 _BUNDLE_KEEP_PATHS: frozenset[str] = frozenset({"raw/original.pdf"})
 
 
-def should_skip_bundled_path(relative_path: str) -> bool:
+def should_skip_bundled_path(relative_path: str, *, keep_source_pdf: bool = True) -> bool:
     """Return True for paths that must be excluded from a standalone bundle.
 
     Filters macOS metadata, backup/scratch files, AI-processing artifacts
     and additional-resource layouts. The path is the object name relative
     to the book's R2 prefix (e.g. ``raw/foo.pdf``, ``ai-data/x.json``).
+
+    ``keep_source_pdf`` controls the ``raw/original.pdf`` allowlist: when False
+    the source PDF (often ~200MB) is dropped too, making bundles much smaller.
+    Driven by the ``bundle_include_source_pdf`` app setting.
     """
     if not relative_path:
         return True
@@ -78,7 +82,7 @@ def should_skip_bundled_path(relative_path: str) -> bool:
         return True
 
     # Keep explicitly-allowlisted files even when their folder is skipped.
-    if norm.lower() in _BUNDLE_KEEP_PATHS:
+    if keep_source_pdf and norm.lower() in _BUNDLE_KEEP_PATHS:
         return False
 
     for prefix in _BUNDLE_SKIP_PREFIXES:

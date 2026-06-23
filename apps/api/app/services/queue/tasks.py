@@ -1981,6 +1981,15 @@ async def create_bundle_task(
 
     group_info = await asyncio.to_thread(_resolve_group)
 
+    # Whether to keep the (large) source PDF in the bundle — app setting.
+    def _resolve_keep_source_pdf() -> bool:
+        from app.repositories.app_setting import AppSettingRepository
+
+        with SessionLocal() as session:
+            return bool(AppSettingRepository().get_value(session, "bundle_include_source_pdf", True))
+
+    keep_source_pdf = await asyncio.to_thread(_resolve_keep_source_pdf)
+
     if group_info and group_info["books"]:
         from app.services.storage import normalize_book_name as _normalize_group
 
@@ -2161,7 +2170,7 @@ async def create_bundle_task(
                                     continue
                                 src = os.path.join(root, file)
                                 rel = os.path.relpath(src, local_book_path)
-                                if should_skip_bundled_path(rel):
+                                if should_skip_bundled_path(rel, keep_source_pdf=keep_source_pdf):
                                     continue
                                 dst = os.path.join(member_dir, rel)
                                 os.makedirs(os.path.dirname(dst), exist_ok=True)
@@ -2180,7 +2189,7 @@ async def create_bundle_task(
                     download_tasks = []
                     for obj in objects:
                         relative_path = obj.object_name[len(member_prefix):]
-                        if should_skip_bundled_path(relative_path):
+                        if should_skip_bundled_path(relative_path, keep_source_pdf=keep_source_pdf):
                             continue
                         dest_path = os.path.join(member_dir, relative_path)
                         download_tasks.append((publishers_bucket, obj.object_name, dest_path))

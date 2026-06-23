@@ -9,6 +9,7 @@ import {
 
 const DEFAULTS: AppSettings = {
   default_auto_bundle: true,
+  bundle_include_source_pdf: true,
 };
 
 interface SettingsState {

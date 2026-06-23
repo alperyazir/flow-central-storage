@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 # below) — no migration needed thanks to the key/value table.
 DEFAULT_SETTINGS: dict[str, object] = {
     "default_auto_bundle": True,
+    "bundle_include_source_pdf": True,
 }
 
 
@@ -20,6 +21,10 @@ class AppSettingsRead(BaseModel):
         default=True,
         description="Default state of the 'auto-create bundles after upload' checkbox.",
     )
+    bundle_include_source_pdf: bool = Field(
+        default=True,
+        description="Include the source PDF (raw/original.pdf) in bundles. Off makes bundles ~2x smaller/faster.",
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -28,3 +33,4 @@ class AppSettingsUpdate(BaseModel):
     """Partial update payload; omitted fields are left unchanged."""
 
     default_auto_bundle: bool | None = Field(default=None)
+    bundle_include_source_pdf: bool | None = Field(default=None)
