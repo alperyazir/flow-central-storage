@@ -91,6 +91,18 @@ class Book(Base):
     # When the last AI processing run finished (completed or partial).
     ai_processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Monotonic content-change signal. Bumped (+1) every time this book's
+    # CONTENT (config.json / activities / pages) is (re)written to object
+    # storage — i.e. on every upload/replace path. Lets downstream consumers
+    # (the LMS sync) detect "did this book's content change since I last
+    # synced?" straight from the book LIST API, with no per-book config.json
+    # or storage metadata fetch. An integer counter (not a wall-clock
+    # timestamp) keeps the signal monotonic and immune to clock skew.
+    # Existing rows backfill to 1 (see migration 20260624_01).
+    content_version: Mapped[int] = mapped_column(
+        nullable=False, default=1, server_default="1"
+    )
+
     # Relationship to Publisher model
     publisher_rel: Mapped["Publisher"] = relationship("Publisher", back_populates="books")
 

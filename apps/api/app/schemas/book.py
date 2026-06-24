@@ -93,6 +93,11 @@ class BookRead(BookBase):
     child_count: int = 0
     ai_processing_status: str | None = None  # queued|processing|completed|partial|failed; null = never
     ai_processed_at: datetime | None = None
+    # Monotonic per-book content-change counter. Bumped whenever the book's
+    # config.json / activities are (re)written to storage. Consumers persist the
+    # last-seen value and resync the book when it increases — no config.json
+    # fetch required. Defaults to 1 for pre-existing books.
+    content_version: int = 1
     created_at: datetime
     updated_at: datetime
 

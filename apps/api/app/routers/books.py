@@ -172,6 +172,20 @@ def _invalidate_book_cache() -> None:
         pass
 
 
+def _bump_content_version(book_id: int) -> None:
+    """Atomically bump a book's ``content_version`` from a fresh session.
+
+    Called from every content-write path (config.json / activities / pages
+    rewritten to storage), including background tasks that no longer hold the
+    request session. Best-effort: a failure here must never fail the upload.
+    """
+    try:
+        with SessionLocal() as session:
+            _book_repository.bump_content_version(session, book_id)
+    except Exception:
+        logger.warning("Failed to bump content_version for book %s", book_id, exc_info=True)
+
+
 def _require_admin(credentials: HTTPAuthorizationCredentials, db: Session) -> int:
     """Validate JWT token or API key and ensure authentication is valid."""
 
@@ -997,6 +1011,9 @@ async def upload_book(
             except Exception:
                 logger.warning("Failed to update total_size for pdf book %s", book_id, exc_info=True)
 
+            # Raw PDF content replaced — bump the content version.
+            _bump_content_version(book_id)
+
             background_tasks.add_task(_trigger_webhook, book_id, WebhookEventType.BOOK_UPDATED)
             _invalidate_book_cache()
 
@@ -1034,6 +1051,10 @@ async def upload_book(
             book_id,
             len(manifest),
         )
+
+        # Content (config.json/activities) was replaced — bump the content
+        # version so downstream consumers detect the change from the list API.
+        _bump_content_version(book_id)
 
         # Trigger webhook for book update
         background_tasks.add_task(_trigger_webhook, book_id, WebhookEventType.BOOK_UPDATED)
@@ -1181,6 +1202,7 @@ def _run_target_book_processing(
                     session.close()
                     session = None
 
+            _bump_content_version(target_book_id)
             _invalidate_book_cache()
             _trigger_webhook(target_book_id, WebhookEventType.BOOK_UPDATED)
             set_upload_progress(
@@ -1212,6 +1234,7 @@ def _run_target_book_processing(
             set_upload_progress(job_id, 0, "error", error="Failed to upload archive")
             return
 
+        _bump_content_version(target_book_id)
         _invalidate_book_cache()
         _trigger_webhook(target_book_id, WebhookEventType.BOOK_UPDATED)
 
@@ -1376,6 +1399,9 @@ def _run_book_processing(
             else:
                 book = _book_repository.create(session, data=book_data)
             session.commit()
+
+            # Content was (re)written to storage — bump the content version.
+            _book_repository.bump_content_version(session, book.id)
 
             _invalidate_book_cache()
 
@@ -1961,6 +1987,11 @@ async def upload_new_book(
             # Create new book
             book = _book_repository.create(db, data=book_data)
 
+        # Content (config.json/activities) was written to storage — bump the
+        # content version so consumers detect the change from the list API.
+        _book_repository.bump_content_version(db, book.id)
+        db.refresh(book)
+
         book_read = BookRead.model_validate(book)
 
         logger.info(
@@ -2167,6 +2198,9 @@ async def upload_bulk_books(
                 book = _book_repository.update(db, existing_book, data=book_data)
             else:
                 book = _book_repository.create(db, data=book_data)
+
+            # Content was written to storage — bump the content version.
+            _book_repository.bump_content_version(db, book.id)
 
             result["success"] = True
             result["book_id"] = book.id

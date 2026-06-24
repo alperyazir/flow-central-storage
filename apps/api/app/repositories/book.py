@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from sqlalchemy import func, select
+from sqlalchemy import update as sa_update
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.book import Book, BookStatusEnum
@@ -135,6 +136,23 @@ class BookRepository(BaseRepository[Book]):
         session.refresh(book)
         session.commit()
         return book
+
+    def bump_content_version(self, session: Session, book_id: int) -> None:
+        """Atomically increment a book's ``content_version`` counter.
+
+        Call this at every place that (re)writes a book's CONTENT
+        (config.json / activities / pages) to object storage. The increment is
+        done in SQL (``content_version = content_version + 1``) so it is atomic
+        and safe to call from a fresh session in a background task, regardless
+        of whether the metadata row itself was also updated. No-op-safe if the
+        id no longer exists. Commits its own change.
+        """
+        session.execute(
+            sa_update(Book)
+            .where(Book.id == book_id)
+            .values(content_version=Book.content_version + 1)
+        )
+        session.commit()
 
     def archive(self, session: Session, book: Book) -> Book:
         """Mark a book as archived and persist the change."""

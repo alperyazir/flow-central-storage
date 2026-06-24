@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app.models.book import Book, BookStatusEnum
+from app.models.book import Book, BookStatusEnum, BookTypeEnum
 from app.models.publisher import Publisher
 from app.schemas.book import BookCreate, BookRead, BookUpdate
 
@@ -49,12 +49,17 @@ def test_book_read_serializes_from_orm() -> None:
         language="en",
         category="fiction",
         status=BookStatusEnum.DRAFT,
+        book_type=BookTypeEnum.STANDARD,
     )
     # Set the relationship manually for testing (bypass SQLAlchemy instrumentation)
     object.__setattr__(book, "publisher_rel", publisher)
     now = datetime.now(timezone.utc)
     book.created_at = now
     book.updated_at = now
+    # Persisted books always have an int here (column server_default=1); set it
+    # explicitly on this transient instance since the column default only
+    # applies on flush.
+    book.content_version = 1
 
     schema = BookRead.model_validate(book)
     assert schema.id == 1
