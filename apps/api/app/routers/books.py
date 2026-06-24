@@ -2414,8 +2414,32 @@ def _extract_book_metadata(archive_bytes: bytes | None = None, archive_path: str
 
 
 def _first_matching(names: Iterable[str], suffix: str) -> str | None:
-    suffix_lower = suffix.lower()
-    return next((name for name in names if name.lower().endswith(suffix_lower)), None)
+    """Locate a root-level metadata entry (config.json / metadata.json).
+
+    - exact basename match, so ``config.json`` never picks ``old_config.json``;
+    - skips macOS junk: ``__MACOSX/`` paths and ``._`` AppleDouble resource
+      forks (a macOS zip adds ``__MACOSX/.../._config.json`` for files carrying
+      extended attributes — that entry is BINARY and would fail JSON parsing).
+      Mirrors the filtering already done in services/storage.py iter_zip_entries;
+    - prefers the SHALLOWEST match: the file at the archive root / directly under
+      the single root folder, not a nested copy.
+    """
+    target = suffix.lower()
+    best: str | None = None
+    best_depth: int | None = None
+    for name in names:
+        norm = name.replace("\\", "/")
+        if "__MACOSX/" in norm or norm.startswith("__MACOSX/"):
+            continue
+        basename = norm.rsplit("/", 1)[-1]
+        if basename.startswith("._"):
+            continue
+        if basename.lower() != target:
+            continue
+        depth = norm.strip("/").count("/")
+        if best_depth is None or depth < best_depth:
+            best, best_depth = name, depth
+    return best
 
 
 def _read_json_from_archive(
