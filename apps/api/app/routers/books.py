@@ -599,7 +599,9 @@ def list_books(
         description="When true (default), excludes child books (parent_book_id IS NULL).",
     ),
     skip: int = Query(0, ge=0, description="Number of records to skip"),
-    limit: int = Query(50, ge=1, le=500, description="Max number of records to return"),
+    limit: int | None = Query(
+        None, ge=1, le=500, description="Max records to return; omit for all books"
+    ),
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
     db: Session = Depends(get_db),
 ) -> list[BookRead]:

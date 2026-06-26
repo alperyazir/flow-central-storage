@@ -36,6 +36,7 @@ import {
 import ProcessingDialog from 'components/ProcessingDialog';
 import AIStatusBadge from 'components/AIStatusBadge';
 import BookBundlesCell from 'components/BookBundlesCell';
+import Pagination from 'components/Pagination';
 import { listBookGroups } from 'lib/bookGroups';
 import { fetchBundleCoverage, type BundleCoverage } from 'lib/standaloneApps';
 import { useAuthStore } from 'stores/auth';
@@ -60,6 +61,8 @@ type SortField =
   | 'category'
   | 'activityCount';
 type SortDir = 'asc' | 'desc';
+
+const PAGE_SIZE = 20;
 
 interface BookRow {
   id: number;
@@ -95,6 +98,7 @@ const BooksPage = () => {
     f: 'bookTitle',
     d: 'asc',
   });
+  const [page, setPage] = useState(1);
   const [coverage, setCoverage] = useState<BundleCoverage | null>(null);
   const [processingBook, setProcessingBook] = useState<BookRow | null>(null);
   const [syncing, setSyncing] = useState(false);
@@ -338,6 +342,25 @@ const BooksPage = () => {
     });
   }, [books, search, pubFilter, catFilter, sort]);
 
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  // Clamp for slicing so a stale page (e.g. after a delete shrinks the set)
+  // never renders an empty window before the reset effect catches up.
+  const safePage = Math.min(page, pageCount);
+  const paged = useMemo(
+    () => filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE),
+    [filtered, safePage]
+  );
+
+  // Reset to the first page whenever the filtered set changes.
+  useEffect(() => {
+    setPage(1);
+  }, [search, pubFilter, catFilter, sort]);
+
+  // Clamp the page if the result set shrinks (e.g. after a delete).
+  useEffect(() => {
+    if (page > pageCount) setPage(pageCount);
+  }, [page, pageCount]);
+
   const toggleSort = (f: SortField) =>
     setSort((c) => ({ f, d: c.f === f && c.d === 'asc' ? 'desc' : 'asc' }));
 
@@ -420,6 +443,9 @@ const BooksPage = () => {
             ))}
           </SelectContent>
         </Select>
+        <span className="ml-auto text-sm text-muted-foreground">
+          {filtered.length} book{filtered.length === 1 ? '' : 's'}
+        </span>
       </div>
 
       <Card>
@@ -447,7 +473,7 @@ const BooksPage = () => {
                   </TableCell>
                 </TableRow>
               ) : (
-                filtered.map((b) => (
+                paged.map((b) => (
                   <TableRow
                     key={b.id}
                     className="cursor-pointer hover:bg-accent/40"
@@ -570,6 +596,19 @@ const BooksPage = () => {
           </Table>
         </CardContent>
       </Card>
+
+      {pageCount > 1 && (
+        <div className="flex items-center justify-between">
+          <span className="text-sm text-muted-foreground">
+            Page {safePage} of {pageCount}
+          </span>
+          <Pagination
+            page={safePage}
+            pageCount={pageCount}
+            onPageChange={setPage}
+          />
+        </div>
+      )}
 
       <Dialog
         open={!!delTarget}

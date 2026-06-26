@@ -30,6 +30,7 @@ import { Alert, AlertDescription } from 'components/ui/alert';
 import AuthenticatedImage from 'components/AuthenticatedImage';
 import AIStatusBadge from 'components/AIStatusBadge';
 import BookBundlesCell from 'components/BookBundlesCell';
+import Pagination from 'components/Pagination';
 import { fetchBundleCoverage, type BundleCoverage } from 'lib/standaloneApps';
 import {
   Dialog,
@@ -62,6 +63,8 @@ import {
 } from 'lib/publishers';
 import { listBookGroups } from 'lib/bookGroups';
 
+const PAGE_SIZE = 20;
+
 const fmtBytes = (n?: number) => {
   if (!n) return '0 B';
   const u = ['B', 'KB', 'MB', 'GB'];
@@ -85,6 +88,7 @@ const PublisherDetailPage = () => {
   const [formOpen, setFormOpen] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [bookSearch, setBookSearch] = useState('');
+  const [bookPage, setBookPage] = useState(1);
   const [deleteTarget, setDeleteTarget] = useState<PublisherBook | null>(null);
   const [delBundles, setDelBundles] = useState(true);
   const [deleteChildren, setDeleteChildren] = useState<BookRecord[] | null>(null);
@@ -167,6 +171,27 @@ const PublisherDetailPage = () => {
       (a.book_title || a.book_name).localeCompare(b.book_title || b.book_name)
     );
   }, [books, bookSearch]);
+
+  const bookPageCount = Math.max(1, Math.ceil(filteredBooks.length / PAGE_SIZE));
+  // Clamp for slicing so a stale page never renders an empty window before the
+  // reset effect catches up (e.g. after a delete shrinks the set).
+  const safeBookPage = Math.min(bookPage, bookPageCount);
+  const pagedBooks = useMemo(
+    () =>
+      filteredBooks.slice(
+        (safeBookPage - 1) * PAGE_SIZE,
+        safeBookPage * PAGE_SIZE
+      ),
+    [filteredBooks, safeBookPage]
+  );
+
+  useEffect(() => {
+    setBookPage(1);
+  }, [bookSearch]);
+
+  useEffect(() => {
+    if (bookPage > bookPageCount) setBookPage(bookPageCount);
+  }, [bookPage, bookPageCount]);
 
   const toggleAsset = async (name: string) => {
     const next = new Set(expandedAssets);
@@ -423,7 +448,7 @@ const PublisherDetailPage = () => {
                   </TableCell>
                 </TableRow>
               ) : (
-                filteredBooks.map((b) => (
+                pagedBooks.map((b) => (
                   <TableRow
                     key={b.id}
                     className="cursor-pointer hover:bg-accent/40"
@@ -513,6 +538,18 @@ const PublisherDetailPage = () => {
               )}
             </TableBody>
           </Table>
+          {bookPageCount > 1 && (
+            <div className="flex items-center justify-between border-t p-4">
+              <span className="text-sm text-muted-foreground">
+                Page {safeBookPage} of {bookPageCount}
+              </span>
+              <Pagination
+                page={safeBookPage}
+                pageCount={bookPageCount}
+                onPageChange={setBookPage}
+              />
+            </div>
+          )}
         </CardContent>
       </Card>
 

@@ -28,23 +28,30 @@ class BookRepository(BaseRepository[Book]):
         session: Session,
         *,
         skip: int = 0,
-        limit: int = 50,
+        limit: int | None = None,
         parent_book_id: int | None = None,
         top_level_only: bool = False,
     ) -> list[Book]:
-        """List non-archived books, optionally scoped to a parent or top-level only."""
+        """List non-archived books, optionally scoped to a parent or top-level only.
+
+        Results are ordered by id so pagination windows are stable; ``limit=None``
+        returns every matching book (consumers like the LMS rely on the full set).
+        """
         # Eager-load group_rel so the BookRead.group_name property doesn't fire a
         # per-row lazy SELECT when serializing the list.
         statement = (
             select(Book)
             .where(Book.status != BookStatusEnum.ARCHIVED)
             .options(selectinload(Book.group_rel))
+            .order_by(Book.id)
         )
         if top_level_only:
             statement = statement.where(Book.parent_book_id.is_(None))
         elif parent_book_id is not None:
             statement = statement.where(Book.parent_book_id == parent_book_id)
-        statement = statement.offset(skip).limit(limit)
+        statement = statement.offset(skip)
+        if limit is not None:
+            statement = statement.limit(limit)
         return list(session.scalars(statement).all())
 
     def list_by_publisher_id(
@@ -53,10 +60,13 @@ class BookRepository(BaseRepository[Book]):
         publisher_id: int,
         *,
         skip: int = 0,
-        limit: int = 50,
+        limit: int | None = None,
         top_level_only: bool = False,
     ) -> list[Book]:
-        """List non-archived books for a specific publisher."""
+        """List non-archived books for a specific publisher.
+
+        Ordered by id for stable pagination; ``limit=None`` returns the full set.
+        """
         statement = (
             select(Book)
             .where(
@@ -64,10 +74,13 @@ class BookRepository(BaseRepository[Book]):
                 Book.status != BookStatusEnum.ARCHIVED,
             )
             .options(selectinload(Book.group_rel))
+            .order_by(Book.id)
         )
         if top_level_only:
             statement = statement.where(Book.parent_book_id.is_(None))
-        statement = statement.offset(skip).limit(limit)
+        statement = statement.offset(skip)
+        if limit is not None:
+            statement = statement.limit(limit)
         return list(session.scalars(statement).all())
 
     def list_children(self, session: Session, parent_book_id: int) -> list[Book]:
