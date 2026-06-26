@@ -298,7 +298,7 @@ const PublisherDetailPage = () => {
     );
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pb-24">
       <div className="flex items-center gap-4">
         <Button
           variant="ghost"
@@ -539,15 +539,15 @@ const PublisherDetailPage = () => {
             </TableBody>
           </Table>
           {bookPageCount > 1 && (
-            <div className="flex items-center justify-between border-t p-4">
-              <span className="text-sm text-muted-foreground">
-                Page {safeBookPage} of {bookPageCount}
-              </span>
+            <div className="flex items-center gap-4 border-t p-4">
               <Pagination
                 page={safeBookPage}
                 pageCount={bookPageCount}
                 onPageChange={setBookPage}
               />
+              <span className="text-sm text-muted-foreground">
+                Page {safeBookPage} of {bookPageCount}
+              </span>
             </div>
           )}
         </CardContent>

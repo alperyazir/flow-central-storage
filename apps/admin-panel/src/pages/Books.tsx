@@ -381,7 +381,7 @@ const BooksPage = () => {
     );
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pb-24">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">All Books</h1>
         <Button variant="outline" onClick={handleSync} disabled={syncing}>
@@ -598,15 +598,15 @@ const BooksPage = () => {
       </Card>
 
       {pageCount > 1 && (
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-muted-foreground">
-            Page {safePage} of {pageCount}
-          </span>
+        <div className="flex items-center gap-4">
           <Pagination
             page={safePage}
             pageCount={pageCount}
             onPageChange={setPage}
           />
+          <span className="text-sm text-muted-foreground">
+            Page {safePage} of {pageCount}
+          </span>
         </div>
       )}
 
