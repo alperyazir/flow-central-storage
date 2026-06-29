@@ -522,6 +522,20 @@ async def list_books_with_processing_status(
     if search:
         query = query.filter((Book.book_name.ilike(f"%{search}%")) | (Book.book_title.ilike(f"%{search}%")))
 
+    # Filter by status at the DB level so pagination/total stay correct. The
+    # Book.ai_processing_status column is the authoritative, TTL-independent
+    # mirror of every state (queued/processing/completed/partial/failed), with
+    # NULL meaning "not_started" — so the live Redis job is only needed for
+    # progress enrichment below, never for membership.
+    if status:
+        if status == "not_started":
+            query = query.filter(Book.ai_processing_status.is_(None))
+        else:
+            query = query.filter(Book.ai_processing_status == status)
+
+    # Order for stable pagination windows (was unordered -> arbitrary paging).
+    query = query.order_by(Book.book_name.asc(), Book.id.asc())
+
     # Get total count before pagination
     total = query.count()
 
@@ -545,100 +559,119 @@ async def list_books_with_processing_status(
     queue_service = await get_queue_service()
     retrieval_service = get_ai_data_retrieval_service()
 
-    result_books = []
-    for book in books:
+    # Most-recent AI job per book, fetched concurrently. This was a sequential
+    # per-book await (an N+1 of up to page_size Redis round trips); gather lets
+    # them overlap. Bundle jobs are excluded so they never pollute AI status.
+    job_lists = await asyncio.gather(
+        *(
+            queue_service.list_jobs(
+                book_id=str(book.id), limit=1, job_types=AI_BOOK_JOB_TYPES
+            )
+            for book in books
+        )
+    )
+
+    # First pass: derive status from the live job + mirrored column. Books with
+    # neither are deferred to a metadata.json fallback (a blocking object-storage
+    # GET) which is then run concurrently off the event loop.
+    rows: list[BookWithProcessingStatus] = []
+    fallback: list[tuple[int, Book, str]] = []  # (row index, book, publisher slug)
+    for idx, book in enumerate(books):
         pub = publishers_by_id.get(book.publisher_id)
         publisher_name = pub.name if pub else ""
         pub_slug = pub.slug if pub else str(book.publisher_id)
-        # Most recent AI job for this book (bundle jobs are excluded so they
-        # never pollute the AI status).
-        jobs = await queue_service.list_jobs(
-            book_id=str(book.id), limit=1, job_types=AI_BOOK_JOB_TYPES
-        )
 
-        processing_status = "not_started"
-        progress = 0
-        current_step = None
-        error_message = None
-        job_id = None
-        last_processed_at = None
-
+        jobs = job_lists[idx]
         live_job = jobs[0] if jobs else None
         live_active = live_job is not None and live_job.status in (
             ProcessingStatus.QUEUED,
             ProcessingStatus.PROCESSING,
         )
 
+        row = BookWithProcessingStatus(
+            book_id=book.id,
+            book_name=book.book_name,
+            book_title=book.book_title or book.book_name,
+            publisher_id=book.publisher_id,
+            publisher_name=publisher_name,
+            processing_status="not_started",
+            progress=0,
+            current_step=None,
+            error_message=None,
+            job_id=None,
+            last_processed_at=None,
+        )
+
         if live_active:
             # A run is happening right now: show its live progress/step.
-            processing_status = live_job.status.value
-            progress = live_job.progress
-            current_step = live_job.current_step
-            error_message = live_job.error_message
-            job_id = live_job.job_id
+            row.processing_status = live_job.status.value
+            row.progress = live_job.progress
+            row.current_step = live_job.current_step
+            row.error_message = live_job.error_message
+            row.job_id = live_job.job_id
         elif book.ai_processing_status:
             # Persistent AI status mirrored on the Book row (TTL-independent).
-            processing_status = book.ai_processing_status
-            progress = 100 if book.ai_processing_status in ("completed", "partial") else 0
+            row.processing_status = book.ai_processing_status
+            row.progress = 100 if book.ai_processing_status in ("completed", "partial") else 0
             if book.ai_processed_at:
-                last_processed_at = (
+                row.last_processed_at = (
                     book.ai_processed_at.isoformat()
                     if hasattr(book.ai_processed_at, "isoformat")
                     else str(book.ai_processed_at)
                 )
             if live_job is not None:
-                job_id = live_job.job_id
-                error_message = live_job.error_message
+                row.job_id = live_job.job_id
+                row.error_message = live_job.error_message
         elif live_job is not None:
             # Finished AI job still in Redis, but no mirrored column yet.
-            processing_status = live_job.status.value
-            progress = live_job.progress
-            current_step = live_job.current_step
-            error_message = live_job.error_message
-            job_id = live_job.job_id
+            row.processing_status = live_job.status.value
+            row.progress = live_job.progress
+            row.current_step = live_job.current_step
+            row.error_message = live_job.error_message
+            row.job_id = live_job.job_id
             if live_job.completed_at:
-                last_processed_at = (
+                row.last_processed_at = (
                     live_job.completed_at.isoformat()
                     if hasattr(live_job.completed_at, "isoformat")
                     else str(live_job.completed_at)
                 )
-        else:
-            # No live job and no column — fall back to metadata.json (covers
-            # books processed before the Book column existed).
-            metadata = retrieval_service.get_metadata(pub_slug, str(book.id), book.book_name)
+        elif not status:
+            # No live job and no column: fall back to metadata.json (covers
+            # books processed before the column existed). Skipped when a status
+            # filter is active — the DB filter on the column is authoritative,
+            # so these stay "not_started" and match the not_started filter.
+            fallback.append((idx, book, pub_slug))
+
+        rows.append(row)
+
+    # Run the deferred metadata lookups concurrently and off the event loop
+    # (get_metadata is a blocking object-storage GET + JSON parse).
+    if fallback:
+        metadatas = await asyncio.gather(
+            *(
+                asyncio.to_thread(
+                    retrieval_service.get_metadata,
+                    pub_slug,
+                    str(book.id),
+                    book.book_name,
+                )
+                for _, book, pub_slug in fallback
+            )
+        )
+        for (idx, _book, _slug), metadata in zip(fallback, metadatas):
             if metadata:
-                processing_status = metadata.processing_status.value
-                progress = 100 if metadata.processing_status.value == "completed" else 0
+                rows[idx].processing_status = metadata.processing_status.value
+                rows[idx].progress = 100 if metadata.processing_status.value == "completed" else 0
                 if metadata.processing_completed_at:
-                    last_processed_at = (
+                    rows[idx].last_processed_at = (
                         metadata.processing_completed_at.isoformat()
                         if hasattr(metadata.processing_completed_at, "isoformat")
                         else str(metadata.processing_completed_at)
                     )
 
-        # Apply status filter
-        if status and processing_status != status:
-            continue
-
-        result_books.append(
-            BookWithProcessingStatus(
-                book_id=book.id,
-                book_name=book.book_name,
-                book_title=book.book_title or book.book_name,
-                publisher_id=book.publisher_id,
-                publisher_name=publisher_name,
-                processing_status=processing_status,
-                progress=progress,
-                current_step=current_step,
-                error_message=error_message,
-                job_id=job_id,
-                last_processed_at=last_processed_at,
-            )
-        )
-
     return BooksWithProcessingStatusResponse(
-        books=result_books,
-        total=len(result_books) if status else total,
+        books=rows,
+        total=total,
         page=page,
         page_size=page_size,
     )

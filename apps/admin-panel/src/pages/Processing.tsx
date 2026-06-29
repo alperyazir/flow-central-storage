@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   Loader2,
   Play,
@@ -33,6 +33,7 @@ import { Alert, AlertDescription } from 'components/ui/alert';
 import { useNavigate } from 'react-router-dom';
 import ProcessingDialog from 'components/ProcessingDialog';
 import ProcessingSettingsDialog from 'components/ProcessingSettingsDialog';
+import Pagination from 'components/Pagination';
 import { useAuthStore } from 'stores/auth';
 import {
   getBooksWithProcessingStatus,
@@ -44,6 +45,8 @@ import {
   type ProcessingQueueItem,
   type ExtendedProcessingStatus,
 } from 'lib/processing';
+
+const PAGE_SIZE = 20;
 
 const fmtProcessedAt = (s: string) =>
   new Date(s).toLocaleDateString(undefined, {
@@ -72,7 +75,10 @@ const ProcessingPage = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [processingBook, setProcessingBook] =
     useState<BookWithProcessingStatus | null>(null);
@@ -84,17 +90,19 @@ const ProcessingPage = () => {
     if (!token) return;
     try {
       const [bks, q] = await Promise.allSettled([
-        getBooksWithProcessingStatus(
-          token,
-          tt,
-          statusFilter !== 'all'
+        getBooksWithProcessingStatus(token, tt, {
+          ...(statusFilter !== 'all'
             ? { status: statusFilter as ExtendedProcessingStatus }
-            : {}
-        ),
+            : {}),
+          ...(debouncedSearch ? { search: debouncedSearch } : {}),
+          page,
+          page_size: PAGE_SIZE,
+        }),
         getProcessingQueue(token, tt),
       ]);
       if (bks.status === 'fulfilled') {
         setBooks(bks.value.books ?? []);
+        setTotal(bks.value.total ?? 0);
       }
       if (q.status === 'fulfilled') {
         setQueue((q.value.queue ?? []).slice(0, 5));
@@ -109,12 +117,24 @@ const ProcessingPage = () => {
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load');
     }
-  }, [token, tt, statusFilter]);
+  }, [token, tt, statusFilter, debouncedSearch, page]);
 
   useEffect(() => {
     setLoading(true);
     fetchData().finally(() => setLoading(false));
   }, [fetchData]);
+
+  // Debounce the search box, then drive a server-side query (search runs in the
+  // DB now, so it spans all books — not just the current page).
+  useEffect(() => {
+    const id = setTimeout(() => setDebouncedSearch(search.trim()), 300);
+    return () => clearTimeout(id);
+  }, [search]);
+
+  // Reset to the first page whenever the server-side filters change.
+  useEffect(() => {
+    setPage(1);
+  }, [statusFilter, debouncedSearch]);
 
   useEffect(() => {
     if (queueStats.queued + queueStats.processing === 0) return;
@@ -122,21 +142,13 @@ const ProcessingPage = () => {
     return () => clearInterval(id);
   }, [queueStats.queued, queueStats.processing, fetchData]);
 
-  const filtered = useMemo(() => {
-    const q = search.toLowerCase();
-    const matched = search
-      ? books.filter(
-          (b) =>
-            b.book_title.toLowerCase().includes(q) ||
-            b.book_name.toLowerCase().includes(q) ||
-            b.publisher_name.toLowerCase().includes(q)
-        )
-      : books;
-    // Alphabetical (A→Z) by display title.
-    return [...matched].sort((a, b) =>
-      (a.book_title || a.book_name).localeCompare(b.book_title || b.book_name)
-    );
-  }, [books, search]);
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const safePage = Math.min(page, pageCount);
+
+  // Clamp the page if the result set shrinks (e.g. after a reprocess refetch).
+  useEffect(() => {
+    if (page > pageCount) setPage(pageCount);
+  }, [page, pageCount]);
 
   const toggleSelect = (id: number) =>
     setSelected((p) => {
@@ -146,9 +158,9 @@ const ProcessingPage = () => {
     });
   const toggleAll = () =>
     setSelected((p) =>
-      p.size === filtered.length
+      p.size === books.length
         ? new Set()
-        : new Set(filtered.map((b) => b.book_id))
+        : new Set(books.map((b) => b.book_id))
     );
 
   const handleBulk = async () => {
@@ -185,7 +197,7 @@ const ProcessingPage = () => {
     );
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pb-24">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">AI Processing</h1>
         <div className="flex gap-2">
@@ -278,6 +290,9 @@ const ProcessingPage = () => {
             Reprocess {selected.size} Selected
           </Button>
         )}
+        <span className="ml-auto text-sm text-muted-foreground">
+          {total} book{total === 1 ? '' : 's'}
+        </span>
       </div>
 
       <Card>
@@ -288,7 +303,7 @@ const ProcessingPage = () => {
                 <TableHead className="w-10">
                   <Checkbox
                     checked={
-                      selected.size === filtered.length && filtered.length > 0
+                      selected.size === books.length && books.length > 0
                     }
                     onCheckedChange={toggleAll}
                   />
@@ -302,7 +317,7 @@ const ProcessingPage = () => {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {!filtered.length ? (
+              {!books.length ? (
                 <TableRow>
                   <TableCell
                     colSpan={7}
@@ -312,7 +327,7 @@ const ProcessingPage = () => {
                   </TableCell>
                 </TableRow>
               ) : (
-                filtered.map((b) => {
+                books.map((b) => {
                   const hasAIData =
                     b.processing_status === 'completed' ||
                     b.processing_status === 'partial';
@@ -416,6 +431,19 @@ const ProcessingPage = () => {
           </Table>
         </CardContent>
       </Card>
+
+      {pageCount > 1 && (
+        <div className="flex items-center gap-4">
+          <Pagination
+            page={safePage}
+            pageCount={pageCount}
+            onPageChange={setPage}
+          />
+          <span className="text-sm text-muted-foreground">
+            Page {safePage} of {pageCount}
+          </span>
+        </div>
+      )}
 
       {processingBook && (
         <ProcessingDialog
