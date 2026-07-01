@@ -124,7 +124,7 @@ def _detect_root_folder(archive: zipfile.ZipFile) -> str | None:
             continue
         if basename.startswith("._"):
             continue
-        if basename.lower().endswith(".bak"):
+        if basename.lower().endswith((".bak", ".tmp", ".fbinf", ".safe")):
             continue
 
         # Get root folder
@@ -171,10 +171,10 @@ def iter_zip_entries(archive: zipfile.ZipFile, strip_root: str | None = None) ->
         if basename.startswith("._"):
             continue
 
-        # Skip backup and temporary files
+        # Skip backup, temporary and ".safe" sidecar files (never sent to R2)
         basename_lower = basename.lower()
-        if basename_lower.endswith((".fbinf", ".bak", ".tmp")):
-            logger.debug("Skipping backup/temp file: %s", entry.filename)
+        if basename_lower.endswith((".fbinf", ".bak", ".tmp", ".safe")):
+            logger.debug("Skipping backup/temp/safe file: %s", entry.filename)
             continue
 
         # SEC-C2: Reject oversized entries to mitigate zip-bomb attacks
@@ -250,8 +250,10 @@ def _normalize_part(part: str) -> str:
     root = unicodedata.normalize("NFKD", root).encode("ascii", "ignore").decode()
     ext = unicodedata.normalize("NFKD", ext).encode("ascii", "ignore").decode()
 
-    # Spaces and special chars → underscore (keep - _ .)
-    root = re.sub(r"[^\w\-.]", "_", root)
+    # Spaces and special chars → underscore (keep - _). Dots inside the stem
+    # are folded too (e.g. "turuncu.renk.png" → "turuncu_renk.png"); the real
+    # extension was already split off above, so it is never affected.
+    root = re.sub(r"[^\w\-]", "_", root)
     # Collapse multiple underscores
     root = re.sub(r"_+", "_", root).strip("_")
 
@@ -305,6 +307,19 @@ def _build_rename_map(entries: list[tuple[zipfile.ZipInfo, str]]) -> dict[str, s
         if normalized != final_path:
             rename_map[final_path] = normalized
     return rename_map
+
+
+# Asset extensions we recognise in bare (directory-less) config references such
+# as an audio name dropped straight inside an activity object. Lowercase; the
+# match is case-insensitive.
+_MEDIA_EXTS = (
+    # audio
+    ".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac",
+    # video
+    ".mp4", ".webm", ".mov", ".m4v", ".ogv", ".avi",
+    # image
+    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp",
+)
 
 
 def _update_config_paths(
@@ -380,10 +395,31 @@ def _update_config_paths(
             original_key is not None and _normalize_part(part) == original_key
         )
 
+    def normalize_bare_filename(val: str) -> str:
+        """Normalize a directory-less asset reference (e.g. ``"song.MP3"``).
+
+        ``_path_re`` deliberately ignores these, but an activity can reference
+        an audio/image by bare filename. Only rewrite it when it ends in a known
+        media extension AND maps to a file actually uploaded — otherwise a plain
+        string that merely looks like a filename is left untouched.
+        """
+        if "/" in val or not val.lower().endswith(_MEDIA_EXTS):
+            return val
+        norm = _normalize_part(val)
+        if norm in by_basename:
+            return norm
+        # Spelling mismatch (ö vs oe): closest real file sharing the basename.
+        best, best_ratio = None, 0.0
+        for bn in by_basename:
+            ratio = difflib.SequenceMatcher(None, norm, bn).ratio()
+            if ratio > best_ratio:
+                best, best_ratio = bn, ratio
+        return best if best is not None and best_ratio >= 0.85 else val
+
     def normalize_path_value(val: str) -> str:
         """Normalize a config path like ./books/Countdown 2 SB/images/1.PNG"""
         if not _path_re.search(val):
-            return val
+            return normalize_bare_filename(val)
         parts = val.split("/")
 
         # Locate the book folder so we can canonicalise it and resolve the rest
@@ -414,7 +450,11 @@ def _update_config_paths(
         if isinstance(obj, str):
             return normalize_path_value(obj)
         if isinstance(obj, dict):
-            return {k: replace_paths(v) for k, v in obj.items()}
+            # Normalize keys too: audio.json keys ARE the asset filenames
+            # (``{"Pg 6.MP3": {...}}``), so a renamed file must update the key,
+            # not just path-valued strings. Non-asset keys (``duration`` …) lack
+            # a media extension and pass through untouched.
+            return {normalize_path_value(k): replace_paths(v) for k, v in obj.items()}
         if isinstance(obj, list):
             return [replace_paths(item) for item in obj]
         return obj
@@ -485,9 +525,11 @@ def upload_book_archive(
             with archive.open(entry) as file_obj:
                 data = file_obj.read()
 
-                # Update JSON file paths if files were renamed
+                # Update JSON file paths if files were renamed. audio.json (the
+                # per-folder audio manifest) references the same assets, so its
+                # entries must be reconciled to storage exactly like config.json.
                 lower_name = final_path.lower()
-                if lower_name.endswith("config.json") or lower_name.endswith("games.json"):
+                if lower_name.endswith(("config.json", "games.json", "audio.json")):
                     try:
                         data = _update_config_paths(
                             data,

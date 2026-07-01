@@ -107,6 +107,48 @@ def test_upload_book_archive_puts_files(sample_archive_bytes: bytes) -> None:
     )
 
 
+def test_upload_rewrites_audio_json_references() -> None:
+    """audio.json is normalized like config.json: refs match the renamed files."""
+    import json
+
+    captured: dict[str, bytes] = {}
+
+    def _capture(bucket, path, stream, length=None, content_type=None):
+        captured[path] = stream.read()
+
+    client = MagicMock()
+    client.put_object.side_effect = _capture
+
+    audio_json = json.dumps(
+        {
+            "tracks": [
+                "Ünite 1.MP3",  # bare reference (no directory)
+                "./audio/turuncu.renk.MP3",  # path reference with dotted stem
+            ]
+        }
+    )
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("Book/audio/Ünite 1.MP3", "a")
+        archive.writestr("Book/audio/turuncu.renk.MP3", "b")
+        archive.writestr("Book/audio/audio.json", audio_json)
+
+    upload_book_archive(
+        client=client,
+        archive_bytes=buffer.getvalue(),
+        bucket="publishers",
+        object_prefix="dream/books/Book/",
+        book_name="Book",
+    )
+
+    out = json.loads(captured["dream/books/Book/audio/audio.json"])
+    assert out["tracks"][0] == "Unite_1.mp3"
+    assert out["tracks"][1] == "./audio/turuncu_renk.mp3"
+    # The renamed asset objects themselves were stored under normalized keys.
+    assert "dream/books/Book/audio/Unite_1.mp3" in captured
+    assert "dream/books/Book/audio/turuncu_renk.mp3" in captured
+
+
 def test_upload_book_archive_raises_for_invalid_zip() -> None:
     client = MagicMock()
 

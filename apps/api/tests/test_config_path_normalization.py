@@ -119,3 +119,116 @@ def test_falls_back_to_part_normalization_without_original():
         original=None,
     )
     assert result["bg"] == "./some_folder/Unite.png"
+
+
+def test_stem_dots_replaced_with_underscore():
+    """Dots inside the filename stem fold to ``_`` (turuncu.renk.png)."""
+    result = _run(
+        {"bg": "./books/Book/images/turuncu.renk.png"},
+        book_name="Book",
+        original="Book",
+        known=["images/turuncu_renk.png"],
+    )
+    assert result["bg"] == "./books/Book/images/turuncu_renk.png"
+
+
+def test_bare_filename_inside_activity_normalized():
+    """A directory-less audio ref inside an activity is reconciled to storage.
+
+    Covers .MP3 -> .mp3, spaces -> _, and matching the uploaded basename.
+    """
+    result = _run(
+        {"pages": [{"activity": {"type": "audio", "src": "Ünite 1.MP3"}}]},
+        book_name="Book",
+        original="Book",
+        known=["audio/Unite_1.mp3"],
+    )
+    assert result["pages"][0]["activity"]["src"] == "Unite_1.mp3"
+
+
+def test_bare_filename_with_stem_dots_normalized():
+    """Bare ref with dotted stem + uppercase ext is folded to the stored name."""
+    result = _run(
+        {"a": {"sound": "turuncu.renk.MP3"}},
+        book_name="Book",
+        original="Book",
+        known=["audio/turuncu_renk.mp3"],
+    )
+    assert result["a"]["sound"] == "turuncu_renk.mp3"
+
+
+def test_bare_non_asset_string_untouched():
+    """Plain strings that aren't media references are left alone."""
+    result = _run(
+        {"label": "Click me", "code": "v2.0"},
+        book_name="Book",
+        original="Book",
+        known=["audio/song.mp3"],
+    )
+    assert result["label"] == "Click me"
+    assert result["code"] == "v2.0"
+
+
+def test_bare_filename_without_known_match_untouched():
+    """A bare media name with no matching uploaded file is not mangled."""
+    result = _run(
+        {"x": "mystery.mp3"},
+        book_name="Book",
+        original="Book",
+        known=["audio/other.mp3"],
+    )
+    assert result["x"] == "mystery.mp3"
+
+
+def test_audio_json_filename_keys_normalized():
+    """audio.json keys ARE the asset filenames, so a renamed file updates them.
+
+    Reproduces the live MyEnglishPathSb bug: ``Pg 6.MP3`` was stored as
+    ``Pg_6.mp3`` and config.json got fixed, but the audio.json key stayed
+    ``Pg 6.MP3`` because only string *values* were normalized.
+    """
+    result = _run(
+        {
+            "Pg 6.MP3": {"duration": 1.0},
+            "Pg-15.mp3": {"duration": 2.0},
+        },
+        book_name="Book",
+        original="Book",
+        known=["audio/Pg_6.mp3", "audio/Pg-15.mp3"],
+    )
+    assert "Pg 6.MP3" not in result
+    assert result["Pg_6.mp3"] == {"duration": 1.0}
+    assert result["Pg-15.mp3"] == {"duration": 2.0}  # already canonical, untouched
+
+
+def test_structural_dict_keys_not_touched():
+    """Non-asset keys (no media extension) pass through unchanged."""
+    result = _run(
+        {"duration": 1, "words": [], "lang": "en"},
+        book_name="Book",
+        original="Book",
+        known=["audio/x.mp3"],
+    )
+    assert set(result.keys()) == {"duration", "words", "lang"}
+
+
+def test_iter_zip_entries_skips_safe_files():
+    """``.safe`` sidecar files are filtered out before reaching R2."""
+    import io
+    import zipfile
+
+    from app.services.storage import iter_zip_entries
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("book/config.json", "{}")
+        zf.writestr("book/audio/song.mp3", "x")
+        zf.writestr("book/audio/song.safe", "x")
+        zf.writestr("book/notes.SAFE", "x")
+    buf.seek(0)
+    with zipfile.ZipFile(buf) as zf:
+        paths = [final for _entry, final in iter_zip_entries(zf)]
+
+    assert "book/audio/song.mp3" in paths
+    assert "book/config.json" in paths
+    assert not any(p.lower().endswith(".safe") for p in paths)
