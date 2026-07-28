@@ -85,11 +85,25 @@ class Settings(BaseSettings):
     tts_batch_concurrency: int = 5
 
     # Database pool settings (tune per deployment)
-    # Defaults for Hetzner CX43 sharing with Flow Learn
-    db_pool_size: int = 5  # Base connections (PGBouncer handles pooling)
-    db_max_overflow: int = 5  # Extra connections under burst
+    # Defaults for Hetzner CX43 sharing with Flow Learn.
+    # pool_size + max_overflow is the ceiling on concurrent DB work per process.
+    # It was 5+5, below FastAPI's 40-thread sync threadpool, so bursts of
+    # parallel requests queued for a connection and timed out. Kept at 40 to
+    # match that threadpool, and within PgBouncer's per-pool budget.
+    db_pool_size: int = 20  # Base connections (PGBouncer handles pooling)
+    db_max_overflow: int = 20  # Extra connections under burst
     db_pool_timeout: int = 30  # Seconds to wait for a connection
     db_pool_recycle: int = 1800  # Recycle connections after 30 min
+
+    # API key authentication cache
+    # Verifying an API key costs one bcrypt comparison (~100ms by design), so
+    # results are cached per token for a short window. Lower the TTL if key
+    # revocation needs to take effect faster than this.
+    api_key_cache_ttl_seconds: int = 60
+    api_key_cache_negative_ttl_seconds: int = 30
+    api_key_cache_max_entries: int = 1024
+    # Only rewrite last_used_at when the stored value is older than this.
+    api_key_last_used_throttle_seconds: int = 300
 
     # Queue Configuration (Redis/arq)
     redis_url: str = "redis://localhost:6379"

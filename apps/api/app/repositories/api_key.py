@@ -32,11 +32,32 @@ class ApiKeyRepository(BaseRepository[ApiKey]):
         """Return all API keys."""
         return self.list_all(session)
 
+    def list_active_by_prefix(self, session: Session, key_prefix: str) -> list[ApiKey]:
+        """Return active API keys whose stored prefix matches ``key_prefix``.
+
+        Authentication uses this to narrow the candidate set to (normally) a
+        single row, so only one bcrypt comparison is needed per request instead
+        of one per key in the table.
+        """
+        stmt = select(ApiKey).where(
+            ApiKey.key_prefix == key_prefix,
+            ApiKey.is_active.is_(True),
+        )
+        return list(session.execute(stmt).scalars().all())
+
+    def list_active_keys(self, session: Session) -> list[ApiKey]:
+        """Return every active API key."""
+        stmt = select(ApiKey).where(ApiKey.is_active.is_(True))
+        return list(session.execute(stmt).scalars().all())
+
     def update_last_used(self, session: Session, api_key: ApiKey) -> ApiKey:
-        """Update the last_used_at timestamp for an API key."""
+        """Update the last_used_at timestamp for an API key.
+
+        No ``refresh`` here on purpose: the caller already holds the value it
+        needs, and a refresh costs an extra round-trip on the hot auth path.
+        """
         api_key.last_used_at = datetime.now(timezone.utc)
         session.flush()
-        session.refresh(api_key)
         return api_key
 
     def revoke(self, session: Session, api_key: ApiKey) -> ApiKey:

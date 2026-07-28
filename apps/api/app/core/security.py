@@ -7,6 +7,8 @@ import hashlib
 import hmac
 import json
 import secrets
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -184,45 +186,162 @@ def authenticate_token_or_api_key(token: str, settings: Settings | None = None) 
     raise ValueError("Authentication required - token is neither valid JWT nor API key format")
 
 
-def verify_api_key_from_db(token: str, session) -> dict[str, Any] | None:
+# API key verification
+#
+# This runs on every request that authenticates with an API key, so it is a hot
+# path: it must not scan the table, must not turn a read into a write, and must
+# not leave a transaction open (PgBouncer's transaction pooling pins a server
+# connection until the transaction ends).
+
+_API_KEY_TOKEN_PREFIX = "dcs_"
+
+# fingerprint -> (monotonic expiry, api_key_id) where a ``None`` id caches a
+# token already known to be invalid.
+_api_key_cache: dict[str, tuple[float, int | None]] = {}
+_api_key_cache_lock = threading.Lock()
+
+
+def _token_fingerprint(token: str) -> str:
+    """Cache key for a token — the raw secret is never kept in memory."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _api_key_cache_get(fingerprint: str) -> tuple[bool, int | None]:
+    """Return ``(hit, api_key_id)`` for a cached verification result."""
+    now = time.monotonic()
+    with _api_key_cache_lock:
+        entry = _api_key_cache.get(fingerprint)
+        if entry is None:
+            return False, None
+        expires_at, api_key_id = entry
+        if expires_at <= now:
+            _api_key_cache.pop(fingerprint, None)
+            return False, None
+        return True, api_key_id
+
+
+def _api_key_cache_put(fingerprint: str, api_key_id: int | None, ttl: int, max_entries: int) -> None:
+    if ttl <= 0:
+        return
+    now = time.monotonic()
+    with _api_key_cache_lock:
+        if len(_api_key_cache) >= max_entries:
+            for expired in [key for key, (exp, _) in _api_key_cache.items() if exp <= now]:
+                _api_key_cache.pop(expired, None)
+            if len(_api_key_cache) >= max_entries:
+                _api_key_cache.clear()
+        _api_key_cache[fingerprint] = (now + ttl, api_key_id)
+
+
+def invalidate_api_key_cache() -> None:
+    """Forget every cached verification result.
+
+    Called after an API key is created or revoked so the change takes effect
+    immediately in this process instead of after the cache TTL.
+    """
+    with _api_key_cache_lock:
+        _api_key_cache.clear()
+
+
+def _end_read_transaction(session) -> None:
+    """Release the transaction opened by a read-only auth lookup.
+
+    Left open, it would pin a PgBouncer server connection for the rest of the
+    request. Skipped when the caller already has pending work in the session.
+    """
+    if session.new or session.dirty or session.deleted:
+        return
+    try:
+        session.rollback()
+    except Exception:  # pragma: no cover - defensive: auth must not fail on cleanup
+        pass
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    """Read a stored timestamp as UTC-aware.
+
+    Rows written before the column was timezone-aware — and any backend that
+    drops tzinfo — would otherwise raise ``TypeError`` when compared against an
+    aware ``now``, turning a routine expiry check into a 500.
+    """
+    if value is None or value.tzinfo is not None:
+        return value
+    return value.replace(tzinfo=timezone.utc)
+
+
+def _should_refresh_last_used(last_used_at: datetime | None, now: datetime, throttle_seconds: int) -> bool:
+    if last_used_at is None or throttle_seconds <= 0:
+        return True
+    return (now - _as_utc(last_used_at)).total_seconds() >= throttle_seconds
+
+
+def verify_api_key_from_db(token: str, session, *, settings: Settings | None = None) -> dict[str, Any] | None:
     """
     Verify if the token is a valid API key by checking the database.
 
-    Returns dict with api_key info if valid, None otherwise.
-    This function is meant to be called from routers that have DB session access.
+    Returns ``{"type": "api_key", "api_key_id": int}`` when the token is an
+    active, unexpired API key, ``None`` otherwise. Meant to be called from
+    routers that have DB session access.
     """
-    from datetime import datetime, timezone
-
     from app.repositories.api_key import ApiKeyRepository
+
+    active_settings = settings or get_settings()
+
+    # Format check first: JWTs and malformed tokens stop here, without a
+    # database round-trip or a bcrypt comparison.
+    if not token.startswith(_API_KEY_TOKEN_PREFIX):
+        return None
+
+    fingerprint = _token_fingerprint(token)
+    hit, cached_id = _api_key_cache_get(fingerprint)
+    if hit:
+        return None if cached_id is None else {"type": "api_key", "api_key_id": cached_id}
 
     repository = ApiKeyRepository()
 
-    # Try to find an API key that matches
-    # We need to check all API keys and verify with bcrypt
-    # This is not efficient, but for now we'll iterate through active keys
-    # A better approach would be to extract a deterministic prefix, but bcrypt doesn't support that
+    # Narrow to the keys sharing this token's stored prefix — normally exactly
+    # one row, so one bcrypt comparison instead of one per key in the table.
+    # Rows predating consistent prefix storage fall back to the full scan.
+    candidates = repository.list_active_by_prefix(session, get_api_key_prefix(token))
+    if not candidates:
+        candidates = repository.list_active_keys(session)
 
-    # For now, let's get all active API keys and check each one
-    api_keys = repository.list_all_keys(session)
-
-    for api_key in api_keys:
-        if not api_key.is_active:
+    now = datetime.now(timezone.utc)
+    matched = None
+    for api_key in candidates:
+        expires_at = _as_utc(api_key.expires_at)
+        if expires_at and expires_at < now:
             continue
-
-        # Check if expired
-        if api_key.expires_at and api_key.expires_at < datetime.now(timezone.utc):
-            continue
-
-        # Verify the key
         if verify_api_key(token, api_key.key_hash):
-            # Update last_used_at
-            repository.update_last_used(session, api_key)
-            session.commit()
+            matched = api_key
+            break
 
-            return {
-                "type": "api_key",
-                "api_key_id": api_key.id,
-                "api_key": api_key,
-            }
+    if matched is None:
+        _end_read_transaction(session)
+        _api_key_cache_put(
+            fingerprint,
+            None,
+            active_settings.api_key_cache_negative_ttl_seconds,
+            active_settings.api_key_cache_max_entries,
+        )
+        return None
 
-    return None
+    # Read the id before any commit/rollback, which would expire the instance
+    # and force a reload just to get it back.
+    api_key_id = matched.id
+
+    # last_used_at is bookkeeping, not correctness: only write when the stored
+    # value has actually gone stale, so reads stay reads.
+    if _should_refresh_last_used(matched.last_used_at, now, active_settings.api_key_last_used_throttle_seconds):
+        repository.update_last_used(session, matched)
+        session.commit()
+    else:
+        _end_read_transaction(session)
+
+    _api_key_cache_put(
+        fingerprint,
+        api_key_id,
+        active_settings.api_key_cache_ttl_seconds,
+        active_settings.api_key_cache_max_entries,
+    )
+    return {"type": "api_key", "api_key_id": api_key_id}

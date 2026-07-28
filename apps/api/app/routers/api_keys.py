@@ -12,6 +12,7 @@ from app.core.security import (
     generate_api_key,
     get_api_key_prefix,
     hash_api_key,
+    invalidate_api_key_cache,
 )
 from app.db import get_db
 from app.repositories.api_key import ApiKeyRepository
@@ -95,6 +96,7 @@ def create_api_key(
 
     created_key = _api_key_repository.create(db, api_key_data)
     db.commit()
+    invalidate_api_key_cache()
 
     return ApiKeyCreated(
         id=created_key.id,
@@ -153,5 +155,6 @@ def revoke_api_key(
 
     _api_key_repository.revoke(db, api_key)
     db.commit()
+    invalidate_api_key_cache()
 
     return {"status": "revoked", "id": key_id}

@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.security import decode_access_token, verify_api_key_from_db
-from app.db import SessionLocal, get_db
+from app.db import SessionLocal, get_db, release_session
 from app.models.webhook import WebhookEventType
 from app.repositories.book import BookRepository
 from app.repositories.publisher import PublisherRepository
@@ -708,6 +708,9 @@ def get_publisher_logo(
         response = client.get_object(settings.minio_publishers_bucket, object_key)
         stat = client.stat_object(settings.minio_publishers_bucket, object_key)
 
+        # Done with the database — release the connection before streaming.
+        release_session(db)
+
         return StreamingResponse(
             response,
             media_type=stat.content_type or "image/png",
@@ -753,6 +756,9 @@ def download_asset_file(
     try:
         response = client.get_object(settings.minio_publishers_bucket, object_key)
         stat = client.stat_object(settings.minio_publishers_bucket, object_key)
+
+        # Done with the database — release the connection before streaming.
+        release_session(db)
 
         return StreamingResponse(
             response,

@@ -19,7 +19,11 @@ engine = create_engine(
     # None = never prepare; 0 would mean "prepare immediately" (the opposite!)
     connect_args={"prepare_threshold": None},
 )
-SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+# expire_on_commit=False: without it every commit expires the loaded instances,
+# so the next attribute access issues a fresh SELECT — an extra round-trip per
+# request on hot paths, and a DetachedInstanceError once the session is closed.
+# Repositories already refresh() explicitly where they need server-side values.
+SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False, expire_on_commit=False)
 
 
 # TODO [PERF-H3]: Add Redis cache-aside layer (e.g. redis + fastapi-cache2)
@@ -35,3 +39,18 @@ def get_db() -> Generator:
         yield db
     finally:
         db.close()
+
+
+def release_session(session) -> None:
+    """Return a request's DB connection to the pool before the response body.
+
+    FastAPI keeps the ``get_db`` dependency open until the response has been
+    fully sent, so an endpoint returning a ``StreamingResponse`` would otherwise
+    hold a pooled connection for the entire download. Endpoints that are done
+    with the database call this just before returning the stream; ``get_db``
+    still closes the session afterwards, and closing twice is a no-op.
+    """
+    try:
+        session.close()
+    except Exception:  # pragma: no cover - defensive: never fail a download on cleanup
+        pass

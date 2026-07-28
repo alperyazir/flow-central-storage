@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.security import decode_access_token, verify_api_key_from_db
-from app.db import get_db
+from app.db import get_db, release_session
 from app.repositories.book import BookRepository
 from app.repositories.publisher import PublisherRepository
 from app.repositories.user import UserRepository
@@ -651,6 +651,9 @@ def stream_vocabulary_audio(
         "Accept-Ranges": "bytes",
         "Cache-Control": f"public, max-age={CACHE_AUDIO}",
     }
+
+    # Done with the database — release the connection before streaming.
+    release_session(db)
 
     if range_header:
         headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"

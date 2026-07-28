@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.security import decode_access_token, verify_api_key_from_db
-from app.db import get_db
+from app.db import get_db, release_session
 from app.repositories.book import BookRepository
 from app.repositories.user import UserRepository
 from app.schemas.ai_content import (
@@ -542,6 +542,9 @@ async def stream_audio(
         "Content-Length": str(content_length),
         "Content-Disposition": f'inline; filename="{filename}"',
     }
+
+    # Done with the database — release the connection before streaming.
+    release_session(db)
 
     if is_range_request:
         headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"

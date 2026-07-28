@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.security import decode_access_token, verify_api_key_from_db
-from app.db import SessionLocal, get_db
+from app.db import SessionLocal, get_db, release_session
 from app.repositories.book import BookRepository
 from app.repositories.publisher import PublisherRepository
 from app.repositories.user import UserRepository
@@ -357,6 +357,10 @@ async def get_book_cover(
     if etag:
         headers["ETag"] = f'"{etag}"'
 
+    # Nothing below touches the database — hand the connection back before the
+    # stream starts instead of pinning it for the whole download.
+    release_session(db)
+
     return StreamingResponse(
         iterator(),
         status_code=status.HTTP_200_OK,
@@ -476,6 +480,10 @@ async def download_book_object(
     }
     if etag:
         headers["ETag"] = f'"{etag}"'
+
+    # Nothing below touches the database — hand the connection back before the
+    # stream starts instead of pinning it for the whole download.
+    release_session(db)
 
     if is_range_request:
         # 206 Partial Content for range requests
