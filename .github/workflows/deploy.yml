@@ -80,6 +80,12 @@ jobs:
             # Update and restart services
             cd /opt/flow-central-storage
             docker compose up -d --no-build
+
+            # nginx resolves the `api` upstream once at startup, so a recreated
+            # api container gets a new IP that nginx keeps missing with 502.
+            # Traefik-fronted services self-heal; this static proxy does not.
+            docker compose restart nginx
+
             docker image prune -f
 
             echo "✅ Flow Central Storage deployed at $(date)"
