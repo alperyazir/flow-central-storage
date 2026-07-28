@@ -63,6 +63,9 @@ jobs:
       - name: Deploy to server
         uses: appleboy/ssh-action@v1
         with:
+          # Without this the script runs to the end on failure and the job
+          # reports success from the last echo — a broken deploy looked green.
+          script_stop: true
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
@@ -76,7 +79,7 @@ jobs:
 
             # Update and restart services
             cd /opt/flow-central-storage
-            docker compose -f docker-compose.prod.yml up -d --no-build
+            docker compose up -d --no-build
             docker image prune -f
 
             echo "✅ Flow Central Storage deployed at $(date)"
