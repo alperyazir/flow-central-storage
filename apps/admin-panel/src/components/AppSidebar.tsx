@@ -29,7 +29,6 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
-  useSidebar,
 } from 'components/ui/sidebar';
 import {
   DropdownMenu,
@@ -62,8 +61,6 @@ export function AppSidebar() {
   const navigate = useNavigate();
   const { mode, toggleMode } = useThemeStore();
   const logout = useAuthStore((s) => s.logout);
-  const { state } = useSidebar();
-  const isCollapsed = state === 'collapsed';
 
   const handleLogout = () => {
     logout();

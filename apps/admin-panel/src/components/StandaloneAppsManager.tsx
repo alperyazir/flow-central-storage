@@ -36,7 +36,6 @@ import {
 import { Button } from 'components/ui/button';
 import { Label } from 'components/ui/label';
 import { Alert, AlertDescription } from 'components/ui/alert';
-import { Progress } from 'components/ui/progress';
 import { useAuthStore } from 'stores/auth';
 import { ApiError } from 'lib/api';
 import {
@@ -79,7 +78,6 @@ const StandaloneAppsManager = () => {
   const [uploadPlat, setUploadPlat] = useState('');
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploadVersion, setUploadVersion] = useState('');
-  const [uploading, setUploading] = useState(false);
   const [uploadFb, setUploadFb] = useState<{
     type: 'success' | 'error';
     message: string;
@@ -236,7 +234,7 @@ const StandaloneAppsManager = () => {
 
       <Dialog
         open={uploadOpen}
-        onOpenChange={(o) => !uploading && !o && setUploadOpen(false)}
+        onOpenChange={(o) => !o && setUploadOpen(false)}
       >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -245,11 +243,7 @@ const StandaloneAppsManager = () => {
           <div className="space-y-4">
             <div className="space-y-2">
               <Label>Platform</Label>
-              <Select
-                value={uploadPlat}
-                onValueChange={setUploadPlat}
-                disabled={uploading}
-              >
+              <Select value={uploadPlat} onValueChange={setUploadPlat}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select platform..." />
                 </SelectTrigger>
@@ -271,7 +265,6 @@ const StandaloneAppsManager = () => {
                   setUploadFile(e.target.files?.[0] || null);
                   setUploadFb(null);
                 }}
-                disabled={uploading}
                 className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm file:border-0 file:bg-transparent file:text-sm file:font-medium"
               />
             </div>
@@ -284,7 +277,6 @@ const StandaloneAppsManager = () => {
                   setUploadVersion(e.target.value)
                 }
                 placeholder="e.g. 1.5.1"
-                disabled={uploading}
                 className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
               />
               <p className="text-xs text-muted-foreground">
@@ -292,9 +284,6 @@ const StandaloneAppsManager = () => {
                 bundles can be spotted later.
               </p>
             </div>
-            {uploading && (
-              <Progress value={undefined} className="animate-pulse" />
-            )}
             {uploadFb && (
               <Alert
                 variant={uploadFb.type === 'error' ? 'destructive' : 'default'}
@@ -304,18 +293,11 @@ const StandaloneAppsManager = () => {
             )}
           </div>
           <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setUploadOpen(false)}
-              disabled={uploading}
-            >
+            <Button variant="outline" onClick={() => setUploadOpen(false)}>
               Cancel
             </Button>
-            <Button
-              onClick={handleUpload}
-              disabled={!uploadFile || !uploadPlat || uploading}
-            >
-              {uploading && <Loader2 className="h-4 w-4 animate-spin" />} Upload
+            <Button onClick={handleUpload} disabled={!uploadFile || !uploadPlat}>
+              Upload
             </Button>
           </DialogFooter>
         </DialogContent>

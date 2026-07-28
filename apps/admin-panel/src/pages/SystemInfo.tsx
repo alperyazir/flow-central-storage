@@ -1,12 +1,11 @@
 import { useEffect, useState } from 'react';
-import { Loader2, Server, Database, HardDrive, RefreshCw } from 'lucide-react';
+import { Loader2, Server, Database, RefreshCw } from 'lucide-react';
 
 import { Card, CardContent, CardHeader, CardTitle } from 'components/ui/card';
 import { Badge } from 'components/ui/badge';
 import { Button } from 'components/ui/button';
 import { useAuthStore } from 'stores/auth';
 import { buildApiUrl } from 'config/environment';
-import { buildAuthHeaders } from 'lib/http';
 
 interface VersionInfo {
   service: string;
@@ -21,8 +20,7 @@ interface HealthInfo {
 }
 
 const SystemInfoPage = () => {
-  const { token, tokenType } = useAuthStore();
-  const tt = tokenType ?? 'Bearer';
+  const { token } = useAuthStore();
 
   const [fcsVersion, setFcsVersion] = useState<VersionInfo | null>(null);
   const [fcsHealth, setFcsHealth] = useState<HealthInfo | null>(null);
@@ -31,7 +29,6 @@ const SystemInfoPage = () => {
 
   const fetchAll = async () => {
     setLoading(true);
-    const headers = buildAuthHeaders(token ?? '', tt);
 
     // FCS version
     try {
