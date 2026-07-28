@@ -140,7 +140,7 @@ def _detect_root_folder(archive: zipfile.ZipFile) -> str | None:
     return root_folders.pop() if len(root_folders) == 1 else None
 
 
-_ZIP_MAX_ENTRY_SIZE = 2 * 1024 * 1024 * 1024  # 2 GB per file
+_ZIP_MAX_ENTRY_SIZE = 4 * 1024 * 1024 * 1024  # 4 GB per file
 _ZIP_MAX_TOTAL_SIZE = 20 * 1024 * 1024 * 1024  # 20 GB total extracted
 
 
@@ -180,7 +180,7 @@ def iter_zip_entries(archive: zipfile.ZipFile, strip_root: str | None = None) ->
         # SEC-C2: Reject oversized entries to mitigate zip-bomb attacks
         if entry.file_size > _ZIP_MAX_ENTRY_SIZE:
             raise UploadError(
-                f"Entry '{entry.filename}' exceeds the 2 GB per-file limit (declared size: {entry.file_size} bytes)"
+                f"Entry '{entry.filename}' exceeds the 4 GB per-file limit (declared size: {entry.file_size} bytes)"
             )
         total_size += entry.file_size
         if total_size > _ZIP_MAX_TOTAL_SIZE:

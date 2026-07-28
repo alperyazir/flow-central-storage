@@ -63,7 +63,7 @@ const CONTENT_TYPE_RULES: Record<
 > = {
   books: {
     accept: '.zip',
-    maxSize: 2 * 1024 * 1024 * 1024,
+    maxSize: 4 * 1024 * 1024 * 1024,
     multiple: true,
     label: 'Books (.zip)',
   },
