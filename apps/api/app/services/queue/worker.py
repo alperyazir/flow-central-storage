@@ -1,15 +1,26 @@
-"""Worker runner configuration for arq."""
+"""Worker runner configuration for arq.
+
+Jobs are routed to a queue per priority (``<queue_name>:high|normal|low``, see
+``QueueService.enqueue_job``). An arq Worker consumes exactly one queue, so this
+process runs one worker per priority — otherwise jobs enqueued outside the
+consumed queue would sit in Redis forever.
+
+Each lane has its own concurrency budget rather than sharing one, so a high
+priority job gets a free slot immediately instead of queueing behind a bulk
+sweep, and a bulk sweep on the low lane can never starve everyday work.
+"""
 
 import asyncio
 import logging
 import signal
 import sys
-from typing import Any
+from typing import Any, NamedTuple
 
 from arq.connections import RedisSettings
 from arq.worker import Worker
 
 from app.core.config import get_settings
+from app.services.queue.models import JobPriority
 from app.services.queue.tasks import (
     create_bundle_task,
     on_job_end,
@@ -19,9 +30,6 @@ from app.services.queue.tasks import (
 )
 
 logger = logging.getLogger(__name__)
-
-# Flag for graceful shutdown
-_shutdown_requested = False
 
 
 def _get_retry_delay(attempt: int) -> float:
@@ -86,10 +94,41 @@ class WorkerSettings:
         cls.max_jobs = settings.queue_max_concurrency
         cls.job_timeout = settings.queue_job_timeout_seconds
         cls.max_tries = settings.queue_max_retries
-        # Listen to normal priority queue by default
-        cls.queue_name = f"{settings.queue_name}:normal"
+        # The everyday lane; the other priorities get their own workers.
+        cls.queue_name = f"{settings.queue_name}:{JobPriority.NORMAL.value}"
 
         return cls
+
+
+class QueueLane(NamedTuple):
+    """One arq queue consumed by this process."""
+
+    priority: JobPriority
+    queue_name: str
+    max_jobs: int
+
+
+def get_queue_lanes() -> list[QueueLane]:
+    """Return every priority queue this process must consume.
+
+    Must stay in sync with the queue names QueueService.enqueue_job writes to —
+    a priority missing here means those jobs are enqueued and never run.
+    """
+    settings = get_settings()
+    concurrency = {
+        JobPriority.HIGH: settings.queue_high_concurrency,
+        JobPriority.NORMAL: settings.queue_max_concurrency,
+        JobPriority.LOW: settings.queue_low_concurrency,
+    }
+
+    return [
+        QueueLane(
+            priority=priority,
+            queue_name=f"{settings.queue_name}:{priority.value}",
+            max_jobs=max(1, concurrency[priority]),
+        )
+        for priority in JobPriority
+    ]
 
 
 async def startup(ctx: dict[str, Any]) -> None:
@@ -110,58 +149,85 @@ async def shutdown(ctx: dict[str, Any]) -> None:
     logger.info("Worker shutting down")
 
 
-def signal_handler(signum: int, frame: Any) -> None:
-    """Handle shutdown signals for graceful termination.
+def build_worker(lane: QueueLane, settings_cls: type["WorkerSettings"]) -> Worker:
+    """Create the arq worker consuming a single priority lane.
 
-    Args:
-        signum: Signal number
-        frame: Current stack frame
+    ``handle_signals=False`` is required: arq installs its handlers with
+    ``loop.add_signal_handler``, which replaces the previous one, so with
+    several workers only the last would ever see SIGTERM. run_worker() installs
+    a single handler that stops every lane instead.
     """
-    global _shutdown_requested
-    _shutdown_requested = True
-    logger.info("Shutdown signal received, finishing current jobs...")
-
-
-async def run_worker() -> None:
-    """Run the arq worker.
-
-    This function starts the worker process and handles graceful shutdown.
-    """
-    # Setup signal handlers
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-
-    # Configure settings
-    settings_cls = WorkerSettings.configure()
-
-    logger.info(
-        "Starting worker with max_jobs=%d, job_timeout=%d, max_tries=%d",
-        settings_cls.max_jobs,
-        settings_cls.job_timeout,
-        settings_cls.max_tries,
-    )
-
-    # Create and run worker
-    worker = Worker(
+    return Worker(
         functions=settings_cls.functions,
         redis_settings=settings_cls.redis_settings,
-        max_jobs=settings_cls.max_jobs,
+        max_jobs=lane.max_jobs,
         job_timeout=settings_cls.job_timeout,
         max_tries=settings_cls.max_tries,
         health_check_interval=settings_cls.health_check_interval,
         retry_jobs=settings_cls.retry_jobs,
-        queue_name=settings_cls.queue_name,
+        queue_name=lane.queue_name,
         on_startup=startup,
         on_shutdown=shutdown,
+        handle_signals=False,
     )
 
+
+def _install_shutdown_handler(workers: list[Worker]) -> None:
+    """Stop every lane on SIGINT/SIGTERM.
+
+    Mirrors arq's own stock handler (cancel in-flight jobs, then the poll
+    loop); with ``retry_jobs`` on, cancelled jobs are retried on the next run.
+    """
+
+    def _handle(signum: int) -> None:
+        logger.info("Shutdown signal %s received, stopping %d lanes", signum, len(workers))
+        for worker in workers:
+            worker.handle_sig(signum)  # type: ignore[arg-type]
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, _handle, sig)
+        except NotImplementedError:  # pragma: no cover - non-unix
+            signal.signal(sig, lambda signum, _frame: _handle(signum))
+
+
+async def run_worker() -> None:
+    """Run one arq worker per priority queue until they stop.
+
+    The lanes run concurrently in this process. If one of them dies the rest
+    are torn down too, so the container exits and the orchestrator restarts the
+    whole set — a half-dead worker would silently stop draining a priority.
+    """
+    settings_cls = WorkerSettings.configure()
+    lanes = get_queue_lanes()
+
+    logger.info(
+        "Starting workers for %s with job_timeout=%d, max_tries=%d",
+        ", ".join(f"{lane.queue_name} (max_jobs={lane.max_jobs})" for lane in lanes),
+        settings_cls.job_timeout,
+        settings_cls.max_tries,
+    )
+
+    workers = [build_worker(lane, settings_cls) for lane in lanes]
+    _install_shutdown_handler(workers)
+
+    tasks = [asyncio.create_task(worker.async_run()) for worker in workers]
     try:
-        await worker.async_run()
+        await asyncio.gather(*tasks)
     except asyncio.CancelledError:
-        logger.info("Worker cancelled")
+        logger.info("Worker lanes cancelled")
     finally:
-        await worker.close()
-        logger.info("Worker stopped")
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        for worker in workers:
+            try:
+                await worker.close()
+            except asyncio.CancelledError:
+                # close() gathers the in-flight jobs it just cancelled.
+                pass
+        logger.info("Workers stopped")
 
 
 def main() -> None:

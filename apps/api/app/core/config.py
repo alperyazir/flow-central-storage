@@ -108,7 +108,13 @@ class Settings(BaseSettings):
     # Queue Configuration (Redis/arq)
     redis_url: str = "redis://localhost:6379"
     queue_name: str = "ai_processing"
-    queue_max_concurrency: int = 3
+    # Jobs are routed to one arq queue per priority and the worker process runs
+    # a lane for each. `normal` carries the everyday load; `high` and `low` get
+    # small dedicated lanes so an urgent book never waits behind a bulk sweep
+    # and a bulk sweep never starves ad-hoc work.
+    queue_max_concurrency: int = 3  # the `normal` lane
+    queue_high_concurrency: int = 1
+    queue_low_concurrency: int = 1
     queue_max_retries: int = 3
     queue_job_timeout_seconds: int = 3600  # 1 hour
     queue_retry_delay_seconds: int = 60
