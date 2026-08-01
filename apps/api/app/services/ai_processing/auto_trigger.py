@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from app.core.config import get_settings
@@ -18,6 +20,18 @@ if TYPE_CHECKING:
     from app.services.queue.models import ProcessingJob
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class PublisherOverrides:
+    """Per-publisher AI processing settings.
+
+    ``None`` means "use the global default" — the same convention the settings
+    endpoints expose (GET /processing/publishers/{id}/settings).
+    """
+
+    auto_process_enabled: bool | None = None
+    priority: JobPriority | None = None
 
 
 class AutoProcessingService:
@@ -46,6 +60,43 @@ class AutoProcessingService:
         """
         return self.settings.ai_auto_process_on_upload
 
+    def get_publisher_overrides(self, publisher_id: int | str) -> PublisherOverrides:
+        """Load a publisher's AI processing overrides.
+
+        Best-effort: a missing publisher or a DB hiccup falls back to the global
+        defaults rather than blocking an upload. Blocking DB call — callers on
+        the event loop must run it in a thread.
+        """
+        from app.db import SessionLocal
+        from app.models.publisher import Publisher
+
+        try:
+            with SessionLocal() as session:
+                publisher = session.get(Publisher, int(publisher_id))
+                if publisher is None:
+                    return PublisherOverrides()
+
+                priority: JobPriority | None = None
+                if publisher.ai_processing_priority:
+                    try:
+                        priority = JobPriority(publisher.ai_processing_priority)
+                    except ValueError:
+                        logger.warning(
+                            "Publisher %s has unknown ai_processing_priority %r, using default",
+                            publisher_id,
+                            publisher.ai_processing_priority,
+                        )
+
+                return PublisherOverrides(
+                    auto_process_enabled=publisher.ai_auto_process_enabled,
+                    priority=priority,
+                )
+        except Exception as exc:  # pragma: no cover - best effort
+            logger.warning(
+                "Failed to load AI overrides for publisher %s: %s", publisher_id, exc
+            )
+            return PublisherOverrides()
+
     def should_skip_existing(self) -> bool:
         """
         Check if already-processed books should be skipped.
@@ -57,7 +108,7 @@ class AutoProcessingService:
 
     def is_already_processed(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
     ) -> bool:
@@ -65,7 +116,7 @@ class AutoProcessingService:
         Check if a book has already been processed.
 
         Args:
-            publisher_id: Publisher ID.
+            publisher_slug: Publisher slug (the object-storage prefix).
             book_id: Book identifier.
             book_name: Book folder name.
 
@@ -73,39 +124,50 @@ class AutoProcessingService:
             True if metadata.json exists for the book.
         """
         retrieval_service = get_ai_data_retrieval_service()
-        metadata = retrieval_service.get_metadata(publisher_id, book_id, book_name)
+        metadata = retrieval_service.get_metadata(publisher_slug, book_id, book_name)
         return metadata is not None
 
     def should_auto_process(
         self,
-        publisher_id: int,
+        publisher_slug: str,
         book_id: str,
         book_name: str,
         force: bool = False,
+        auto_process_enabled: bool | None = None,
     ) -> bool:
         """
         Determine if auto-processing should be triggered for a book.
 
         Args:
-            publisher_id: Publisher ID.
+            publisher_slug: Publisher slug; ai-data is stored under it, so the
+                numeric id would make the already-processed check always miss.
             book_id: Book identifier.
             book_name: Book folder name.
             force: If True, ignore skip_existing setting.
+            auto_process_enabled: Publisher override; None uses the global flag.
 
         Returns:
             True if processing should be triggered.
         """
-        # Check if auto-processing is enabled globally
-        if not self.is_auto_processing_enabled():
+        # The publisher override wins in both directions: an opted-in publisher
+        # is processed even when the global default is off, and an opted-out one
+        # is skipped even when it is on.
+        enabled = (
+            self.is_auto_processing_enabled()
+            if auto_process_enabled is None
+            else auto_process_enabled
+        )
+        if not enabled:
             logger.debug(
-                "Auto-processing disabled globally, skipping book %s",
+                "Auto-processing disabled for publisher %s, skipping book %s",
+                publisher_slug,
                 book_id,
             )
             return False
 
         # Check if we should skip already-processed books
         if not force and self.should_skip_existing():
-            if self.is_already_processed(publisher_id, book_id, book_name):
+            if self.is_already_processed(publisher_slug, book_id, book_name):
                 logger.info(
                     "Book %s already processed, skipping auto-processing",
                     book_id,
@@ -129,21 +191,32 @@ class AutoProcessingService:
 
         Args:
             book_id: Book database ID.
-            publisher_id: Publisher ID.
+            publisher_id: Publisher ID (used to load the publisher's overrides).
+            publisher_slug: Publisher slug (the object-storage prefix).
             book_name: Book folder name.
             force: If True, process even if already processed.
-            priority: Job priority level.
+            priority: Job priority level. A publisher override takes precedence.
             job_type: Processing job type. Defaults to UNIFIED for single LLM call.
 
         Returns:
             ProcessingJob if enqueued, None if skipped.
         """
+        # Publisher settings (Processing dashboard) override the globals.
+        overrides = await asyncio.to_thread(self.get_publisher_overrides, publisher_id)
+
         # Check if we should process this book
-        if not self.should_auto_process(publisher_id, str(book_id), book_name, force):
+        if not self.should_auto_process(
+            publisher_slug,
+            str(book_id),
+            book_name,
+            force,
+            auto_process_enabled=overrides.auto_process_enabled,
+        ):
             return None
 
         # Use UNIFIED by default for better accuracy and lower cost
         actual_job_type = job_type or DEFAULT_JOB_TYPE
+        actual_priority = overrides.priority or priority
 
         try:
             queue_service = await get_queue_service()
@@ -151,7 +224,7 @@ class AutoProcessingService:
                 book_id=str(book_id),
                 publisher_id=publisher_id,
                 job_type=actual_job_type,
-                priority=priority,
+                priority=actual_priority,
                 metadata={
                     "book_name": book_name,
                     "publisher_id": publisher_id,
@@ -161,17 +234,16 @@ class AutoProcessingService:
                 },
             )
 
-            import asyncio
-
             from app.services.ai_processing.book_status import set_book_ai_status
 
             await asyncio.to_thread(set_book_ai_status, book_id, "queued")
 
             logger.info(
-                "Auto-triggered processing job %s for book %s (publisher: %s)",
+                "Auto-triggered processing job %s for book %s (publisher: %s, priority: %s)",
                 job.job_id,
                 book_id,
                 publisher_id,
+                actual_priority.value,
             )
             return job
 
