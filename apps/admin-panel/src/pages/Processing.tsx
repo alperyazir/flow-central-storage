@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
+  Ban,
   Loader2,
   Play,
   RefreshCw,
   Settings,
+  Trash2,
   XCircle,
   Database,
 } from 'lucide-react';
@@ -30,6 +32,13 @@ import { Button } from 'components/ui/button';
 import { Badge } from 'components/ui/badge';
 import { Progress } from 'components/ui/progress';
 import { Alert, AlertDescription } from 'components/ui/alert';
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from 'components/ui/dialog';
 import { useNavigate } from 'react-router-dom';
 import ProcessingDialog from 'components/ProcessingDialog';
 import ProcessingSettingsDialog from 'components/ProcessingSettingsDialog';
@@ -39,7 +48,9 @@ import { useAuthStore } from 'stores/auth';
 import {
   getBooksWithProcessingStatus,
   getProcessingQueue,
+  cancelProcessing,
   clearProcessingError,
+  deleteAIData,
   getExtendedStatusLabel,
   type BookWithProcessingStatus,
   type BulkReprocessFilters,
@@ -88,6 +99,9 @@ const ProcessingPage = () => {
   const [processingBook, setProcessingBook] =
     useState<BookWithProcessingStatus | null>(null);
   const [bulkOpen, setBulkOpen] = useState(false);
+  const [clearTarget, setClearTarget] =
+    useState<BookWithProcessingStatus | null>(null);
+  const [clearing, setClearing] = useState(false);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -207,6 +221,40 @@ const ProcessingPage = () => {
     }
   };
 
+  const handleCancel = async (bookId: number) => {
+    if (!token) return;
+    setError(null);
+    try {
+      await cancelProcessing(bookId, token, tt);
+      setSuccessMsg('Processing cancelled');
+    } catch (e) {
+      // 409 = it started while the page was showing "queued".
+      setError(
+        e instanceof Error
+          ? e.message
+          : 'Could not cancel — the job may have already started'
+      );
+    } finally {
+      fetchData();
+    }
+  };
+
+  const handleClearData = async () => {
+    if (!token || !clearTarget) return;
+    setClearing(true);
+    setError(null);
+    try {
+      const stats = await deleteAIData(clearTarget.book_id, token, tt, false);
+      setSuccessMsg(`Cleared ${stats.total_deleted} AI file(s)`);
+      setClearTarget(null);
+      fetchData();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to clear AI data');
+    } finally {
+      setClearing(false);
+    }
+  };
+
   if (loading)
     return (
       <div className="flex justify-center py-20">
@@ -296,6 +344,7 @@ const ProcessingPage = () => {
             <SelectItem value="completed">Completed</SelectItem>
             <SelectItem value="failed">Failed</SelectItem>
             <SelectItem value="partial">Partial</SelectItem>
+            <SelectItem value="cancelled">Cancelled</SelectItem>
           </SelectContent>
         </Select>
         {bulkCount > 0 && (
@@ -456,6 +505,30 @@ const ProcessingPage = () => {
                         >
                           <Play className="h-4 w-4" />
                         </Button>
+                        {b.processing_status === 'queued' && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7"
+                            onClick={() => handleCancel(b.book_id)}
+                            title="Cancel (only before it starts)"
+                          >
+                            <Ban className="h-4 w-4 text-destructive" />
+                          </Button>
+                        )}
+                        {(b.processing_status === 'completed' ||
+                          b.processing_status === 'partial' ||
+                          b.processing_status === 'cancelled') && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7"
+                            onClick={() => setClearTarget(b)}
+                            title="Clear AI data"
+                          >
+                            <Trash2 className="h-4 w-4 text-destructive" />
+                          </Button>
+                        )}
                         {b.processing_status === 'failed' && (
                           <Button
                             variant="ghost"
@@ -490,6 +563,44 @@ const ProcessingPage = () => {
           </span>
         </div>
       )}
+
+      <Dialog
+        open={!!clearTarget}
+        onOpenChange={() => !clearing && setClearTarget(null)}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Clear AI data?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Deletes everything under <code>ai-data/</code> for{' '}
+            <span className="font-medium">{clearTarget?.book_title}</span> —
+            extracted text, modules, vocabulary and generated audio. The book
+            itself is untouched and can be processed again afterwards.
+          </p>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setClearTarget(null)}
+              disabled={clearing}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleClearData}
+              disabled={clearing}
+            >
+              {clearing ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Trash2 className="h-4 w-4" />
+              )}
+              Clear Data
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <BulkProcessDialog
         open={bulkOpen}

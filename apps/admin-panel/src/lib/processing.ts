@@ -290,6 +290,22 @@ export const clearProcessingError = (
   );
 
 /**
+ * Cancel a queued processing job. Rejects with 409 once it is running —
+ * a started job is left to finish.
+ */
+export const cancelProcessing = (
+  bookId: number,
+  token: string,
+  tokenType: string = 'Bearer',
+  client: ApiClient = apiClient
+): Promise<{ job_id: string; status: ProcessingStatus }> =>
+  client.post<{ job_id: string; status: ProcessingStatus }, undefined>(
+    `/processing/books/${bookId}/cancel`,
+    undefined,
+    { headers: buildAuthHeaders(token, tokenType) }
+  );
+
+/**
  * Bulk reprocess multiple books.
  */
 export const bulkReprocess = (

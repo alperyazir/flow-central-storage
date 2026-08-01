@@ -15,13 +15,19 @@ from app.services.queue.models import ProcessingJob, ProcessingStatus
 
 @pytest.fixture
 def mock_book():
-    """Create a mock book object."""
+    """Create a mock book object.
+
+    The mirrored AI columns are explicitly empty — a bare MagicMock is truthy,
+    which would make every book look like it had a persisted status.
+    """
     book = MagicMock()
     book.id = 1
     book.book_name = "test-book"
     book.book_title = "Test Book"
     book.publisher = "TestPublisher"
     book.publisher_id = 1
+    book.ai_processing_status = None
+    book.ai_processed_at = None
     return book
 
 
@@ -41,6 +47,22 @@ def mock_processing_job():
     job.started_at = None
     job.completed_at = None
     return job
+
+
+@pytest.fixture
+def mock_books_query(mock_book):
+    """DB query stub: every builder call returns the same query object.
+
+    _filtered_books_query chains query.filter/join/order_by, so each step has to
+    hand the same mock back or the count/offset stubs below never apply.
+    """
+    query = MagicMock()
+    query.filter.return_value = query
+    query.join.return_value = query
+    query.order_by.return_value = query
+    query.count.return_value = 1
+    query.offset.return_value.limit.return_value.all.return_value = [mock_book]
+    return query
 
 
 @pytest.fixture
@@ -80,6 +102,7 @@ class TestListBooksWithProcessingStatus:
         mock_get_retrieval: MagicMock,
         mock_get_queue: MagicMock,
         mock_book: MagicMock,
+        mock_books_query: MagicMock,
         mock_processing_job: MagicMock,
     ) -> None:
         """Test listing books returns books with processing status."""
@@ -99,10 +122,7 @@ class TestListBooksWithProcessingStatus:
 
         # Mock DB query
         mock_db = MagicMock()
-        mock_query = MagicMock()
-        mock_query.count.return_value = 1
-        mock_query.offset.return_value.limit.return_value.all.return_value = [mock_book]
-        mock_db.query.return_value = mock_query
+        mock_db.query.return_value = mock_books_query
 
         mock_credentials = MagicMock()
 
@@ -131,6 +151,7 @@ class TestListBooksWithProcessingStatus:
         mock_get_retrieval: MagicMock,
         mock_get_queue: MagicMock,
         mock_book: MagicMock,
+        mock_books_query: MagicMock,
     ) -> None:
         """Test books with metadata but no active job show as completed."""
         from app.routers.processing import list_books_with_processing_status
@@ -142,17 +163,18 @@ class TestListBooksWithProcessingStatus:
         mock_queue.list_jobs.return_value = []
         mock_get_queue.return_value = mock_queue
 
-        # Mock retrieval service - has metadata
+        # Mock retrieval service - has metadata (an AIDataMetadata-like object,
+        # not a dict: the endpoint reads .processing_status.value off it)
+        metadata = MagicMock()
+        metadata.processing_status.value = "completed"
+        metadata.processing_completed_at = None
         mock_retrieval = MagicMock()
-        mock_retrieval.get_metadata.return_value = {"processing_status": "completed"}
+        mock_retrieval.get_metadata.return_value = metadata
         mock_get_retrieval.return_value = mock_retrieval
 
         # Mock DB query
         mock_db = MagicMock()
-        mock_query = MagicMock()
-        mock_query.count.return_value = 1
-        mock_query.offset.return_value.limit.return_value.all.return_value = [mock_book]
-        mock_db.query.return_value = mock_query
+        mock_db.query.return_value = mock_books_query
 
         mock_credentials = MagicMock()
 
@@ -179,6 +201,7 @@ class TestGetProcessingQueue:
     """Test GET /processing/queue endpoint."""
 
     @pytest.mark.asyncio
+    @patch("app.routers.processing._publisher_repository")
     @patch("app.routers.processing.get_queue_service")
     @patch("app.routers.processing._require_auth")
     @patch("app.routers.processing._book_repository")
@@ -187,6 +210,7 @@ class TestGetProcessingQueue:
         mock_book_repo: MagicMock,
         mock_auth: MagicMock,
         mock_get_queue: MagicMock,
+        mock_publisher_repo: MagicMock,
         mock_book: MagicMock,
         mock_processing_job: MagicMock,
     ) -> None:
@@ -195,6 +219,11 @@ class TestGetProcessingQueue:
 
         mock_auth.return_value = 1
         mock_book_repo.get_by_id.return_value = mock_book
+        # publisher_name is a str field on the response model. Assigned after
+        # construction: MagicMock(name=...) sets the mock's own name, not .name
+        publisher = MagicMock()
+        publisher.name = "TestPublisher"
+        mock_publisher_repo.get.return_value = publisher
 
         # Mock queue service
         mock_queue = AsyncMock()
@@ -276,7 +305,6 @@ class TestClearProcessingError:
         # Mock queue service
         mock_queue = AsyncMock()
         mock_queue.list_jobs.return_value = [mock_failed_job]
-        mock_queue.cancel_job.return_value = None
         mock_get_queue.return_value = mock_queue
 
         mock_db = MagicMock()
@@ -289,7 +317,8 @@ class TestClearProcessingError:
         )
 
         assert result["message"] == "Processing error cleared successfully"
-        mock_queue.cancel_job.assert_called_once_with("job-456")
+        # The failed job record is dropped so the book can be queued again.
+        mock_queue.delete_job.assert_awaited_once_with("job-456")
 
     @pytest.mark.asyncio
     @patch("app.routers.processing.get_queue_service")
@@ -581,3 +610,92 @@ class TestBulkReprocess:
             )
 
         assert exc_info.value.status_code == 400
+
+
+# =============================================================================
+# Cancel Tests
+# =============================================================================
+
+
+class TestCancelProcessing:
+    """Test POST /processing/books/{book_id}/cancel endpoint."""
+
+    @pytest.mark.asyncio
+    @patch("app.routers.processing.set_book_ai_status")
+    @patch("app.routers.processing.get_queue_service")
+    @patch("app.routers.processing._require_auth")
+    @patch("app.routers.processing._book_repository")
+    async def test_cancel_marks_the_book_cancelled(
+        self,
+        mock_book_repo: MagicMock,
+        mock_auth: MagicMock,
+        mock_get_queue: MagicMock,
+        mock_set_status: MagicMock,
+        mock_book: MagicMock,
+        mock_processing_job: MagicMock,
+    ) -> None:
+        """Cancelling a queued job also clears the book's "queued" badge."""
+        from app.routers.processing import cancel_processing
+        from app.services.queue.models import ProcessingStatus
+
+        mock_auth.return_value = 1
+        mock_book_repo.get_by_id.return_value = mock_book
+
+        cancelled_job = MagicMock()
+        cancelled_job.job_id = "job-123"
+        cancelled_job.status = ProcessingStatus.CANCELLED
+
+        mock_queue = AsyncMock()
+        mock_queue.list_jobs.return_value = [mock_processing_job]
+        mock_queue.cancel_queued_job.return_value = cancelled_job
+        mock_get_queue.return_value = mock_queue
+
+        result = await cancel_processing(
+            book_id=1,
+            credentials=MagicMock(),
+            db=MagicMock(),
+        )
+
+        assert result["status"] == "cancelled"
+        mock_queue.cancel_queued_job.assert_awaited_once_with("job-123")
+        assert mock_set_status.call_args.args == (mock_book.id, "cancelled")
+
+    @pytest.mark.asyncio
+    @patch("app.routers.processing.set_book_ai_status")
+    @patch("app.routers.processing.get_queue_service")
+    @patch("app.routers.processing._require_auth")
+    @patch("app.routers.processing._book_repository")
+    async def test_cancel_running_job_returns_409(
+        self,
+        mock_book_repo: MagicMock,
+        mock_auth: MagicMock,
+        mock_get_queue: MagicMock,
+        mock_set_status: MagicMock,
+        mock_book: MagicMock,
+        mock_processing_job: MagicMock,
+    ) -> None:
+        """A running job is refused, and the book status is left alone."""
+        from fastapi import HTTPException
+
+        from app.routers.processing import cancel_processing
+        from app.services.queue.models import QueueError
+
+        mock_auth.return_value = 1
+        mock_book_repo.get_by_id.return_value = mock_book
+
+        mock_queue = AsyncMock()
+        mock_queue.list_jobs.return_value = [mock_processing_job]
+        mock_queue.cancel_queued_job.side_effect = QueueError(
+            "Cannot cancel job with status processing"
+        )
+        mock_get_queue.return_value = mock_queue
+
+        with pytest.raises(HTTPException) as exc_info:
+            await cancel_processing(
+                book_id=1,
+                credentials=MagicMock(),
+                db=MagicMock(),
+            )
+
+        assert exc_info.value.status_code == 409
+        mock_set_status.assert_not_called()

@@ -26,13 +26,14 @@ from app.schemas.processing import (
 )
 from app.services import get_minio_client
 from app.services.ai_data import get_ai_data_cleanup_manager, get_ai_data_retrieval_service
-from app.services.ai_processing.book_status import set_book_ai_status
+from app.services.ai_processing.book_status import clear_book_ai_status, set_book_ai_status
 from app.services.queue.models import (
     AI_BOOK_JOB_TYPES,
     JobAlreadyExistsError,
     JobPriority,
     ProcessingJobType,
     ProcessingStatus,
+    QueueError,
 )
 from app.services.queue.service import get_queue_service
 
@@ -423,6 +424,11 @@ async def delete_ai_data(
         stats.total_deleted,
     )
 
+    # The mirrored status describes data that no longer exists. Reset it, unless
+    # a fresh run is queued right below (which sets it to "queued").
+    if not reprocess:
+        await asyncio.to_thread(clear_book_ai_status, book_id)
+
     # Optionally trigger reprocessing
     if reprocess:
         # Re-open DB to check book content
@@ -437,6 +443,7 @@ async def delete_ai_data(
                         publisher_id=str(book_publisher_id),
                         metadata={"book_name": book_name, "publisher_id": publisher_id, "publisher_slug": publisher_slug},
                     )
+                    await asyncio.to_thread(set_book_ai_status, book_id, "queued")
                     logger.info(
                         "Triggered reprocessing for book %s (job_id=%s)",
                         book_id,
@@ -447,6 +454,10 @@ async def delete_ai_data(
                         "Skipped reprocessing for book %s: active job exists",
                         book_id,
                     )
+            else:
+                # Nothing was queued, so the cleared status would otherwise stay
+                # on whatever the deleted run left behind.
+                await asyncio.to_thread(clear_book_ai_status, book_id)
         finally:
             db.close()
 
@@ -827,6 +838,60 @@ async def clear_processing_error(
     logger.info("Cleared processing error for book %s (job_id=%s)", book_id, job.job_id)
 
     return {"message": "Processing error cleared successfully"}
+
+
+@dashboard_router.post(
+    "/books/{book_id}/cancel",
+)
+async def cancel_processing(
+    book_id: int,
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Cancel a queued AI processing job for a book.
+
+    Only jobs that have not started are cancellable — a running job is left to
+    finish, because nothing can stop the pipeline mid-stage without leaving
+    half-written ai-data behind. Clear the data afterwards instead.
+
+    Raises:
+        404: Book not found, or it has no processing job
+        409: The job is already running or already finished
+    """
+    _require_auth(credentials, db)
+
+    book = _book_repository.get_by_id(db, book_id)
+    if book is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Book not found",
+        )
+
+    queue_service = await get_queue_service()
+    jobs = await queue_service.list_jobs(
+        book_id=str(book.id), limit=1, job_types=AI_BOOK_JOB_TYPES
+    )
+    if not jobs:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No processing jobs found for this book",
+        )
+
+    try:
+        job = await queue_service.cancel_queued_job(jobs[0].job_id)
+    except QueueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+
+    # The book was flipped to "queued" when the job was enqueued; without this
+    # it would sit there forever.
+    await asyncio.to_thread(set_book_ai_status, book.id, ProcessingStatus.CANCELLED.value)
+
+    logger.info("Cancelled processing for book %s (job_id=%s)", book_id, job.job_id)
+
+    return {"job_id": job.job_id, "status": job.status.value}
 
 
 @dashboard_router.post(

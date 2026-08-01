@@ -638,6 +638,93 @@ class TestQueueService:
         assert "Cannot cancel" in str(exc_info.value)
 
     @pytest.mark.asyncio
+    async def test_enqueue_uses_our_job_id_as_the_arq_job_id(
+        self, queue_service, mock_arq_pool
+    ):
+        """Without _job_id arq invents its own and the entry is unaddressable."""
+        created = await queue_service.enqueue_job(
+            book_id="book-123",
+            publisher_id="pub-456",
+        )
+
+        assert mock_arq_pool.enqueue_job.await_args.kwargs["_job_id"] == created.job_id
+
+    @pytest.mark.asyncio
+    async def test_cancel_queued_removes_it_from_its_priority_queue(
+        self, queue_service, mock_arq_pool
+    ):
+        """The queue entry must be gone, otherwise a worker still picks it up."""
+        mock_arq_pool.zrem = AsyncMock(return_value=1)
+        created = await queue_service.enqueue_job(
+            book_id="book-123",
+            publisher_id="pub-456",
+            priority=JobPriority.LOW,
+        )
+
+        cancelled = await queue_service.cancel_queued_job(created.job_id)
+
+        assert cancelled.status == ProcessingStatus.CANCELLED
+        queue_name, job_id = mock_arq_pool.zrem.await_args.args
+        assert queue_name.endswith(":low")  # the lane it was enqueued to
+        assert job_id == created.job_id
+
+    @pytest.mark.asyncio
+    async def test_cancel_queued_refuses_a_running_job(
+        self, queue_service, job_repository
+    ):
+        """Nothing can stop the pipeline mid-stage, so don't pretend otherwise."""
+        created = await queue_service.enqueue_job(
+            book_id="book-123",
+            publisher_id="pub-456",
+        )
+        await job_repository.update_job_status(created.job_id, ProcessingStatus.PROCESSING)
+
+        with pytest.raises(QueueError) as exc_info:
+            await queue_service.cancel_queued_job(created.job_id)
+
+        assert "Cannot cancel" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_cancel_queued_refuses_a_job_that_just_started(
+        self, queue_service, job_repository, mock_arq_pool
+    ):
+        """Losing the race with a worker must not mark a running job cancelled."""
+        created = await queue_service.enqueue_job(
+            book_id="book-123",
+            publisher_id="pub-456",
+        )
+
+        async def _popped_by_worker(_queue_name: str, job_id: str) -> int:
+            await job_repository.update_job_status(job_id, ProcessingStatus.PROCESSING)
+            return 0  # nothing removed: it had already left the queue
+
+        mock_arq_pool.zrem = AsyncMock(side_effect=_popped_by_worker)
+
+        with pytest.raises(QueueError):
+            await queue_service.cancel_queued_job(created.job_id)
+
+        job = await job_repository.get_job(created.job_id)
+        assert job.status == ProcessingStatus.PROCESSING
+
+    @pytest.mark.asyncio
+    async def test_cancel_queued_still_cancels_an_unaddressable_entry(
+        self, queue_service, mock_arq_pool
+    ):
+        """Jobs enqueued before the _job_id fix cannot be zrem'd by our id.
+
+        They are still marked cancelled so the task-start guard drops them.
+        """
+        mock_arq_pool.zrem = AsyncMock(return_value=0)
+        created = await queue_service.enqueue_job(
+            book_id="book-123",
+            publisher_id="pub-456",
+        )
+
+        cancelled = await queue_service.cancel_queued_job(created.job_id)
+
+        assert cancelled.status == ProcessingStatus.CANCELLED
+
+    @pytest.mark.asyncio
     async def test_retry_failed_job(self, queue_service, job_repository):
         """Test retrying a failed job."""
         created = await queue_service.enqueue_job(

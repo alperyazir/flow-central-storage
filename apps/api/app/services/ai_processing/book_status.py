@@ -22,6 +22,7 @@ PROCESSING = "processing"
 COMPLETED = "completed"
 PARTIAL = "partial"
 FAILED = "failed"
+CANCELLED = "cancelled"
 
 # Statuses that represent the end of a successful (or partially successful) run.
 _FINISHED_OK = {COMPLETED, PARTIAL}
@@ -53,3 +54,30 @@ def set_book_ai_status(book_id: int | str, status: str) -> None:
             session.commit()
     except Exception as exc:  # pragma: no cover - best effort
         logger.warning("Failed to mirror AI status %s for book %s: %s", status, bid, exc)
+
+
+def clear_book_ai_status(book_id: int | str) -> None:
+    """Reset the mirrored status back to "never processed" (best-effort).
+
+    Used after the ai-data is deleted: leaving the row on ``completed`` would
+    show a badge and a processed-at date for data that is no longer there.
+    """
+    try:
+        bid = int(book_id)
+    except (TypeError, ValueError):
+        logger.warning("clear_book_ai_status: invalid book_id %r", book_id)
+        return
+
+    from app.db import SessionLocal
+    from app.models.book import Book
+
+    try:
+        with SessionLocal() as session:
+            book = session.get(Book, bid)
+            if book is None:
+                return
+            book.ai_processing_status = None
+            book.ai_processed_at = None
+            session.commit()
+    except Exception as exc:  # pragma: no cover - best effort
+        logger.warning("Failed to clear AI status for book %s: %s", bid, exc)

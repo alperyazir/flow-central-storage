@@ -145,6 +145,16 @@ async def process_book_task(
         pub_id,
     )
 
+    # A job cancelled while it was still queued can still have been popped by a
+    # worker in the same instant. Drop it here rather than processing a book the
+    # caller already took back.
+    try:
+        if (await repository.get_job(job_id)).status == ProcessingStatus.CANCELLED:
+            logger.info("Job %s was cancelled before it started, skipping", job_id)
+            return {"status": ProcessingStatus.CANCELLED.value, "job_id": job_id}
+    except Exception as exc:  # pragma: no cover - the guard must never block work
+        logger.warning("Could not read job %s before start: %s", job_id, exc)
+
     # Update job status to processing
     await repository.update_job_status(job_id, ProcessingStatus.PROCESSING)
 

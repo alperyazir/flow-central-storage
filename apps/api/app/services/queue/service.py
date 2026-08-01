@@ -203,6 +203,10 @@ class QueueService:
                 job_type=job_type.value,
                 metadata=metadata,
                 _queue_name=queue_name,
+                # Make our job id arq's job id too. Without this arq assigns a
+                # random one and nothing can address the queued entry later —
+                # which is why cancelling used to be a no-op.
+                _job_id=job_id,
             )
 
             logger.info(
@@ -233,8 +237,68 @@ class QueueService:
         """
         return await self._repository.get_job(job_id)
 
+    async def cancel_queued_job(self, job_id: str) -> ProcessingJob:
+        """Cancel a job that has not started running yet.
+
+        Removes the entry from its priority queue so no worker can pick it up,
+        then marks the record CANCELLED.
+
+        Running jobs are deliberately refused: arq is configured without
+        ``allow_abort_jobs`` and the pipeline has no mid-stage rollback, so a
+        "cancelled" running job would keep writing ai-data behind the caller's
+        back. Let it finish and clear the data afterwards instead.
+
+        Args:
+            job_id: Job ID
+
+        Returns:
+            Cancelled job
+
+        Raises:
+            JobNotFoundError: If job not found
+            QueueError: If the job is not queued (already running or finished)
+        """
+        job = await self._repository.get_job(job_id)
+
+        if job.status != ProcessingStatus.QUEUED:
+            raise QueueError(
+                f"Cannot cancel job with status {job.status.value}",
+                {"job_id": job_id, "status": job.status.value},
+            )
+
+        pool = await self._get_arq_pool()
+        queue_name = f"{self._settings.queue_name}:{job.priority.value}"
+        removed = await pool.zrem(queue_name, job_id)
+
+        if not removed:
+            # Either a worker popped it just now, or the entry predates the
+            # _job_id fix and is not addressable. Re-read before claiming it is
+            # cancelled: marking a running job cancelled would be a lie.
+            current = await self._repository.get_job(job_id)
+            if current.status != ProcessingStatus.QUEUED:
+                raise QueueError(
+                    f"Cannot cancel job with status {current.status.value}",
+                    {"job_id": job_id, "status": current.status.value},
+                )
+            logger.warning(
+                "Job %s was not in queue %s; marking cancelled so the task drops it",
+                job_id,
+                queue_name,
+            )
+
+        logger.info("Cancelled queued job %s", job_id)
+        return await self._repository.update_job_status(
+            job_id,
+            ProcessingStatus.CANCELLED,
+        )
+
     async def cancel_job(self, job_id: str) -> ProcessingJob:
         """Cancel a queued or in-progress job.
+
+        NOTE: this only marks the record. The arq abort below cannot stop a
+        running job (workers run without ``allow_abort_jobs``), so the work
+        carries on and overwrites the status when it finishes. Use
+        :meth:`cancel_queued_job` for a cancel that actually holds.
 
         Args:
             job_id: Job ID
