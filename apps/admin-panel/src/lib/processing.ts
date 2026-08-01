@@ -205,8 +205,18 @@ export interface ProcessingQueueResponse {
   total_processing: number;
 }
 
+/** Selects books server-side, mirroring the /processing/books query params. */
+export interface BulkReprocessFilters {
+  status?: ExtendedProcessingStatus;
+  publisher?: string;
+  search?: string;
+}
+
 export interface BulkReprocessRequest {
-  book_ids: number[];
+  /** Hand-picked books. Omit when using `filters`. */
+  book_ids?: number[];
+  /** Queues every book matching the filter, not just the visible page. */
+  filters?: BulkReprocessFilters;
   job_type?: ProcessingJobType;
   priority?: JobPriority;
 }
@@ -214,6 +224,8 @@ export interface BulkReprocessRequest {
 export interface BulkReprocessResponse {
   triggered: number;
   skipped: number;
+  /** Books the request selected, which may exceed `triggered` at the cap. */
+  matched: number;
   errors: string[];
   job_ids: string[];
 }

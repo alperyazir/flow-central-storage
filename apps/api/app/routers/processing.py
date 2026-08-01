@@ -48,6 +48,10 @@ logger = logging.getLogger(__name__)
 RATE_LIMIT_WINDOW = 3600  # 1 hour in seconds
 MAX_JOBS_PER_PUBLISHER = 10
 
+# Upper bound on how many books one bulk-reprocess call may queue, so a filter
+# matching the whole catalogue can't flood the queue (or the request) at once.
+BULK_REPROCESS_MAX_BOOKS = 500
+
 
 def _require_auth(credentials: HTTPAuthorizationCredentials, db: Session) -> int:
     """Validate JWT token or API key and return user ID or -1 for API key auth."""
@@ -105,6 +109,45 @@ async def _check_rate_limit(publisher_id: int) -> tuple[bool, int]:
     if current > MAX_JOBS_PER_PUBLISHER:
         return False, ttl
     return True, 0
+
+
+def _filtered_books_query(
+    db: Session,
+    status_filter: Optional[str] = None,
+    publisher: Optional[str] = None,
+    search: Optional[str] = None,
+):
+    """Build the top-level-book query behind the processing dashboard.
+
+    Shared by GET /processing/books and the filter-driven bulk reprocess so the
+    two can never disagree about which books a filter selects.
+
+    The Book.ai_processing_status column is the authoritative, TTL-independent
+    mirror of every state (queued/processing/completed/partial/failed), with
+    NULL meaning "not_started".
+    """
+    from app.models.book import Book
+
+    query = db.query(_book_repository.model).filter(Book.parent_book_id.is_(None))
+
+    if publisher:
+        from app.models.publisher import Publisher
+
+        query = query.join(Publisher).filter(Publisher.name.ilike(f"%{publisher}%"))
+
+    if search:
+        query = query.filter(
+            (Book.book_name.ilike(f"%{search}%")) | (Book.book_title.ilike(f"%{search}%"))
+        )
+
+    if status_filter:
+        if status_filter == "not_started":
+            query = query.filter(Book.ai_processing_status.is_(None))
+        else:
+            query = query.filter(Book.ai_processing_status == status_filter)
+
+    # Order for stable pagination windows (was unordered -> arbitrary paging).
+    return query.order_by(Book.book_name.asc(), Book.id.asc())
 
 
 def _book_has_content(book, publisher_slug: str) -> bool:
@@ -472,10 +515,27 @@ class ProcessingQueueResponse(BaseModel):
     total_processing: int
 
 
-class BulkReprocessRequest(BaseModel):
-    """Request for bulk reprocessing."""
+class BulkReprocessFilters(BaseModel):
+    """Filters selecting the books to reprocess.
 
-    book_ids: List[int]
+    Same semantics as the GET /processing/books query params, so "process
+    everything matching the filter" hits exactly the rows the dashboard shows.
+    """
+
+    status: Optional[str] = None
+    publisher: Optional[str] = None
+    search: Optional[str] = None
+
+
+class BulkReprocessRequest(BaseModel):
+    """Request for bulk reprocessing.
+
+    Either an explicit ``book_ids`` list (one page of the dashboard, hand
+    picked) or a ``filters`` object covering the whole filtered result set.
+    """
+
+    book_ids: List[int] = []
+    filters: Optional[BulkReprocessFilters] = None
     job_type: Optional[str] = "unified"  # unified uses single LLM call for better accuracy
     priority: Optional[str] = "normal"
 
@@ -485,6 +545,7 @@ class BulkReprocessResponse(BaseModel):
 
     triggered: int
     skipped: int
+    matched: int = 0
     errors: List[str]
     job_ids: List[str]
 
@@ -509,32 +570,13 @@ async def list_books_with_processing_status(
     """
     _require_auth(credentials, db)
 
-    # Get all books with optional filters
-    from app.models.book import Book
+    from app.models.book import Book  # noqa: F401  (annotates `fallback` below)
 
-    query = db.query(_book_repository.model).filter(Book.parent_book_id.is_(None))
-
-    if publisher:
-        from app.models.publisher import Publisher
-
-        query = query.join(Publisher).filter(Publisher.name.ilike(f"%{publisher}%"))
-
-    if search:
-        query = query.filter((Book.book_name.ilike(f"%{search}%")) | (Book.book_title.ilike(f"%{search}%")))
-
-    # Filter by status at the DB level so pagination/total stay correct. The
-    # Book.ai_processing_status column is the authoritative, TTL-independent
-    # mirror of every state (queued/processing/completed/partial/failed), with
-    # NULL meaning "not_started" — so the live Redis job is only needed for
-    # progress enrichment below, never for membership.
-    if status:
-        if status == "not_started":
-            query = query.filter(Book.ai_processing_status.is_(None))
-        else:
-            query = query.filter(Book.ai_processing_status == status)
-
-    # Order for stable pagination windows (was unordered -> arbitrary paging).
-    query = query.order_by(Book.book_name.asc(), Book.id.asc())
+    # Filter at the DB level so pagination/total stay correct; the live Redis
+    # job is only needed for progress enrichment below, never for membership.
+    query = _filtered_books_query(
+        db, status_filter=status, publisher=publisher, search=search
+    )
 
     # Get total count before pagination
     total = query.count()
@@ -798,8 +840,14 @@ async def bulk_reprocess(
 ) -> BulkReprocessResponse:
     """Bulk reprocess multiple books.
 
-    Queues processing jobs for multiple books at once.
-    Skips books that already have active processing jobs.
+    Takes either an explicit ``book_ids`` list or a ``filters`` object, which
+    queues every book matching the dashboard filters — not just the page the
+    caller can see. Books that already have an active job are skipped.
+
+    At most BULK_REPROCESS_MAX_BOOKS books are queued per call; when a filter
+    matches more, the remainder is reported in ``errors`` rather than silently
+    dropped (re-running picks up where this left off, since queued books fall
+    out of the not_started filter).
     """
     user_id = _require_auth(credentials, db)
 
@@ -810,11 +858,16 @@ async def bulk_reprocess(
             detail="Bulk reprocess requires user authentication",
         )
 
-    queue_service = await get_queue_service()
+    if not request.book_ids and request.filters is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Provide either book_ids or filters",
+        )
+
     triggered = 0
     skipped = 0
-    errors = []
-    job_ids = []
+    errors: List[str] = []
+    job_ids: List[str] = []
 
     # Parse job type and priority
     job_type = ProcessingJobType.UNIFIED
@@ -831,22 +884,72 @@ async def bulk_reprocess(
         except ValueError:
             priority = JobPriority.NORMAL
 
-    for book_id in request.book_ids:
-        book = _book_repository.get_by_id(db, book_id)
-        if book is None:
-            errors.append(f"Book {book_id} not found")
+    # Resolve the target books. The filter path reuses the dashboard query so
+    # "process everything matching this filter" selects exactly the listed rows.
+    books = []
+    if request.filters is not None:
+        query = _filtered_books_query(
+            db,
+            status_filter=request.filters.status,
+            publisher=request.filters.publisher,
+            search=request.filters.search,
+        )
+        matched = query.count()
+        books = query.limit(BULK_REPROCESS_MAX_BOOKS).all()
+        if matched > len(books):
+            errors.append(
+                f"Queued the first {len(books)} of {matched} matching books "
+                f"(per-request cap is {BULK_REPROCESS_MAX_BOOKS}); run again for the rest"
+            )
+    else:
+        matched = len(request.book_ids)
+        for book_id in request.book_ids:
+            book = _book_repository.get_by_id(db, book_id)
+            if book is None:
+                errors.append(f"Book {book_id} not found")
+                skipped += 1
+                continue
+            books.append(book)
+
+    # Resolve publishers in one query (was a per-book lookup inside the loop).
+    publisher_ids = list({book.publisher_id for book in books})
+    publishers_by_id = (
+        {
+            p.id: p
+            for p in db.query(_publisher_repository.model)
+            .filter(_publisher_repository.model.id.in_(publisher_ids))
+            .all()
+        }
+        if publisher_ids
+        else {}
+    )
+    publisher_slugs = [
+        publishers_by_id[book.publisher_id].slug
+        if book.publisher_id in publishers_by_id
+        else str(book.publisher_id)
+        for book in books
+    ]
+
+    # Each content check is a blocking object-storage LIST and a filtered bulk
+    # can cover hundreds of books, so run them concurrently off the event loop
+    # instead of serially inside the enqueue loop.
+    has_content_flags = await asyncio.gather(
+        *(
+            asyncio.to_thread(_book_has_content, book, slug)
+            for book, slug in zip(books, publisher_slugs)
+        )
+    )
+
+    queue_service = await get_queue_service()
+
+    for book, publisher_slug, has_content in zip(books, publisher_slugs, has_content_flags):
+        if not has_content:
+            errors.append(f"Book {book.id} has no content")
             skipped += 1
             continue
 
-        # Get publisher explicitly
-        publisher = _publisher_repository.get(db, book.publisher_id)
+        publisher = publishers_by_id.get(book.publisher_id)
         publisher_id = publisher.id if publisher else book.publisher_id
-        publisher_slug = publisher.slug if publisher else str(book.publisher_id)
-
-        if not _book_has_content(book, publisher_slug):
-            errors.append(f"Book {book_id} has no content")
-            skipped += 1
-            continue
 
         try:
             job = await queue_service.enqueue_job(
@@ -862,11 +965,12 @@ async def bulk_reprocess(
         except JobAlreadyExistsError:
             skipped += 1
         except Exception as e:
-            errors.append(f"Book {book_id}: {str(e)}")
+            errors.append(f"Book {book.id}: {str(e)}")
             skipped += 1
 
     logger.info(
-        "Bulk reprocess completed: %d triggered, %d skipped, %d errors",
+        "Bulk reprocess completed: %d matched, %d triggered, %d skipped, %d errors",
+        matched,
         triggered,
         skipped,
         len(errors),
@@ -875,6 +979,7 @@ async def bulk_reprocess(
     return BulkReprocessResponse(
         triggered=triggered,
         skipped=skipped,
+        matched=matched,
         errors=errors,
         job_ids=job_ids,
     )

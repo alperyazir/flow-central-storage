@@ -444,3 +444,140 @@ class TestBulkReprocess:
         assert result.triggered == 0
         assert result.skipped == 1
         assert "not found" in result.errors[0]
+
+    @pytest.mark.asyncio
+    @patch("app.routers.processing._book_has_content")
+    @patch("app.routers.processing.get_queue_service")
+    @patch("app.routers.processing._require_auth")
+    @patch("app.routers.processing._filtered_books_query")
+    async def test_bulk_reprocess_by_filter_queues_every_match(
+        self,
+        mock_query_builder: MagicMock,
+        mock_auth: MagicMock,
+        mock_get_queue: MagicMock,
+        mock_has_content: MagicMock,
+    ) -> None:
+        """Filters queue the whole matching set, not just one dashboard page."""
+        from app.routers.processing import (
+            BulkReprocessFilters,
+            BulkReprocessRequest,
+            bulk_reprocess,
+        )
+        from app.services.queue.models import ProcessingJobType
+
+        mock_auth.return_value = 1
+        mock_has_content.return_value = True
+
+        books = []
+        for book_id in (1, 2, 3):
+            book = MagicMock()
+            book.id = book_id
+            book.publisher_id = 7
+            book.book_name = f"book-{book_id}"
+            books.append(book)
+
+        query = MagicMock()
+        query.count.return_value = 3
+        query.limit.return_value.all.return_value = books
+        mock_query_builder.return_value = query
+
+        mock_job = MagicMock()
+        mock_job.job_id = "new-job"
+        mock_queue = AsyncMock()
+        mock_queue.enqueue_job.return_value = mock_job
+        mock_get_queue.return_value = mock_queue
+
+        request = BulkReprocessRequest(
+            filters=BulkReprocessFilters(status="not_started"),
+            job_type="full",
+        )
+
+        result = await bulk_reprocess(
+            request=request,
+            credentials=MagicMock(),
+            db=MagicMock(),
+        )
+
+        assert result.matched == 3
+        assert result.triggered == 3
+        assert result.skipped == 0
+        assert result.errors == []
+        # The filter is handed to the same query builder the dashboard uses.
+        assert mock_query_builder.call_args.kwargs["status_filter"] == "not_started"
+        # job_type from the request is honoured (not silently forced to unified).
+        assert mock_queue.enqueue_job.await_args.kwargs["job_type"] == ProcessingJobType.FULL
+
+    @pytest.mark.asyncio
+    @patch("app.routers.processing.BULK_REPROCESS_MAX_BOOKS", 2)
+    @patch("app.routers.processing._book_has_content")
+    @patch("app.routers.processing.get_queue_service")
+    @patch("app.routers.processing._require_auth")
+    @patch("app.routers.processing._filtered_books_query")
+    async def test_bulk_reprocess_by_filter_reports_cap(
+        self,
+        mock_query_builder: MagicMock,
+        mock_auth: MagicMock,
+        mock_get_queue: MagicMock,
+        mock_has_content: MagicMock,
+    ) -> None:
+        """Books beyond the per-request cap are reported, never dropped silently."""
+        from app.routers.processing import (
+            BulkReprocessFilters,
+            BulkReprocessRequest,
+            bulk_reprocess,
+        )
+
+        mock_auth.return_value = 1
+        mock_has_content.return_value = True
+
+        books = []
+        for book_id in (1, 2):
+            book = MagicMock()
+            book.id = book_id
+            book.publisher_id = 7
+            book.book_name = f"book-{book_id}"
+            books.append(book)
+
+        query = MagicMock()
+        query.count.return_value = 5  # more matches than the capped page
+        query.limit.return_value.all.return_value = books
+        mock_query_builder.return_value = query
+
+        mock_job = MagicMock()
+        mock_job.job_id = "new-job"
+        mock_queue = AsyncMock()
+        mock_queue.enqueue_job.return_value = mock_job
+        mock_get_queue.return_value = mock_queue
+
+        result = await bulk_reprocess(
+            request=BulkReprocessRequest(filters=BulkReprocessFilters(status="failed")),
+            credentials=MagicMock(),
+            db=MagicMock(),
+        )
+
+        query.limit.assert_called_once_with(2)
+        assert result.matched == 5
+        assert result.triggered == 2
+        assert any("first 2 of 5" in e for e in result.errors)
+
+    @pytest.mark.asyncio
+    @patch("app.routers.processing._require_auth")
+    async def test_bulk_reprocess_requires_ids_or_filters(
+        self,
+        mock_auth: MagicMock,
+    ) -> None:
+        """An empty request is rejected instead of silently doing nothing."""
+        from fastapi import HTTPException
+
+        from app.routers.processing import BulkReprocessRequest, bulk_reprocess
+
+        mock_auth.return_value = 1
+
+        with pytest.raises(HTTPException) as exc_info:
+            await bulk_reprocess(
+                request=BulkReprocessRequest(),
+                credentials=MagicMock(),
+                db=MagicMock(),
+            )
+
+        assert exc_info.value.status_code == 400

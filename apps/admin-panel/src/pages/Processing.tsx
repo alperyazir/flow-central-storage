@@ -33,15 +33,17 @@ import { Alert, AlertDescription } from 'components/ui/alert';
 import { useNavigate } from 'react-router-dom';
 import ProcessingDialog from 'components/ProcessingDialog';
 import ProcessingSettingsDialog from 'components/ProcessingSettingsDialog';
+import BulkProcessDialog from 'components/BulkProcessDialog';
 import Pagination from 'components/Pagination';
 import { useAuthStore } from 'stores/auth';
 import {
   getBooksWithProcessingStatus,
   getProcessingQueue,
-  bulkReprocess,
   clearProcessingError,
   getExtendedStatusLabel,
   type BookWithProcessingStatus,
+  type BulkReprocessFilters,
+  type BulkReprocessResponse,
   type ProcessingQueueItem,
   type ExtendedProcessingStatus,
 } from 'lib/processing';
@@ -80,9 +82,12 @@ const ProcessingPage = () => {
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  // Selection spanning the whole filtered result set, not just the loaded page —
+  // the server resolves the books from the same filters.
+  const [selectAllMatching, setSelectAllMatching] = useState(false);
   const [processingBook, setProcessingBook] =
     useState<BookWithProcessingStatus | null>(null);
-  const [bulkProcessing, setBulkProcessing] = useState(false);
+  const [bulkOpen, setBulkOpen] = useState(false);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -131,9 +136,12 @@ const ProcessingPage = () => {
     return () => clearTimeout(id);
   }, [search]);
 
-  // Reset to the first page whenever the server-side filters change.
+  // Reset to the first page whenever the server-side filters change. The
+  // selection is dropped too — it no longer describes what is on screen.
   useEffect(() => {
     setPage(1);
+    setSelected(new Set());
+    setSelectAllMatching(false);
   }, [statusFilter, debouncedSearch]);
 
   useEffect(() => {
@@ -150,33 +158,43 @@ const ProcessingPage = () => {
     if (page > pageCount) setPage(pageCount);
   }, [page, pageCount]);
 
-  const toggleSelect = (id: number) =>
+  // Any manual checkbox change narrows the scope back to explicit ids.
+  const toggleSelect = (id: number) => {
+    setSelectAllMatching(false);
     setSelected((p) => {
       const n = new Set(p);
       n.has(id) ? n.delete(id) : n.add(id);
       return n;
     });
-  const toggleAll = () =>
+  };
+  const toggleAll = () => {
+    setSelectAllMatching(false);
     setSelected((p) =>
       p.size === books.length
         ? new Set()
         : new Set(books.map((b) => b.book_id))
     );
+  };
 
-  const handleBulk = async () => {
-    if (!token || !selected.size) return;
-    setBulkProcessing(true);
-    setSuccessMsg(null);
-    try {
-      const r = await bulkReprocess({ book_ids: [...selected] }, token, tt);
-      setSuccessMsg(`Triggered: ${r.triggered}, Skipped: ${r.skipped}`);
-      setSelected(new Set());
-      fetchData();
-    } catch {
-      /* ignored */
-    } finally {
-      setBulkProcessing(false);
-    }
+  // Filters currently driving the list; reused verbatim so "select all
+  // matching" queues exactly the books the table is listing.
+  const activeFilters: BulkReprocessFilters = {
+    ...(statusFilter !== 'all'
+      ? { status: statusFilter as ExtendedProcessingStatus }
+      : {}),
+    ...(debouncedSearch ? { search: debouncedSearch } : {}),
+  };
+  const bulkCount = selectAllMatching ? total : selected.size;
+  const pageFullySelected = books.length > 0 && selected.size === books.length;
+
+  const handleBulkDone = (r: BulkReprocessResponse) => {
+    const extra = r.errors.length
+      ? ` — ${r.errors[0]}${r.errors.length > 1 ? ` (+${r.errors.length - 1} more)` : ''}`
+      : '';
+    setSuccessMsg(`Triggered: ${r.triggered}, Skipped: ${r.skipped}${extra}`);
+    setSelected(new Set());
+    setSelectAllMatching(false);
+    fetchData();
   };
 
   const handleClearError = async (bookId: number) => {
@@ -280,20 +298,48 @@ const ProcessingPage = () => {
             <SelectItem value="partial">Partial</SelectItem>
           </SelectContent>
         </Select>
-        {selected.size > 0 && (
-          <Button onClick={handleBulk} disabled={bulkProcessing} size="sm">
-            {bulkProcessing ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Play className="h-4 w-4" />
-            )}
-            Reprocess {selected.size} Selected
+        {bulkCount > 0 && (
+          <Button onClick={() => setBulkOpen(true)} size="sm">
+            <Play className="h-4 w-4" />
+            Process {bulkCount} {selectAllMatching ? 'Matching' : 'Selected'}
           </Button>
         )}
         <span className="ml-auto text-sm text-muted-foreground">
           {total} book{total === 1 ? '' : 's'}
         </span>
       </div>
+
+      {pageFullySelected && total > books.length && (
+        <Alert>
+          <AlertDescription className="flex flex-wrap items-center gap-1">
+            {selectAllMatching ? (
+              <>
+                All {total} books matching the current filters are selected.
+                <Button
+                  variant="link"
+                  size="sm"
+                  className="px-1"
+                  onClick={() => setSelectAllMatching(false)}
+                >
+                  Select only this page
+                </Button>
+              </>
+            ) : (
+              <>
+                All {books.length} books on this page are selected.
+                <Button
+                  variant="link"
+                  size="sm"
+                  className="px-1"
+                  onClick={() => setSelectAllMatching(true)}
+                >
+                  Select all {total} matching the filters
+                </Button>
+              </>
+            )}
+          </AlertDescription>
+        </Alert>
+      )}
 
       <Card>
         <CardContent className="p-0">
@@ -444,6 +490,17 @@ const ProcessingPage = () => {
           </span>
         </div>
       )}
+
+      <BulkProcessDialog
+        open={bulkOpen}
+        onClose={() => setBulkOpen(false)}
+        bookIds={[...selected]}
+        filters={selectAllMatching ? activeFilters : undefined}
+        count={bulkCount}
+        token={token}
+        tokenType={tt}
+        onDone={handleBulkDone}
+      />
 
       {processingBook && (
         <ProcessingDialog
