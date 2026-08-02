@@ -36,7 +36,9 @@ from app.services import (
     move_prefix_to_trash,
     upload_book_archive,
 )
+from app.services.ai_data import get_ai_data_retrieval_service
 from app.services.ai_processing import trigger_auto_processing
+from app.services.ai_processing.book_status import clear_book_ai_status
 from app.services.storage import BOOK_CACHE_DIR, _normalize_filename, _prefix_exists, _safe_pdf_filename, normalize_book_name
 from app.services.webhook import WebhookService
 
@@ -221,6 +223,67 @@ def _require_admin(credentials: HTTPAuthorizationCredentials, db: Session) -> in
     )
 
 
+def _reset_ai_status_for_prefix(object_prefix: str) -> None:
+    """Drop the mirrored AI status for the book whose prefix was just wiped.
+
+    An override upload deletes everything under ``{slug}/books/{name}/``, and
+    ``ai-data/`` sits inside it. The Book row is not touched, so without this it
+    keeps reporting "completed" with a processed-at date for data that no longer
+    exists — and, because the dashboard filters on that column, the book never
+    shows up in a "not started" sweep to be reprocessed.
+
+    Takes the prefix that was deleted rather than ids, so it can never clear a
+    different book than the one that was wiped.
+    """
+    parts = object_prefix.strip("/").split("/")
+    if len(parts) < 3 or parts[1] != "books":
+        logger.warning("Cannot parse book prefix %r, AI status left alone", object_prefix)
+        return
+    pub_slug, book_name = parts[0], parts[2]
+
+    try:
+        with SessionLocal() as session:
+            publisher = _publisher_repository.get_by_slug(session, pub_slug)
+            if publisher is None:
+                return
+            book = _book_repository.get_by_publisher_id_and_name(
+                session, publisher_id=publisher.id, book_name=book_name
+            )
+            if book is None:
+                return
+            clear_book_ai_status(book.id)
+            logger.info(
+                "Cleared AI status for %s/%s (id=%d): its ai-data was replaced",
+                pub_slug, book_name, book.id,
+            )
+    except Exception as exc:  # pragma: no cover - never fail an upload over this
+        logger.warning("Could not clear AI status for %s: %s", object_prefix, exc)
+
+
+def _ai_status_from_storage(pub_slug: str, book_name: str, book_id: int) -> dict[str, object]:
+    """Read a book's AI processing status back out of its ai-data/metadata.json.
+
+    Used by sync so a DB rebuilt from R2 does not lose the AI state: the files
+    are the source of truth, the columns are only a mirror. Returns {} when
+    there is no ai-data.
+    """
+    try:
+        metadata = get_ai_data_retrieval_service().get_metadata(
+            pub_slug, str(book_id), book_name
+        )
+    except Exception as exc:
+        logger.warning("Sync: could not read ai-data metadata for %s/%s: %s", pub_slug, book_name, exc)
+        return {}
+    if metadata is None:
+        return {}
+
+    status_value = getattr(metadata.processing_status, "value", metadata.processing_status)
+    data: dict[str, object] = {"ai_processing_status": status_value}
+    if metadata.processing_completed_at:
+        data["ai_processed_at"] = metadata.processing_completed_at
+    return data
+
+
 @router.post("/sync-r2", status_code=status.HTTP_200_OK)
 def sync_books_with_r2(
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
@@ -337,6 +400,13 @@ def sync_books_with_r2(
                 update_data["parent_book_id"] = desired_parent_id
             if (existing.book_type or BookTypeEnum.STANDARD.value) != info["book_type"]:
                 update_data["book_type"] = info["book_type"]
+            # Backfill the AI status only when the row has none: a run happening
+            # right now (queued/processing) must not be overwritten by whatever
+            # the last finished run left in metadata.json.
+            if not existing.ai_processing_status:
+                update_data.update(
+                    _ai_status_from_storage(slug_for_pub[pub_id], book_name, existing.id)
+                )
             if update_data:
                 _book_repository.update(db, existing, data=update_data)
                 updated.append({
@@ -406,12 +476,22 @@ def sync_books_with_r2(
                 logger.warning("Sync: could not read config.json for %s/%s: %s", pub_slug, book_name, exc)
 
         book = _book_repository.create(db, data=book_data)
+
+        # Recover the AI state from storage. Without this a DB rebuilt from R2
+        # shows every already-processed book as "not started", and a bulk sweep
+        # would reprocess all of them — hours of LLM and TTS spend for data that
+        # is already sitting in ai-data/.
+        ai_status = _ai_status_from_storage(pub_slug, book_name, book.id)
+        if ai_status:
+            _book_repository.update(db, book, data=ai_status)
+
         created.append({
             "id": book.id,
             "publisher_id": pub_id,
             "book_name": book_name,
             "book_type": book_type,
             "parent_book_name": parent_book_name,
+            "ai_processing_status": ai_status.get("ai_processing_status"),
         })
         # Refresh db_books so later children can find this parent
         db_books[(pub_id, book_name)] = book
@@ -1357,6 +1437,7 @@ def _run_book_processing(
                     errors = list(client.remove_objects(settings.minio_publishers_bucket, delete_list))
                     if errors:
                         logger.warning("[UPLOAD:%s] Some objects failed to delete: %s", job_id, errors)
+                _reset_ai_status_for_prefix(object_prefix)
 
             logger.info("[UPLOAD:%s] Starting S3 upload — prefix: %s", job_id, object_prefix)
             _upload_start = _time.time()
@@ -1936,6 +2017,8 @@ async def upload_new_book(
                     if errors:
                         logger.warning("Some objects failed to delete: %s", errors)
 
+                await asyncio.to_thread(_reset_ai_status_for_prefix, object_prefix)
+
                 logger.info(
                     "Deleted %d existing objects for book %s/%s",
                     len(delete_list),
@@ -2147,6 +2230,8 @@ async def upload_bulk_books(
                         errors = list(client.remove_objects(settings.minio_publishers_bucket, delete_list))
                         if errors:
                             logger.warning("Some objects failed to delete: %s", errors)
+
+                    _reset_ai_status_for_prefix(object_prefix)
 
                     logger.info(
                         "Deleted %d existing objects for book %s/%s",
