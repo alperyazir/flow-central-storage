@@ -132,10 +132,19 @@ PHASE2_EXTRACT_VOCABULARY_PROMPT = """Extract vocabulary and write a brief summa
 ## Content
 {module_text}
 
+## Language of each field (this matters — do not mix them up)
+The content is in {language}. Write these in {language}: `word`, `definition`,
+`summary`, `grammar_points`. Write `translation` in Turkish — that is the ONLY
+Turkish field.
+
+A `definition` is an explanation of the word in {language}, never its Turkish
+translation. Never copy `translation` into `definition`. If you cannot write a
+definition in {language}, write a short {language} paraphrase — never Turkish.
+
 ## Task
 1. Write a 2-3 sentence summary describing what this module covers and its learning objectives.
 2. Identify the key grammar points taught or practiced in this module (e.g., "Present Simple", "Comparatives", "Modal verbs: can/could").
-3. Extract important vocabulary words that this module is teaching to students. Focus on the KEY words being introduced and practiced — not common filler words.
+3. Extract important vocabulary words that this module is teaching to students. Focus on the KEY words being introduced and practiced — not common filler words.{max_words_line}
 
 ## Response Format
 Return ONLY valid JSON:
@@ -145,8 +154,8 @@ Return ONLY valid JSON:
   "grammar_points": ["Grammar point 1", "Grammar point 2"],
   "vocabulary": [
     {{
-      "word": "word in the content's language",
-      "definition": "clear explanation in the content's language",
+      "word": "the word, in {language}",
+      "definition": "explanation of the word, in {language} — NOT the Turkish",
       "translation": "Turkish translation (Türkçe çeviri)",
       "part_of_speech": "noun",
       "difficulty": "A1"
@@ -159,7 +168,9 @@ Focus on:
 - Common phrases and expressions being introduced
 - Words essential to the module's topics
 - Keep the "word" in its original language as it appears in the text
-- Provide Turkish translations for every word"""
+- Provide Turkish translations for every word, in the `translation` field only
+- Before answering, re-read your `definition` values: every one of them must be
+  in {language}. If any is Turkish, rewrite it."""
 
 
 class UnifiedAnalysisService:
@@ -410,6 +421,7 @@ class UnifiedAnalysisService:
             grammar_points: list[str] = []
             for attempt in range(max_retries):
                 try:
+                    caps = self.RETRY_WORD_CAPS
                     vocab_data = await self._phase2_extract_vocabulary(
                         module_title=mod_data.get("title", f"Module {i + 1}"),
                         start_page=start_page,
@@ -418,6 +430,7 @@ class UnifiedAnalysisService:
                         difficulty_level=difficulty,
                         module_text=module_text,
                         language=primary_language,
+                        max_words=caps[attempt] if attempt < len(caps) else caps[-1],
                     )
                     vocabulary = self._parse_vocabulary(vocab_data)
                     summary = vocab_data.get("summary", "")
@@ -540,6 +553,13 @@ class UnifiedAnalysisService:
 
         return {"modules": []}
 
+    # Retry budget for a module whose answer would not fit. Attempt 1 asks for
+    # everything; each later attempt asks for fewer words, because the failure
+    # this recovers from is a response cut off mid-JSON — repeating the same
+    # request at the same temperature reproduces it exactly, which is what let
+    # three identical attempts all fail and a module end up empty.
+    RETRY_WORD_CAPS: tuple[int | None, ...] = (None, 60, 30)
+
     async def _phase2_extract_vocabulary(
         self,
         module_title: str,
@@ -549,8 +569,20 @@ class UnifiedAnalysisService:
         difficulty_level: str,
         module_text: str,
         language: str = "en",
+        max_words: int | None = None,
     ) -> dict[str, Any]:
-        """Phase 2: Extract vocabulary for a single module."""
+        """Phase 2: Extract vocabulary for a single module.
+
+        ``max_words`` caps how many words to ask for. Left unset on the first
+        attempt; the retry loop lowers it so a module whose full answer does
+        not fit still yields something instead of nothing.
+        """
+        max_words_line = (
+            f"\n4. Return AT MOST {max_words} words — the most important ones. "
+            f"A shorter complete answer is required; do not exceed this."
+            if max_words
+            else ""
+        )
         prompt = PHASE2_EXTRACT_VOCABULARY_PROMPT.format(
             module_title=module_title,
             start_page=start_page,
@@ -559,6 +591,7 @@ class UnifiedAnalysisService:
             difficulty_level=difficulty_level,
             module_text=module_text[:50000],  # Limit text size
             language=language,
+            max_words_line=max_words_line,
         )
 
         response = await self.llm_service.simple_completion(
@@ -569,7 +602,13 @@ class UnifiedAnalysisService:
                 "Return only valid JSON, no markdown or explanations."
             ),
             temperature=0.3,
-            max_tokens=4000,
+            # Was 4000, and a vocabulary-heavy module does not fit in it: the
+            # answer was cut mid-JSON around 13k characters and every parse
+            # failed with "Expecting ',' delimiter". Module 6 of Daumen Hoch 1
+            # lost all 36 of its words that way while the job still reported
+            # "completed". Phase 1 already asks for 16000; this is the
+            # settings ceiling (FCS_LLM_MAX_TOKENS).
+            max_tokens=8000,
         )
 
         return self._parse_json_response(response)
