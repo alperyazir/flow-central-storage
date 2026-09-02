@@ -51,8 +51,11 @@ UNIFIED_ANALYSIS_PROMPT = """Analyze this educational book content and provide a
 - Extract 15-40 vocabulary words per module (more for larger modules)
 - Extract words IN THE LANGUAGE THEY APPEAR in the book (do NOT translate words to English)
 - Include nouns, verbs, adjectives, prepositions, common phrases
-- Provide Turkish translations for ALL vocabulary words
-- The "definition" field should be a clear explanation in the book's own language
+- The "definition" field is an explanation of the word IN THE BOOK'S OWN
+  LANGUAGE — the same language you detected above. It is NEVER the translation.
+  A German book gets German definitions, a Spanish book Spanish ones.
+- The "translation" field is the ONLY field in Turkish. Provide one for every
+  word, and never copy it into "definition".
 - Assess difficulty level (A1, A2, B1, B2, C1, C2)
 
 ## Response Format
@@ -118,6 +121,62 @@ Return ONLY a valid JSON object:
 IMPORTANT:
 - Cover ALL pages from start to end
 - Identify ALL units"""
+
+
+# Phase 1 answers with an ISO code ("de", "es", "fr"), and that value is what
+# phase 2's prompt interpolates. "Write these in de" is a far weaker instruction
+# than "Write these in German (Deutsch)" — and it gets weaker still for codes a
+# model may read as something else entirely ("es" as English "es", "it" as the
+# English word). Naming the language, in English and in itself, is what makes
+# the instruction land. Kept beside the prompt rather than in a shared module
+# because it exists to serve the prompt.
+LANGUAGE_NAMES: dict[str, tuple[str, str]] = {
+    "en": ("English", "English"),
+    "de": ("German", "Deutsch"),
+    "tr": ("Turkish", "Türkçe"),
+    "es": ("Spanish", "Español"),
+    "fr": ("French", "Français"),
+    "it": ("Italian", "Italiano"),
+    "pt": ("Portuguese", "Português"),
+    "nl": ("Dutch", "Nederlands"),
+    "ru": ("Russian", "Русский"),
+    "pl": ("Polish", "Polski"),
+    "ar": ("Arabic", "العربية"),
+    "el": ("Greek", "Ελληνικά"),
+    "sv": ("Swedish", "Svenska"),
+    "cs": ("Czech", "Čeština"),
+    "hu": ("Hungarian", "Magyar"),
+    "ro": ("Romanian", "Română"),
+    "uk": ("Ukrainian", "Українська"),
+    "zh": ("Chinese", "中文"),
+    "ja": ("Japanese", "日本語"),
+    "ko": ("Korean", "한국어"),
+}
+
+
+def language_label(language: str | None) -> str:
+    """A name the model can act on — "German (Deutsch)" — from a code.
+
+    Tolerates what phase 1 actually returns: a bare code, a regional code
+    ("de-DE"), or occasionally the English name already. An unknown value is
+    passed through rather than replaced with a default: telling the model the
+    wrong language is worse than telling it a code it may still recognise.
+    """
+    if not language:
+        return "English (English)"
+    raw = language.strip()
+    code = raw.replace("_", "-").split("-")[0].lower()
+    names = LANGUAGE_NAMES.get(code)
+    if names is None:
+        # Phase 1 sometimes answers "German" instead of "de".
+        for english, endonym in LANGUAGE_NAMES.values():
+            if raw.lower() == english.lower():
+                names = (english, endonym)
+                break
+    if names is None:
+        return raw
+    english, endonym = names
+    return english if english == endonym else f"{english} ({endonym})"
 
 
 PHASE2_EXTRACT_VOCABULARY_PROMPT = """Extract vocabulary and write a brief summary for this educational content.
@@ -584,13 +643,14 @@ class UnifiedAnalysisService:
             else ""
         )
         prompt = PHASE2_EXTRACT_VOCABULARY_PROMPT.format(
+            # The name, not the raw code phase 1 detected.
             module_title=module_title,
             start_page=start_page,
             end_page=end_page,
             topics=", ".join(topics) if topics else "General",
             difficulty_level=difficulty_level,
             module_text=module_text[:50000],  # Limit text size
-            language=language,
+            language=language_label(language),
             max_words_line=max_words_line,
         )
 
