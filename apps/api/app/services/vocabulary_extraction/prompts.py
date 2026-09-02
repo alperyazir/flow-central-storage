@@ -32,16 +32,38 @@ Return a JSON array with these fields for each word:
 OUTPUT FORMAT - Return ONLY this JSON array, nothing else:
 [{{"word":"Schule","translation":"okul","definition":"Ein Ort, an dem Kinder lernen","part_of_speech":"noun","level":"A1","example":"Die Kinder gehen in die Schule."}}]"""
 
-# Fallback prompt for simpler extraction
+# Fallback prompt for simpler extraction.
+#
+# This used to name a language for the words ("this {language} text") and for
+# the translation ("Provide Turkish translations") but never for `definition`
+# or `example`. Its worked example was English throughout, so on a German book
+# the only language instruction anywhere near the definition field was the
+# Turkish one — and the model filled `definition` with the Turkish translation,
+# character for character, leaving `example` empty.
+#
+# That is not hypothetical: seven modules across seven German books came out
+# with `definition == translation` and no examples, and vocabulary matching
+# copies those pairs straight to the student ("das Essen -> yiyecek, yemek").
+# Every field's language is now stated the way the main prompt states it.
 SIMPLE_VOCABULARY_PROMPT = """Extract {max_words} vocabulary words about "{module_title}" from this {language} text. Return ONLY a JSON array.
 Focus on words essential to the topic. Skip unrelated common words.
-Keep words in their original language. Provide Turkish translations.
+Keep words in their original language ({language}) — do NOT translate them.
+
+LANGUAGE OF EACH FIELD (this matters — do not mix them up):
+- word: {language}
+- definition: {language}. A real explanation of the word, NOT its translation.
+- example: {language}. A full sentence using the word.
+- translation: Turkish (Türkçe çeviri) — this is the ONLY Turkish field.
+
+Never copy `translation` into `definition`. If you cannot write a definition
+in {language}, write a short {language} paraphrase — never the Turkish.
 
 TEXT:
 {module_text}
 
-OUTPUT (JSON array only, no other text):
-[{{"word":"house","translation":"ev","definition":"a building where people live","part_of_speech":"noun","level":"A1","example":"I live in a house."}}]"""
+OUTPUT (JSON array only, no other text). Shown for a German module, so the
+definition and example are German and only the translation is Turkish:
+[{{"word":"das Brot","translation":"ekmek","definition":"Ein Nahrungsmittel aus Mehl, Wasser und Hefe","part_of_speech":"noun","level":"A1","example":"Ich esse jeden Morgen Brot."}}]"""
 
 # Bilingual extraction prompt (for mixed language content)
 BILINGUAL_VOCABULARY_PROMPT = """Extract vocabulary from this bilingual educational text.
@@ -49,10 +71,14 @@ BILINGUAL_VOCABULARY_PROMPT = """Extract vocabulary from this bilingual educatio
 For each vocabulary word, provide:
 - The word in the language being taught
 - Its Turkish translation
-- Definition in the word's language
+- Definition in the word's language — an explanation, never the translation
 - Part of speech
 - CEFR level
-- Example sentence
+- Example sentence, in the word's language
+
+The Turkish translation is the ONLY Turkish field. The example below happens
+to be English because the word is; for a German word both `definition` and
+`example` must be German.
 
 Text:
 ---

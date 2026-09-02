@@ -934,3 +934,65 @@ class TestPartOfSpeechEnum:
         assert PartOfSpeech.CONJUNCTION.value == "conjunction"
         assert PartOfSpeech.INTERJECTION.value == "interjection"
         assert PartOfSpeech.UNKNOWN.value == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# The fallback prompt has to name the language of every field it asks for.
+#
+# It named one for the words and one for the translation, but none for
+# `definition` or `example`, and its worked example was English throughout. On
+# a German book the nearest language instruction to the definition field was
+# the Turkish one, and the model filled `definition` with the Turkish
+# translation verbatim while leaving `example` empty. Seven modules across
+# seven German books shipped that way; vocabulary matching copies the pairs
+# straight to the student, so "das Essen" was defined as "yiyecek, yemek".
+# ---------------------------------------------------------------------------
+
+
+def test_simple_prompt_names_the_language_for_definition_and_example():
+    from app.services.vocabulary_extraction.prompts import (
+        build_simple_vocabulary_prompt,
+    )
+
+    prompt = build_simple_vocabulary_prompt(
+        module_text="Ich esse Brot.", module_title="Essen", language="German"
+    )
+
+    # Every field's language is spelled out, not left to inference.
+    assert "definition: German" in prompt
+    assert "example: German" in prompt
+    assert "translation: Turkish" in prompt
+
+
+def test_simple_prompt_forbids_reusing_the_translation_as_the_definition():
+    from app.services.vocabulary_extraction.prompts import (
+        build_simple_vocabulary_prompt,
+    )
+
+    prompt = build_simple_vocabulary_prompt(
+        module_text="Ich esse Brot.", module_title="Essen", language="German"
+    )
+
+    assert "ONLY Turkish field" in prompt
+    assert "never the Turkish" in prompt
+
+
+def test_simple_prompt_example_is_not_english_only():
+    # An all-English worked example is itself a language cue; for a German
+    # module it pulled the answer toward the wrong language.
+    from app.services.vocabulary_extraction.prompts import (
+        SIMPLE_VOCABULARY_PROMPT,
+    )
+
+    assert "das Brot" in SIMPLE_VOCABULARY_PROMPT
+    assert "ekmek" in SIMPLE_VOCABULARY_PROMPT  # translation stays Turkish
+    assert "Ein Nahrungsmittel" in SIMPLE_VOCABULARY_PROMPT  # definition German
+
+
+def test_bilingual_prompt_says_which_field_is_turkish():
+    from app.services.vocabulary_extraction.prompts import (
+        BILINGUAL_VOCABULARY_PROMPT,
+    )
+
+    assert "ONLY Turkish field" in BILINGUAL_VOCABULARY_PROMPT
+    assert "never the translation" in BILINGUAL_VOCABULARY_PROMPT
