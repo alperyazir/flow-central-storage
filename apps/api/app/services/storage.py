@@ -119,12 +119,7 @@ def _detect_root_folder(archive: zipfile.ZipFile) -> str | None:
         # Skip macOS metadata
         if "/__MACOSX/" in normalized_path or normalized_path.startswith("__MACOSX/"):
             continue
-        basename = os.path.basename(normalized_path)
-        if basename == ".DS_Store" or basename.lower() in ("desktop.ini", ".keep", ".gitkeep", "settings.json"):
-            continue
-        if basename.startswith("._"):
-            continue
-        if basename.lower().endswith((".bak", ".tmp", ".fbinf", ".safe")):
+        if _is_junk_basename(os.path.basename(normalized_path)):
             continue
 
         # Get root folder
@@ -143,6 +138,111 @@ def _detect_root_folder(archive: zipfile.ZipFile) -> str | None:
 _ZIP_MAX_ENTRY_SIZE = 4 * 1024 * 1024 * 1024  # 4 GB per file
 _ZIP_MAX_TOTAL_SIZE = 20 * 1024 * 1024 * 1024  # 20 GB total extracted
 
+# Names that are never part of a book, whatever folder they sit in.
+_JUNK_BASENAMES = frozenset({".ds_store", "desktop.ini", ".keep", ".gitkeep", "settings.json", "fbinf"})
+
+# Backup/scratch sidecars. Matched as a *segment* rather than a suffix, because
+# the editor writes names like ``config_json.bak_before_imgfix`` that a
+# ``.endswith(".bak")`` check walks straight past.
+_JUNK_PATTERN = re.compile(r"\.(bak|tmp|safe|orig|fbinf)([._-]|$)")
+
+# The player lists every PDF it finds under raw/, so anything else there shows
+# up to the reader as a duplicate or simply the wrong document. Covers on one
+# side, byte-identical copies of the original on the other: 5.7 GB of them
+# across 16 books as of 2026-09-22.
+_RAW_ALLOWED_PDFS = frozenset({"original.pdf", "answered.pdf"})
+
+# Only images are matched against the JSON. audio/, videos/ and raw/ are found
+# by the player through directory scans and naming conventions rather than by
+# an explicit path, so the same rule would delete files that are genuinely used.
+_REFERENCED_IMAGE_EXTS = (".png", ".jpg", ".jpeg")
+
+# How config.json and games.json spell an asset: "./books/<Book>/images/1.png".
+_BOOKS_PREFIX = "./books/"
+
+
+def _is_junk_basename(basename: str) -> bool:
+    """OS metadata, placeholders and backup sidecars."""
+    lowered = basename.lower()
+    if lowered in _JUNK_BASENAMES or lowered.startswith("._"):
+        return True
+    return bool(_JUNK_PATTERN.search(lowered))
+
+
+def _is_unwanted_raw_pdf(path: str) -> bool:
+    """A PDF under raw/ that is neither the original nor the answered copy."""
+    parts = path.split("/")
+    if len(parts) != 2 or parts[0].lower() != "raw":
+        return False
+    name = parts[1].lower()
+    return name.endswith(".pdf") and name not in _RAW_ALLOWED_PDFS
+
+
+def _archive_json_references(archive: zipfile.ZipFile) -> tuple[set[str], str] | None:
+    """Every string value in the book's JSON files, for the image check.
+
+    Returns (explicit book-relative paths, one lowercased blob of all strings),
+    or None when a JSON cannot be read, or the archive carries none at all — in
+    which case nothing is known about what is referenced and no image may be
+    dropped.
+    """
+    paths: set[str] = set()
+    blob: list[str] = []
+    seen_json = False
+    for entry in archive.infolist():
+        if entry.is_dir():
+            continue
+        normalized = entry.filename.replace("\\", "/")
+        if "__MACOSX/" in normalized or not normalized.lower().endswith(".json"):
+            continue
+        basename = os.path.basename(normalized)
+        if basename.startswith("._") or _is_junk_basename(basename):
+            continue
+        seen_json = True
+        try:
+            document = json.loads(archive.read(entry).decode("utf-8"))
+        except (OSError, ValueError, KeyError) as exc:
+            logger.warning("Upload: could not read %s, keeping every image: %s", entry.filename, exc)
+            return None
+        stack = [document]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, dict):
+                stack.extend(node.values())
+            elif isinstance(node, list):
+                stack.extend(node)
+            elif isinstance(node, str):
+                blob.append(node)
+                if node.startswith(_BOOKS_PREFIX):
+                    remainder = node[len(_BOOKS_PREFIX) :].split("/", 1)
+                    if len(remainder) == 2:
+                        paths.add(remainder[1].casefold())
+    if not seen_json:
+        # No config to check against, so every image has to be assumed used.
+        return None
+    return paths, "\n".join(blob).casefold()
+
+
+def _is_unreferenced_image(path: str, references: tuple[set[str], str] | None) -> bool:
+    """An images/ file no JSON points at: a crop or an old page left behind.
+
+    Referenced three ways, matching how the configs actually spell them: the
+    full book-relative path, the bare file name, or the stem as a whole word.
+    """
+    if references is None:
+        return False
+    lowered = path.casefold()
+    if not lowered.startswith("images/") or not lowered.endswith(_REFERENCED_IMAGE_EXTS):
+        return False
+    paths, blob = references
+    if lowered in paths:
+        return False
+    basename = os.path.basename(lowered)
+    if basename in blob:
+        return False
+    stem = os.path.splitext(basename)[0]
+    return not re.search(r"(?<![a-z0-9])" + re.escape(stem) + r"(?![a-z0-9])", blob)
+
 
 def iter_zip_entries(archive: zipfile.ZipFile, strip_root: str | None = None) -> Iterable[tuple[zipfile.ZipInfo, str]]:
     """Yield file entries from archive with optionally stripped paths.
@@ -151,6 +251,12 @@ def iter_zip_entries(archive: zipfile.ZipFile, strip_root: str | None = None) ->
     """
 
     total_size = 0
+    # Read once up front: the image rule needs every JSON in the archive, and
+    # the entries themselves stream past only once.
+    references = _archive_json_references(archive)
+    skipped_images = 0
+    skipped_image_bytes = 0
+
     for entry in archive.infolist():
         if entry.is_dir():
             continue
@@ -162,19 +268,10 @@ def iter_zip_entries(archive: zipfile.ZipFile, strip_root: str | None = None) ->
         if "/__MACOSX/" in normalized_path or normalized_path.startswith("__MACOSX/"):
             continue
 
-        # Skip OS metadata and placeholder files
+        # Skip OS metadata, placeholders and backup/temp sidecars
         basename = os.path.basename(normalized_path)
-        if basename == ".DS_Store" or basename.lower() in ("desktop.ini", ".keep", ".gitkeep", "settings.json"):
-            continue
-
-        # Skip macOS resource fork files (._*)
-        if basename.startswith("._"):
-            continue
-
-        # Skip backup, temporary and ".safe" sidecar files (never sent to R2)
-        basename_lower = basename.lower()
-        if basename_lower.endswith((".fbinf", ".bak", ".tmp", ".safe")):
-            logger.debug("Skipping backup/temp/safe file: %s", entry.filename)
+        if _is_junk_basename(basename):
+            logger.debug("Skipping junk file: %s", entry.filename)
             continue
 
         # SEC-C2: Reject oversized entries to mitigate zip-bomb attacks
@@ -191,7 +288,33 @@ def iter_zip_entries(archive: zipfile.ZipFile, strip_root: str | None = None) ->
         if strip_root and normalized_path.startswith(f"{strip_root}/"):
             final_path = normalized_path[len(strip_root) + 1 :]
 
+        # The editor's page previews. Never part of a published book.
+        if final_path.split("/", 1)[0].lower() == "temp":
+            logger.debug("Skipping editor scratch file: %s", entry.filename)
+            continue
+
+        if _is_unwanted_raw_pdf(final_path):
+            logger.info(
+                "Skipping extra PDF under raw/: %s (only %s are kept)",
+                entry.filename,
+                ", ".join(sorted(_RAW_ALLOWED_PDFS)),
+            )
+            continue
+
+        if _is_unreferenced_image(final_path, references):
+            logger.info("Skipping unreferenced image: %s", entry.filename)
+            skipped_images += 1
+            skipped_image_bytes += entry.file_size
+            continue
+
         yield entry, final_path
+
+    if skipped_images:
+        logger.info(
+            "Upload: left out %d image(s) no JSON refers to (%.1f MB)",
+            skipped_images,
+            skipped_image_bytes / 1048576,
+        )
 
 
 _TR_MAP = str.maketrans("çğıöşüÇĞİÖŞÜ", "cgiosuCGIOSU")

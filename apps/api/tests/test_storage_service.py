@@ -57,7 +57,12 @@ def test_iter_zip_entries_filters_unwanted_files() -> None:
         archive.writestr("content/UPPERCASE.BAK", "backup data")
         archive.writestr("content/temp.tmp", "temp data")
         archive.writestr("nested/file.FBINF", "nested index")
-        archive.writestr("config.bak.old", "old backup")  # Should NOT be filtered (doesn't end with .bak)
+        # A backup is a backup wherever the extension sits in the name: the
+        # editor writes config_json.bak_before_imgfix, and four of those reached
+        # R2 while the old endswith(".bak") check waved them through.
+        archive.writestr("config.bak.old", "old backup")
+        archive.writestr("content/config_json.bak_before_imgfix", "editor backup")
+        archive.writestr("content/fbinf", "extensionless index")
 
         # Files that should pass through
         archive.writestr("content/legitimate.pdf", "pdf content")
@@ -81,10 +86,12 @@ def test_iter_zip_entries_filters_unwanted_files() -> None:
     assert "content/legitimate.pdf" in filenames
     assert "content/data/config.json" in filenames
     assert "README.md" in filenames
-    assert "config.bak.old" in filenames  # Edge case: .bak.old should pass through
+    assert "config.bak.old" not in filenames
+    assert "content/config_json.bak_before_imgfix" not in filenames
+    assert "content/fbinf" not in filenames
 
     # Verify total count
-    assert len(filenames) == 4
+    assert len(filenames) == 3
 
 
 def test_upload_book_archive_puts_files(sample_archive_bytes: bytes) -> None:
