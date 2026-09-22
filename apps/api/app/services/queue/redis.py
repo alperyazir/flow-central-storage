@@ -3,7 +3,7 @@
 import logging
 from typing import Optional
 
-from redis.asyncio import ConnectionPool, Redis
+from redis.asyncio import BlockingConnectionPool, ConnectionPool, Redis
 from redis.asyncio.cluster import RedisCluster
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import RedisError
@@ -22,18 +22,22 @@ class RedisConnection:
     def __init__(
         self,
         url: str = "redis://localhost:6379",
-        max_connections: int = 10,
+        max_connections: int | None = None,
         cluster_mode: bool = False,
     ):
         """Initialize Redis connection manager.
 
         Args:
             url: Redis connection URL
-            max_connections: Maximum connections in pool
+            max_connections: Maximum connections in pool (settings default)
             cluster_mode: Whether to use Redis Cluster
         """
+        from app.core.config import get_settings
+
+        settings = get_settings()
         self._url = url
-        self._max_connections = max_connections
+        self._max_connections = max_connections or settings.redis_max_connections
+        self._pool_timeout = settings.redis_pool_timeout_seconds
         self._cluster_mode = cluster_mode
         self._pool: Optional[ConnectionPool] = None
         self._client: Optional[Redis | RedisCluster] = None
@@ -51,9 +55,16 @@ class RedisConnection:
                     decode_responses=True,
                 )
             else:
-                self._pool = ConnectionPool.from_url(
+                # Blocking, not the plain pool: when every connection is busy
+                # the caller waits for one instead of the request dying with
+                # "Too many connections". One page of the AI Processing
+                # dashboard asks for the latest job of 20 books at once, so a
+                # burst of them used to exhaust the pool and 500 - which is
+                # what made the search box feel broken.
+                self._pool = BlockingConnectionPool.from_url(
                     self._url,
                     max_connections=self._max_connections,
+                    timeout=self._pool_timeout,
                     decode_responses=True,
                 )
                 self._client = Redis(connection_pool=self._pool)
@@ -125,14 +136,14 @@ _connection: Optional[RedisConnection] = None
 
 async def get_redis_connection(
     url: str = "redis://localhost:6379",
-    max_connections: int = 10,
+    max_connections: int | None = None,
     cluster_mode: bool = False,
 ) -> RedisConnection:
     """Get or create the global Redis connection.
 
     Args:
         url: Redis connection URL
-        max_connections: Maximum connections in pool
+        max_connections: Maximum connections in pool (settings default)
         cluster_mode: Whether to use Redis Cluster
 
     Returns:

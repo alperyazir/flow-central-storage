@@ -107,6 +107,12 @@ class Settings(BaseSettings):
 
     # Queue Configuration (Redis/arq)
     redis_url: str = "redis://localhost:6379"
+    # The dashboard asks Redis for the latest job of every book on the page at
+    # once, so the pool has to be wider than one page of books.
+    redis_max_connections: int = 64
+    # How long a caller waits for a free connection before giving up. Waiting
+    # briefly is always better than failing the request outright.
+    redis_pool_timeout_seconds: int = 10
     queue_name: str = "ai_processing"
     # Jobs are routed to one arq queue per priority and the worker process runs
     # a lane for each. `normal` carries the everyday load; `high` and `low` get
