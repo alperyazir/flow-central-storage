@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Ban,
   Loader2,
@@ -85,7 +85,13 @@ const ProcessingPage = () => {
   const [books, setBooks] = useState<BookWithProcessingStatus[]>([]);
   const [queue, setQueue] = useState<ProcessingQueueItem[]>([]);
   const [queueStats, setQueueStats] = useState({ queued: 0, processing: 0 });
+  // Full-page spinner only until the first response; later refetches (search,
+  // filters, paging) keep the page mounted so the search box keeps its focus.
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  // Only the latest request may write state: a slow response for "ab" must not
+  // land after the one for "abc".
+  const requestSeq = useRef(0);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
@@ -107,6 +113,7 @@ const ProcessingPage = () => {
 
   const fetchData = useCallback(async () => {
     if (!token) return;
+    const seq = ++requestSeq.current;
     try {
       const [bks, q] = await Promise.allSettled([
         getBooksWithProcessingStatus(token, tt, {
@@ -119,6 +126,7 @@ const ProcessingPage = () => {
         }),
         getProcessingQueue(token, tt),
       ]);
+      if (seq !== requestSeq.current) return;
       if (bks.status === 'fulfilled') {
         setBooks(bks.value.books ?? []);
         setTotal(bks.value.total ?? 0);
@@ -139,8 +147,11 @@ const ProcessingPage = () => {
   }, [token, tt, statusFilter, debouncedSearch, page]);
 
   useEffect(() => {
-    setLoading(true);
-    fetchData().finally(() => setLoading(false));
+    setRefreshing(true);
+    fetchData().finally(() => {
+      setLoading(false);
+      setRefreshing(false);
+    });
   }, [fetchData]);
 
   // Debounce the search box, then drive a server-side query (search runs in the
@@ -332,6 +343,9 @@ const ProcessingPage = () => {
           onChange={(e) => setSearch(e.target.value)}
           className="max-w-xs"
         />
+        {refreshing && (
+          <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+        )}
         <Select value={statusFilter} onValueChange={setStatusFilter}>
           <SelectTrigger className="w-40">
             <SelectValue placeholder="All Status" />
