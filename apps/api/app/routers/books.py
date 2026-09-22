@@ -9,6 +9,7 @@ import logging
 import os
 import zipfile
 from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -260,12 +261,13 @@ def _reset_ai_status_for_prefix(object_prefix: str) -> None:
         logger.warning("Could not clear AI status for %s: %s", object_prefix, exc)
 
 
-def _ai_status_from_storage(pub_slug: str, book_name: str, book_id: int) -> dict[str, object]:
+def _ai_status_from_storage(pub_slug: str, book_name: str, book_id: int) -> dict[str, object] | None:
     """Read a book's AI processing status back out of its ai-data/metadata.json.
 
     Used by sync so a DB rebuilt from R2 does not lose the AI state: the files
     are the source of truth, the columns are only a mirror. Returns {} when
-    there is no ai-data.
+    there is no ai-data, and None when storage could not be read — callers must
+    not mistake an R2 hiccup for "this book has no ai-data".
     """
     try:
         metadata = get_ai_data_retrieval_service().get_metadata(
@@ -273,7 +275,7 @@ def _ai_status_from_storage(pub_slug: str, book_name: str, book_id: int) -> dict
         )
     except Exception as exc:
         logger.warning("Sync: could not read ai-data metadata for %s/%s: %s", pub_slug, book_name, exc)
-        return {}
+        return None
     if metadata is None:
         return {}
 
@@ -282,6 +284,31 @@ def _ai_status_from_storage(pub_slug: str, book_name: str, book_id: int) -> dict
     if metadata.processing_completed_at:
         data["ai_processed_at"] = metadata.processing_completed_at
     return data
+
+
+# A run in flight owns the column; whatever the previous run left in
+# metadata.json must not overwrite it.
+_AI_STATUS_IN_FLIGHT = {"queued", "processing"}
+
+
+def _ai_status_changes(book: Book, storage: dict[str, object] | None) -> dict[str, object]:
+    """Changes that make ``book``'s mirrored AI status match its ai-data.
+
+    Three-way, like the rest of sync: fill a missing status, correct a wrong
+    one, and clear one whose ai-data is gone. The last case is how a book ends
+    up badged "completed" with nothing behind it — an override upload or a
+    manual R2 operation wipes ai-data/ without touching the row.
+    """
+    current = book.ai_processing_status
+    if storage is None or current in _AI_STATUS_IN_FLIGHT:
+        return {}
+    if not storage:
+        return {"ai_processing_status": None, "ai_processed_at": None} if current else {}
+    if storage.get("ai_processing_status") == current:
+        return {}
+    changes: dict[str, object] = {"ai_processing_status": storage["ai_processing_status"]}
+    changes["ai_processed_at"] = storage.get("ai_processed_at")
+    return changes
 
 
 @router.post("/sync-r2", status_code=status.HTTP_200_OK)
@@ -374,6 +401,24 @@ def sync_books_with_r2(
     removed = []
     updated = []
 
+    # Reconcile every existing top-level book's AI status against its
+    # metadata.json. One GET per book, so fan them out rather than paying the
+    # R2 round-trip ~200 times in a row.
+    to_check = [
+        (db_books[key], slug_for_pub[key[0]])
+        for key, info in r2_book_info.items()
+        if key in db_books and info["parent_book_name"] is None
+    ]
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        storage_statuses = list(
+            pool.map(lambda bs: _ai_status_from_storage(bs[1], bs[0].book_name, bs[0].id), to_check)
+        )
+    ai_status_by_id = {
+        book.id: changes
+        for (book, _), storage in zip(to_check, storage_statuses)
+        if (changes := _ai_status_changes(book, storage))
+    }
+
     # Process top-level books first so their IDs are available when we
     # create children with parent_book_id.
     r2_sorted = sorted(
@@ -400,13 +445,10 @@ def sync_books_with_r2(
                 update_data["parent_book_id"] = desired_parent_id
             if (existing.book_type or BookTypeEnum.STANDARD.value) != info["book_type"]:
                 update_data["book_type"] = info["book_type"]
-            # Backfill the AI status only when the row has none: a run happening
-            # right now (queued/processing) must not be overwritten by whatever
-            # the last finished run left in metadata.json.
-            if not existing.ai_processing_status:
-                update_data.update(
-                    _ai_status_from_storage(slug_for_pub[pub_id], book_name, existing.id)
-                )
+            # ai-data lives at {slug}/books/{name}/, so only top-level books
+            # can be checked against it.
+            if desired_parent_name is None:
+                update_data.update(ai_status_by_id.get(existing.id, {}))
             if update_data:
                 _book_repository.update(db, existing, data=update_data)
                 updated.append({
@@ -491,7 +533,7 @@ def sync_books_with_r2(
             "book_name": book_name,
             "book_type": book_type,
             "parent_book_name": parent_book_name,
-            "ai_processing_status": ai_status.get("ai_processing_status"),
+            "ai_processing_status": (ai_status or {}).get("ai_processing_status"),
         })
         # Refresh db_books so later children can find this parent
         db_books[(pub_id, book_name)] = book

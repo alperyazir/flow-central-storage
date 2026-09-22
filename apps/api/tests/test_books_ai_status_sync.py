@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
-from app.routers.books import _ai_status_from_storage, _reset_ai_status_for_prefix
+from app.routers.books import _ai_status_changes, _ai_status_from_storage, _reset_ai_status_for_prefix
 
 
 class TestAiStatusFromStorage:
@@ -41,7 +41,7 @@ class TestAiStatusFromStorage:
         """Sync must survive an unreadable metadata.json."""
         mock_service.return_value.get_metadata.side_effect = OSError("R2 down")
 
-        assert _ai_status_from_storage("edulink", "Some_Book", 1) == {}
+        assert _ai_status_from_storage("edulink", "Some_Book", 1) is None
 
     @patch("app.routers.books.get_ai_data_retrieval_service")
     def test_omits_timestamp_when_absent(self, mock_service: MagicMock) -> None:
@@ -123,3 +123,47 @@ class TestResetAiStatusForPrefix:
         _reset_ai_status_for_prefix("edulink/books/Glory_Trio_8/")
 
         mock_clear.assert_not_called()
+
+
+class TestAiStatusChanges:
+    """Sync makes the mirrored column match ai-data, in all three directions."""
+
+    DONE = datetime(2026, 9, 14, 20, 0, tzinfo=timezone.utc)
+
+    def _book(self, status: str | None) -> MagicMock:
+        return MagicMock(ai_processing_status=status)
+
+    def test_clears_completed_when_ai_data_is_gone(self) -> None:
+        """The override-upload case: badge said "completed" over an empty folder."""
+        assert _ai_status_changes(self._book("completed"), {}) == {
+            "ai_processing_status": None,
+            "ai_processed_at": None,
+        }
+
+    def test_corrects_a_status_that_disagrees(self) -> None:
+        storage = {"ai_processing_status": "failed"}
+        assert _ai_status_changes(self._book("completed"), storage) == {
+            "ai_processing_status": "failed",
+            "ai_processed_at": None,
+        }
+
+    def test_fills_a_missing_status(self) -> None:
+        storage = {"ai_processing_status": "completed", "ai_processed_at": self.DONE}
+        assert _ai_status_changes(self._book(None), storage) == {
+            "ai_processing_status": "completed",
+            "ai_processed_at": self.DONE,
+        }
+
+    def test_matching_status_is_left_alone(self) -> None:
+        storage = {"ai_processing_status": "completed", "ai_processed_at": self.DONE}
+        assert _ai_status_changes(self._book("completed"), storage) == {}
+        assert _ai_status_changes(self._book(None), {}) == {}
+
+    def test_run_in_flight_is_never_touched(self) -> None:
+        for status in ("queued", "processing"):
+            assert _ai_status_changes(self._book(status), {}) == {}
+            assert _ai_status_changes(self._book(status), {"ai_processing_status": "failed"}) == {}
+
+    def test_unreadable_storage_changes_nothing(self) -> None:
+        """An R2 hiccup must not wipe the badge of a perfectly good book."""
+        assert _ai_status_changes(self._book("completed"), None) == {}
