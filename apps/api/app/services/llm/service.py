@@ -118,7 +118,12 @@ class LLMService:
         """Get the fallback provider instance."""
         if self._fallback_provider:
             return self._fallback_provider
-        return self.get_provider(self.settings.llm_fallback_provider)
+        # "none" (or empty) switches fallback off: a book analysed half by one
+        # provider and half by another is worse than a clean failure to retry.
+        name = (self.settings.llm_fallback_provider or "").strip().lower()
+        if name in ("", "none"):
+            return None
+        return self.get_provider(name)
 
     async def _execute_with_retry(
         self,
@@ -202,19 +207,23 @@ class LLMService:
 
         # Try primary provider
         primary = self.primary_provider
+        fallback = self.fallback_provider if use_fallback else None
+        if fallback and primary and fallback.provider_name == primary.provider_name:
+            fallback = None
         if primary:
             try:
                 logger.info(f"[LLMService] Using primary provider: {primary.provider_name}")
                 return await self._execute_with_retry(primary, request)
             except LLMProviderError as e:
                 logger.error(f"[LLMService] Primary provider failed: {e}")
-                if not use_fallback:
+                # Nothing to fall back to: surface the real error, not
+                # "no providers available".
+                if not fallback:
                     raise
 
         # Try fallback provider
         if use_fallback:
-            fallback = self.fallback_provider
-            if fallback and (not primary or fallback.provider_name != primary.provider_name):
+            if fallback:
                 try:
                     logger.info(f"[LLMService] Falling back to: {fallback.provider_name}")
                     return await self._execute_with_retry(fallback, request)

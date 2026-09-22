@@ -168,9 +168,18 @@ class DeepSeekProvider(LLMProvider):
 
         response_data = await self._make_request("chat/completions", payload)
 
-        # Parse response
-        choice = response_data["choices"][0]
-        content = choice["message"]["content"]
+        # Parse response. DeepSeek can answer 200 OK with no choices (seen under
+        # load on 2026-09-14); make that a provider error so it is retried and
+        # the stage fails with a readable message instead of KeyError 'choices'.
+        choices = response_data.get("choices") if isinstance(response_data, dict) else None
+        if not choices or not isinstance(choices[0].get("message"), dict):
+            raise LLMProviderError(
+                message="Response had no choices",
+                provider=self.provider_name,
+                details={"response": str(response_data)[:500]},
+            )
+        choice = choices[0]
+        content = choice["message"].get("content") or ""
         finish_reason = choice.get("finish_reason")
 
         # Parse usage

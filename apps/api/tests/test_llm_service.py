@@ -197,6 +197,15 @@ class TestDeepSeekProvider:
             assert response.content == "Hello! How can I help you?"
 
     @pytest.mark.asyncio
+    async def test_response_without_choices_is_a_provider_error(self, deepseek_provider):
+        """A 200 with no choices must be retryable, not KeyError 'choices'."""
+        for body in ({}, {"choices": []}, {"error": {"message": "busy"}}, {"choices": [{}]}):
+            with patch.object(deepseek_provider, "_make_request", new_callable=AsyncMock) as mock_request:
+                mock_request.return_value = body
+                with pytest.raises(LLMProviderError, match="no choices"):
+                    await deepseek_provider.complete(LLMRequest.from_prompt("Hello"))
+
+    @pytest.mark.asyncio
     async def test_vision_not_supported(self, deepseek_provider):
         """Test that DeepSeek raises NotImplementedError for vision."""
         with pytest.raises(NotImplementedError, match="does not support vision"):
@@ -387,6 +396,22 @@ class TestLLMService:
 
         with pytest.raises(LLMProviderError, match="Primary failed"):
             await service.complete(LLMRequest.from_prompt("test"), use_fallback=False)
+
+    @pytest.mark.asyncio
+    async def test_fallback_switched_off_surfaces_primary_error(self, mock_settings):
+        """FCS_LLM_FALLBACK_PROVIDER=none: fail with DeepSeek's error, never call Gemini."""
+        for value in ("none", "", "None"):
+            mock_settings.llm_fallback_provider = value
+            mock_primary = AsyncMock(spec=DeepSeekProvider)
+            mock_primary.provider_name = "deepseek"
+            mock_primary.complete.side_effect = LLMProviderError("Primary failed", provider="deepseek")
+
+            service = LLMService(settings=mock_settings, primary_provider=mock_primary)
+            with patch.object(service, "_create_provider") as create, \
+                    patch("app.services.llm.service.asyncio.sleep", new_callable=AsyncMock):
+                with pytest.raises(LLMProviderError, match="Primary failed"):
+                    await service.complete(LLMRequest.from_prompt("test"))
+                create.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_force_specific_provider(self, mock_settings):
