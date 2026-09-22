@@ -252,6 +252,10 @@ async def process_book_task(
                 # Critical stage failed - abort
                 raise
 
+        # A stage can finish and still have dropped part of its output, which is
+        # a partial run rather than a clean one.
+        errors.extend(_degraded_stage_errors(stage_results))
+
         # All stages completed
         if errors:
             # Some non-critical stages failed
@@ -321,6 +325,32 @@ async def process_book_task(
                 logger.warning("Failed to finalize metadata on error: %s", meta_err)
 
         raise QueueError(f"Processing failed: {e}") from e
+
+
+def _degraded_stage_errors(stage_results: dict[str, Any]) -> list[dict]:
+    """Errors for stages that finished but lost part of their output.
+
+    A module whose vocabulary never arrived still leaves a module file behind,
+    so every stage reports success and the book ends up "completed" with fewer
+    words than it should have. Reported like a stage failure, which lands the
+    run on "partial" — visibly not a clean one.
+    """
+    errors = []
+    for stage_name, result in stage_results.items():
+        if not isinstance(result, dict):
+            continue
+        failed_modules = result.get("failed_modules") or []
+        if failed_modules:
+            errors.append(
+                {
+                    "stage": stage_name,
+                    "error": (
+                        f"No vocabulary for {len(failed_modules)} module(s): "
+                        f"{', '.join(failed_modules)}"
+                    ),
+                }
+            )
+    return errors
 
 
 def _get_stages_for_job_type(job_type: ProcessingJobType) -> list[str]:
@@ -742,6 +772,16 @@ async def _run_unified_analysis(
     # Report progress at 70%
     await progress.report_progress("unified_analysis", 70)
 
+    # A book whose every module came back wordless is not a finished book: the
+    # vocabulary and the audio built from it are both empty, yet each stage
+    # reports success and the badge ends up green over nothing. Fail loudly
+    # instead, so the run can simply be retried.
+    if result.total_vocabulary == 0:
+        raise QueueError(
+            f"Chunked analysis produced no vocabulary for {result.module_count} module(s)",
+            {"job_id": job_id, "book_id": book_id, "failed_modules": result.failed_modules},
+        )
+
     # Save results
     saved = unified_storage.save_all(result)
 
@@ -766,6 +806,7 @@ async def _run_unified_analysis(
         "processing_time_seconds": result.processing_time_seconds,
         "saved_modules": saved.get("module_count", 0),
         "saved_vocabulary": saved.get("vocabulary_count", 0),
+        "failed_modules": result.failed_modules,
     }
 
 
@@ -872,6 +913,16 @@ async def _run_chunked_analysis(
     # Report progress at 90%
     await progress.report_progress("chunked_analysis", 90)
 
+    # A book whose every module came back wordless is not a finished book: the
+    # vocabulary and the audio built from it are both empty, yet each stage
+    # reports success and the badge ends up green over nothing. Fail loudly
+    # instead, so the run can simply be retried.
+    if result.total_vocabulary == 0:
+        raise QueueError(
+            f"Chunked analysis produced no vocabulary for {result.module_count} module(s)",
+            {"job_id": job_id, "book_id": book_id, "failed_modules": result.failed_modules},
+        )
+
     # Save results
     saved = unified_storage.save_all(result)
 
@@ -896,6 +947,7 @@ async def _run_chunked_analysis(
         "processing_time_seconds": result.processing_time_seconds,
         "saved_modules": saved.get("module_count", 0),
         "saved_vocabulary": saved.get("vocabulary_count", 0),
+        "failed_modules": result.failed_modules,
     }
 
 

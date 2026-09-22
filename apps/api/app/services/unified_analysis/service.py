@@ -450,6 +450,7 @@ class UnifiedAnalysisService:
         modules: list[AnalyzedModule] = []
         difficulty_levels: set[str] = set()
         all_vocabulary: list[VocabularyWord] = []
+        failed_modules: list[str] = []
 
         for i, mod_data in enumerate(detected_modules):
             module_progress = ChunkedProgress(
@@ -512,7 +513,10 @@ class UnifiedAnalysisService:
                         logger.error(
                             "Vocabulary extraction failed for module %d after %d attempts: %s", i + 1, max_retries, e
                         )
-                        # Continue with empty vocabulary for this module
+                        # Keep the module (its structure is sound) but remember
+                        # that its words are missing, so the run cannot be
+                        # reported as a clean success.
+                        failed_modules.append(mod_data.get("title", f"Module {i + 1}"))
 
             all_vocabulary.extend(vocabulary)
 
@@ -548,6 +552,7 @@ class UnifiedAnalysisService:
             book_name=book_name,
             total_pages=total_pages,
             modules=modules,
+            failed_modules=failed_modules,
             primary_language=primary_language,
             translation_language=translation_language,
             difficulty_range=sorted(difficulty_levels),
@@ -566,6 +571,14 @@ class UnifiedAnalysisService:
                     total_modules=len(modules),
                     overall_percent=100,
                 )
+            )
+
+        if failed_modules:
+            logger.warning(
+                "Chunked analysis: %d/%d module(s) ended with no vocabulary: %s",
+                len(failed_modules),
+                len(modules),
+                ", ".join(failed_modules),
             )
 
         logger.info(

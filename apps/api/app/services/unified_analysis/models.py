@@ -101,6 +101,11 @@ class UnifiedAnalysisResult:
     translation_language: str = "tr"
     difficulty_range: list[str] = field(default_factory=list)
 
+    # Modules whose vocabulary extraction gave up after every retry. They are
+    # kept (their topics and page range are still useful) but the run is not a
+    # clean success, and the caller decides what to do about that.
+    failed_modules: list[str] = field(default_factory=list)
+
     # Processing info
     method: str = "unified_ai"
     llm_model: str = ""
@@ -144,6 +149,7 @@ class UnifiedAnalysisResult:
             "primary_language": self.primary_language,
             "translation_language": self.translation_language,
             "difficulty_range": self.difficulty_range,
+            "failed_modules": self.failed_modules,
             "method": self.method,
             "llm_model": self.llm_model,
             "processing_time_seconds": self.processing_time_seconds,
