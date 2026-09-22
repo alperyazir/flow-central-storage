@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from typing import TYPE_CHECKING, Any
 
@@ -51,6 +52,8 @@ class AudioStorage:
             settings: Application settings.
         """
         self.settings = settings or get_settings()
+        configured = getattr(self.settings, "audio_upload_concurrency", None)
+        self.upload_concurrency = configured if isinstance(configured, int) and configured > 0 else 16
 
     def _build_ai_data_path(
         self,
@@ -208,15 +211,9 @@ class AudioStorage:
         Returns:
             Dictionary with 'saved' count and 'failed' count.
         """
-        saved_count = 0
-        failed_count = 0
         saved_paths: list[str] = []
-
-        logger.info(
-            "Saving %d audio files for book %s",
-            len(audio_files),
-            book_id,
-        )
+        pending: list[tuple[AudioFile, bytes]] = []
+        failed_count = 0
 
         for audio_file in audio_files:
             # Get audio data using the relative file_path
@@ -228,20 +225,39 @@ class AudioStorage:
                 )
                 failed_count += 1
                 continue
+            pending.append((audio_file, data))
 
+        logger.info(
+            "Saving %d audio files for book %s",
+            len(pending),
+            book_id,
+        )
+
+        def _save(item: tuple[AudioFile, bytes]) -> str | None:
+            audio_file, data = item
             try:
-                path = self.save_audio_file(
+                return self.save_audio_file(
                     publisher_slug=publisher_slug,
                     book_id=book_id,
                     book_name=book_name,
                     audio_file=audio_file,
                     audio_data=data,
                 )
-                saved_paths.append(path)
-                saved_count += 1
             except StorageError as e:
                 logger.error("Failed to save audio: %s", e)
-                failed_count += 1
+                return None
+
+        # One PUT per word takes ~0.35s against R2, so a book with a thousand
+        # words spent minutes here uploading them one at a time. The limit is
+        # request latency, not bandwidth, so overlap them.
+        with ThreadPoolExecutor(max_workers=self.upload_concurrency) as pool:
+            for path in pool.map(_save, pending):
+                if path is None:
+                    failed_count += 1
+                else:
+                    saved_paths.append(path)
+
+        saved_count = len(saved_paths)
 
         logger.info(
             "Saved %d audio files, %d failed",
@@ -376,12 +392,18 @@ class AudioStorage:
             objects = client.list_objects(bucket, prefix=prefix, recursive=True)
             objects_to_delete = [obj.object_name for obj in objects]
 
-            for obj_name in objects_to_delete:
+            def _remove(obj_name: str) -> bool:
                 try:
                     client.remove_object(bucket, obj_name)
-                    deleted_count += 1
+                    return True
                 except S3Error as e:
                     logger.warning("Failed to delete %s: %s", obj_name, e)
+                    return False
+
+            # Same round-trip problem as the upload: one DELETE per file.
+            if objects_to_delete:
+                with ThreadPoolExecutor(max_workers=self.upload_concurrency) as pool:
+                    deleted_count = sum(pool.map(_remove, objects_to_delete))
 
             if deleted_count > 0:
                 logger.info(

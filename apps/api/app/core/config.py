@@ -151,6 +151,7 @@ class Settings(BaseSettings):
 
     # Audio Generation Configuration
     audio_generation_concurrency: int = 5  # concurrent TTS requests for batch
+    audio_upload_concurrency: int = 16  # concurrent R2 PUT/DELETE for audio files
     audio_generation_languages: str = "en"  # languages to generate audio for
     audio_retry_failed: bool = True  # retry failed audio generation
 

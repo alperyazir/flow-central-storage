@@ -1317,8 +1317,10 @@ async def _run_audio_generation(
     # Report initial progress
     await progress.report_progress("audio_generation", 10)
 
-    # Clean up existing audio before re-generation
-    audio_storage.cleanup_audio_directory(publisher_slug, book_id, book_name)
+    # Clean up existing audio before re-generation. Every object-storage call
+    # below is blocking, and three books share this worker's event loop — run
+    # them off it, or the other two freeze for as long as this one uploads.
+    await asyncio.to_thread(audio_storage.cleanup_audio_directory, publisher_slug, book_id, book_name)
 
     # Generate audio for all vocabulary words
     result, audio_data = await audio_service.generate_vocabulary_audio(
@@ -1335,7 +1337,8 @@ async def _run_audio_generation(
     await progress.report_progress("audio_generation", 50)
 
     # Save audio files to storage
-    save_result = audio_storage.save_all_audio(
+    save_result = await asyncio.to_thread(
+        audio_storage.save_all_audio,
         publisher_slug=publisher_slug,
         book_id=book_id,
         book_name=book_name,
@@ -1348,7 +1351,8 @@ async def _run_audio_generation(
 
     # Update vocabulary.json with audio paths
     if result.audio_files:
-        audio_storage.update_vocabulary_audio_paths(
+        await asyncio.to_thread(
+            audio_storage.update_vocabulary_audio_paths,
             publisher_slug=publisher_slug,
             book_id=book_id,
             book_name=book_name,
