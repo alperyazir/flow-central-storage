@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from minio import Minio
+from minio.commonconfig import REPLACE, CopySource
 from minio.error import S3Error
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,9 @@ ALLOWED_PLATFORMS = {"mac", "win", "win7-8", "linux"}
 # Stored as x-amz-meta-app-version on the object; read back via stat_object.
 APP_VERSION_META_KEY = "app-version"
 PRESIGNED_URL_EXPIRY_SECONDS = 21600  # 6 hours
+# A template can be several hundred MB and the browser uploads it straight to
+# R2, so the URL has to outlive a slow uplink.
+TEMPLATE_UPLOAD_URL_EXPIRY_SECONDS = 21600  # 6 hours
 TEMPLATE_CACHE_DIR = Path(tempfile.gettempdir()) / "fcs_template_cache"
 ASSET_DOWNLOAD_WORKERS = 8  # concurrent R2 downloads
 
@@ -96,6 +100,10 @@ class TemplateNotFoundError(Exception):
     """Raised when a requested template does not exist."""
 
     pass
+
+
+class TemplateTooLargeError(Exception):
+    """Raised when an uploaded template is over the configured size limit."""
 
 
 class InvalidPlatformError(Exception):
@@ -250,6 +258,109 @@ def upload_template(
         file_name=file_name,
         file_size=file_size,
         uploaded_at=datetime.now(timezone.utc),
+        object_name=object_name,
+        version=version,
+    )
+
+
+def presign_template_upload(
+    external_client: Minio,
+    bucket: str,
+    platform: str,
+    expires_seconds: int = TEMPLATE_UPLOAD_URL_EXPIRY_SECONDS,
+) -> tuple[str, str]:
+    """A URL the browser can PUT a template straight to, bypassing the API.
+
+    Cloudflare caps a request body at 100 MB, and the win/mac templates are
+    larger than that, so an upload routed through the API never reaches it.
+    Going direct to R2 also spares the API from holding a multi-hundred-MB
+    body in memory.
+
+    Returns (url, object_name).
+    """
+    normalized_platform = _validate_platform(platform)
+    object_name = _get_template_object_name(normalized_platform)
+    url = external_client.presigned_put_object(
+        bucket_name=bucket,
+        object_name=object_name,
+        expires=timedelta(seconds=expires_seconds),
+    )
+    logger.info("Presigned template upload for %s: %s", normalized_platform, object_name)
+    return url, object_name
+
+
+def finalize_template_upload(
+    client: Minio,
+    bucket: str,
+    platform: str,
+    file_name: str,
+    version: str | None = None,
+    max_bytes: int | None = None,
+) -> TemplateMetadata:
+    """Confirm a direct-to-R2 upload and put the bookkeeping back in place.
+
+    The browser can only PUT the bytes; everything the old upload path did
+    around them happens here: the size limit the API can no longer enforce
+    up front, the version metadata (applied with a server-side copy, so the
+    bytes never travel again), and the stale local cache.
+
+    Raises:
+        TemplateNotFoundError: if nothing was uploaded to the expected key.
+        TemplateTooLargeError: if the object exceeds ``max_bytes``; the object
+            is removed, because a half-accepted template is worse than none.
+    """
+    normalized_platform = _validate_platform(platform)
+    object_name = _get_template_object_name(normalized_platform)
+
+    try:
+        stat = client.stat_object(bucket, object_name)
+    except S3Error as exc:
+        if exc.code in ("NoSuchKey", "NoSuchObject", "NotFound"):
+            raise TemplateNotFoundError(
+                f"No uploaded template found for platform '{normalized_platform}'"
+            ) from exc
+        raise
+
+    file_size = stat.size or 0
+    if max_bytes is not None and file_size > max_bytes:
+        client.remove_object(bucket, object_name)
+        raise TemplateTooLargeError(
+            f"Template is {file_size} bytes, over the {max_bytes} byte limit"
+        )
+
+    version = (version or "").strip() or None
+    if version:
+        # Copy the object onto itself to attach the metadata: R2 does this
+        # server-side, so a 600 MB template is not moved anywhere.
+        client.copy_object(
+            bucket,
+            object_name,
+            CopySource(bucket, object_name),
+            metadata={APP_VERSION_META_KEY: version},
+            metadata_directive=REPLACE,
+        )
+
+    # The bundler caches templates on local disk and validates the cache by
+    # size. A new template of exactly the same size would otherwise be missed.
+    cache_path = TEMPLATE_CACHE_DIR / object_name.replace("/", "_")
+    try:
+        cache_path.unlink(missing_ok=True)
+    except OSError as exc:  # pragma: no cover - cache is best effort
+        logger.warning("Could not drop stale template cache %s: %s", cache_path, exc)
+
+    logger.info(
+        "Finalized direct upload for platform %s: %s (%d bytes, version=%s)",
+        normalized_platform,
+        object_name,
+        file_size,
+        version or "-",
+    )
+
+    return TemplateMetadata(
+        platform=normalized_platform,
+        file_name=file_name,
+        file_size=file_size,
+        uploaded_at=stat.last_modified or datetime.now(timezone.utc),
         object_name=object_name,
         version=version,
     )

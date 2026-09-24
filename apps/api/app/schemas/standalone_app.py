@@ -35,6 +35,29 @@ class TemplateUploadResponse(BaseModel):
     message: str = "Template uploaded successfully"
 
 
+class TemplateUploadUrlRequest(BaseModel):
+    """Ask for a URL the browser can upload a template to directly."""
+
+    file_name: str = Field(..., description="Name of the file being uploaded (must be a .zip)")
+    file_size: int = Field(..., ge=1, description="Size in bytes, checked against the limit up front")
+
+
+class TemplateUploadUrlResponse(BaseModel):
+    """A presigned PUT URL for one template upload."""
+
+    url: str = Field(..., description="Presigned URL; PUT the file's bytes to it")
+    object_name: str = Field(..., description="Where the template lands in the bucket")
+    expires_in_seconds: int = Field(..., description="How long the URL stays valid")
+    max_bytes: int = Field(..., description="Largest template the server will accept")
+
+
+class TemplateUploadCompleteRequest(BaseModel):
+    """Confirm a direct upload so the server can finish the bookkeeping."""
+
+    file_name: str = Field(..., description="Name of the uploaded file")
+    version: str | None = Field(None, description="App version string (e.g. 1.5.1)")
+
+
 class BundleRequest(BaseModel):
     """Request payload for creating a book bundle."""
 

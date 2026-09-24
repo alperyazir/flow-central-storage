@@ -110,11 +110,26 @@ const StandaloneAppsManager = () => {
     const opId = `upload-${Date.now()}-${uploadPlat}`;
     const opName = `App: ${uploadPlat}/${uploadFile.name}`;
     addOperation({ id: opId, type: 'upload', bookName: opName });
-    updateOperation(opId, { status: 'in_progress', progress: 50, detail: 'Uploading...' });
+    updateOperation(opId, { status: 'in_progress', progress: 0, detail: 'Uploading...' });
     setUploadOpen(false);
 
     try {
-      await uploadTemplate(uploadPlat, uploadFile, token, tt, uploadVersion);
+      await uploadTemplate(
+        uploadPlat,
+        uploadFile,
+        token,
+        tt,
+        uploadVersion,
+        undefined,
+        // Real bytes-sent progress. The last stretch is the server recording
+        // the upload, so the bar stops just short until that returns.
+        (progress) =>
+          updateOperation(opId, {
+            status: 'in_progress',
+            progress: Math.min(progress, 99),
+            detail: progress >= 100 ? 'Finishing...' : `Uploading... ${progress}%`,
+          })
+      );
       updateOperation(opId, { status: 'completed', progress: 100, detail: 'Upload complete' });
       await load();
     } catch (e) {

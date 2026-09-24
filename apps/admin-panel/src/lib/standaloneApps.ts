@@ -14,6 +14,13 @@ export interface TemplateListResponse {
   templates: TemplateInfo[];
 }
 
+export interface TemplateUploadUrlResponse {
+  url: string;
+  object_name: string;
+  expires_in_seconds: number;
+  max_bytes: number;
+}
+
 export interface TemplateUploadResponse {
   platform: string;
   file_name: string;
@@ -128,7 +135,16 @@ export const listTemplates = (
   });
 
 /**
- * Upload a standalone app template for a specific platform
+ * Upload a standalone app template straight to R2, reporting real progress.
+ *
+ * The bytes bypass our API entirely. Cloudflare refuses any request body over
+ * 100 MB before it reaches the origin, and the win and mac templates are
+ * larger than that, so an upload routed through the API was rejected at the
+ * edge after several silent minutes. The server hands out a presigned URL,
+ * the browser PUTs to it, and a second call records the result.
+ *
+ * XHR rather than fetch, because fetch reports no upload progress at all -
+ * which is why the bar used to sit at 50% for the whole upload.
  */
 export const uploadTemplate = async (
   platform: string,
@@ -136,21 +152,55 @@ export const uploadTemplate = async (
   token: string,
   tokenType: string = 'Bearer',
   version?: string,
-  client: ApiClient = apiClient
+  client: ApiClient = apiClient,
+  onProgress?: (progress: number) => void
 ): Promise<TemplateUploadResponse> => {
-  const formData = new FormData();
-  formData.append('file', file);
+  const headers = buildAuthHeaders(token, tokenType);
   const trimmed = version?.trim();
-  if (trimmed) {
-    formData.append('version', trimmed);
-  }
 
-  return client.postForm<TemplateUploadResponse>(
-    `/standalone-apps/${platform}/upload`,
-    formData,
-    { headers: buildAuthHeaders(token, tokenType) }
+  const target = await client.post<TemplateUploadUrlResponse>(
+    `/standalone-apps/${platform}/upload-url`,
+    { file_name: file.name, file_size: file.size },
+    { headers }
+  );
+
+  await putWithProgress(target.url, file, onProgress);
+
+  return client.post<TemplateUploadResponse>(
+    `/standalone-apps/${platform}/upload-complete`,
+    { file_name: file.name, version: trimmed || null },
+    { headers }
   );
 };
+
+/** PUT a file to a presigned URL, reporting 0-100 as the bytes go out. */
+const putWithProgress = (
+  url: string,
+  file: File,
+  onProgress?: (progress: number) => void
+): Promise<void> =>
+  new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('PUT', url);
+    xhr.setRequestHeader('Content-Type', 'application/zip');
+
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable || !onProgress) return;
+      onProgress(Math.round((event.loaded / event.total) * 100));
+    };
+    xhr.onload = () =>
+      xhr.status >= 200 && xhr.status < 300
+        ? resolve()
+        : reject(new Error(`Upload to storage failed (${xhr.status})`));
+    xhr.onerror = () =>
+      reject(
+        new Error(
+          'Upload to storage failed. If this keeps happening, the bucket may be missing its CORS rule.'
+        )
+      );
+    xhr.onabort = () => reject(new Error('Upload cancelled'));
+    xhr.send(file);
+  });
 
 /**
  * Delete a standalone app template for a specific platform

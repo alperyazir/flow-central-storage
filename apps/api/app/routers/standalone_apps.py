@@ -31,21 +31,28 @@ from app.schemas.standalone_app import (
     IncompleteUploadsCleanResult,
     TemplateInfo,
     TemplateListResponse,
+    TemplateUploadCompleteRequest,
     TemplateUploadResponse,
+    TemplateUploadUrlRequest,
+    TemplateUploadUrlResponse,
 )
 from app.services import get_minio_client, get_minio_client_external
 from app.services.standalone_apps import (
     PRESIGNED_URL_EXPIRY_SECONDS,
+    TEMPLATE_UPLOAD_URL_EXPIRY_SECONDS,
     BundleNotFoundError,
     InvalidPlatformError,
     TemplateNotFoundError,
+    TemplateTooLargeError,
     abort_incomplete_bundle_uploads,
     bundle_rows_to_metadata,
     delete_bundle,
     delete_template,
     get_bundle_version,
+    finalize_template_upload,
     get_template_download_url,
     list_templates,
+    presign_template_upload,
     reconcile_bundles,
     template_exists,
     upload_template,
@@ -131,6 +138,111 @@ def list_all_templates(
             logger.warning("Failed to get download URL for %s: %s", meta.platform, exc)
 
     return TemplateListResponse(templates=templates)
+
+
+def _require_zip(file_name: str) -> None:
+    if not file_name or not file_name.endswith(".zip"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File must be a zip archive",
+        )
+
+
+@router.post("/{platform}/upload-url", response_model=TemplateUploadUrlResponse)
+async def create_template_upload_url(
+    platform: str,
+    payload: TemplateUploadUrlRequest,
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+) -> TemplateUploadUrlResponse:
+    """Hand back a URL the browser PUTs the template straight to R2.
+
+    The upload never passes through the API, which is the point: Cloudflare
+    rejects any request body over 100 MB before it reaches the origin, and the
+    win and mac templates are bigger than that. Upload, then call
+    ``/{platform}/upload-complete`` so the server records it.
+    """
+    _require_admin(credentials, db)
+    _require_zip(payload.file_name)
+
+    settings = get_settings()
+    if payload.file_size > settings.standalone_app_max_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File exceeds max size ({settings.standalone_app_max_bytes // 1024 // 1024}MB)",
+        )
+
+    try:
+        url, object_name = presign_template_upload(
+            external_client=get_minio_client_external(settings),
+            bucket=settings.minio_apps_bucket,
+            platform=platform,
+        )
+    except InvalidPlatformError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    return TemplateUploadUrlResponse(
+        url=url,
+        object_name=object_name,
+        expires_in_seconds=TEMPLATE_UPLOAD_URL_EXPIRY_SECONDS,
+        max_bytes=settings.standalone_app_max_bytes,
+    )
+
+
+@router.post(
+    "/{platform}/upload-complete",
+    response_model=TemplateUploadResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def complete_template_upload(
+    platform: str,
+    payload: TemplateUploadCompleteRequest,
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+) -> TemplateUploadResponse:
+    """Record a template the browser uploaded directly to R2.
+
+    Applies what the direct PUT could not: the size limit, the version
+    metadata, and dropping the bundler's stale local cache.
+    """
+    import asyncio
+
+    _require_admin(credentials, db)
+    db.commit()  # Release DB connection before S3 work
+    _require_zip(payload.file_name)
+
+    settings = get_settings()
+    try:
+        metadata = await asyncio.to_thread(
+            finalize_template_upload,
+            client=get_minio_client(settings),
+            bucket=settings.minio_apps_bucket,
+            platform=platform,
+            file_name=payload.file_name,
+            version=payload.version,
+            max_bytes=settings.standalone_app_max_bytes,
+        )
+    except InvalidPlatformError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except TemplateNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except TemplateTooLargeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(exc)
+        ) from exc
+    except Exception as exc:
+        logger.error("Failed to finalize template upload: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to finalize template upload",
+        ) from exc
+
+    return TemplateUploadResponse(
+        platform=metadata.platform,
+        file_name=metadata.file_name,
+        file_size=metadata.file_size,
+        version=metadata.version,
+    )
 
 
 @router.post("/{platform}/upload", response_model=TemplateUploadResponse, status_code=status.HTTP_201_CREATED)

@@ -34,7 +34,10 @@ from .standalone_app import (
     BundleResponse,
     TemplateInfo,
     TemplateListResponse,
+    TemplateUploadCompleteRequest,
     TemplateUploadResponse,
+    TemplateUploadUrlRequest,
+    TemplateUploadUrlResponse,
 )
 from .storage import RestoreRequest, RestoreResponse, TrashEntryRead
 from .teacher import (
@@ -133,5 +136,8 @@ __all__ = [
     "BundleResponse",
     "TemplateInfo",
     "TemplateListResponse",
+    "TemplateUploadCompleteRequest",
     "TemplateUploadResponse",
+    "TemplateUploadUrlRequest",
+    "TemplateUploadUrlResponse",
 ]
