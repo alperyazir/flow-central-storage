@@ -686,6 +686,13 @@ def jobs(tmp_path):
     """In-memory stand-ins for the Redis job + progress keys."""
     progress: dict[str, dict] = {}
     staged: dict[str, dict] = {}
+    claimed: set[str] = set()
+
+    def claim(job_id: str) -> bool:
+        if job_id in claimed:
+            return False
+        claimed.add(job_id)
+        return True
 
     def set_progress(job_id, pct, step, detail="", book_id=None, error=None, download_url=None, result=None):
         progress[job_id] = {"progress": pct, "step": step, "error": error, "result": result, "book_id": book_id}
@@ -697,6 +704,7 @@ def jobs(tmp_path):
         patch("app.services.cache.set_update_files_job", lambda j, d: staged.__setitem__(j, d)),
         patch("app.services.cache.get_update_files_job", lambda j: staged.get(j)),
         patch("app.services.cache.delete_update_files_job", lambda j: staged.pop(j, None)),
+        patch("app.services.cache.claim_update_files_apply", claim),
         patch("app.routers.books._update_files_staging_dir", return_value=str(tmp_path)),
     ):
         yield SimpleNamespace(progress=progress, staged=staged, dir=tmp_path)
@@ -810,3 +818,108 @@ def test_chunked_init_accepts_update_book_id_for_standard_books_only(_auth, repo
     pdf_book.book_type = "pdf"
     repo.get_by_id.return_value = pdf_book
     assert client.post("/books/chunked-upload/init", json=body, headers={"Authorization": "Bearer x"}).status_code == 400
+
+
+@patch("app.routers.books._run_update_files_apply")
+@patch("app.routers.books._require_admin", return_value=1)
+def test_racing_applies_run_once(_auth, runner, jobs, fake_db) -> None:
+    """Two apply requests that both see preview_ready (a double click) apply once."""
+    client = TestClient(app)
+    _preview_ready(jobs, "race")
+
+    with patch("app.services.cache.get_upload_progress", lambda j: {"step": "preview_ready", "result": {"full_archive": True}}):
+        first = client.post("/books/349/update-files/jobs/race/apply", json={}, headers={"Authorization": "Bearer x"})
+        second = client.post("/books/349/update-files/jobs/race/apply", json={}, headers={"Authorization": "Bearer x"})
+
+    assert (first.status_code, second.status_code) == (202, 409)
+    assert runner.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Book JSON that does not parse
+# ---------------------------------------------------------------------------
+
+
+def test_invalid_config_json_is_refused(tmp_path) -> None:
+    s3 = FakeS3(_stored_book())
+    archive = _zip(tmp_path, {"Glory_Trio_3/config.json": b"", "Glory_Trio_3/games.json": "{}"})
+
+    with pytest.raises(UploadError, match="config.json is not valid JSON"):
+        _run(s3, archive, dry_run=True)
+    assert s3.puts == []
+
+
+@pytest.mark.parametrize("name, data", [("games.json", b""), ("audio/audio.json", b"{not json"), ("games.json", b"\xff\xfe")])
+def test_invalid_games_or_audio_json_is_reported(tmp_path, name, data) -> None:
+    s3 = FakeS3(_stored_book())
+    archive = _zip(tmp_path, {f"Glory_Trio_3/{name}": data, "Glory_Trio_3/assets/a.js": "x"})
+
+    result = _run(s3, archive, dry_run=True)
+
+    assert [bad["path"] for bad in result.invalid_json] == [name]
+
+
+def test_valid_json_reports_nothing(tmp_path) -> None:
+    s3 = FakeS3(_stored_book())
+    archive = _zip(tmp_path, {"Glory_Trio_3/config.json": _config(), "Glory_Trio_3/games.json": "[]"})
+
+    assert _run(s3, archive, dry_run=True).invalid_json == []
+
+
+def test_invalid_json_becomes_a_warning(orchestration) -> None:
+    from app.routers.books import run_book_files_update
+
+    archive = _zip(orchestration.tmp_path, {"Glory_Trio_3/games.json": b""})
+
+    report = run_book_files_update(349, archive, dry_run=True)
+
+    warning = next(w for w in report["warnings"] if w["code"] == "invalid_json")
+    assert warning["path"] == "games.json"
+    assert "empty" in warning["message"]
+
+
+# ---------------------------------------------------------------------------
+# One event per endpoint
+# ---------------------------------------------------------------------------
+
+
+def _sub(id_, url, event_types=None):
+    return SimpleNamespace(id=id_, url=url, event_types=event_types, is_active=True)
+
+
+def test_subscriptions_sharing_a_url_get_one_delivery() -> None:
+    import asyncio
+
+    from app.services.webhook import WebhookService
+
+    service = WebhookService()
+    service.subscription_repo = MagicMock()
+    service.subscription_repo.list_active.return_value = [
+        _sub(2, "https://learn.example/api/webhooks/dcs/"),
+        _sub(1, "https://learn.example/api/webhooks/dcs"),
+        _sub(3, "https://other.example/hook"),
+    ]
+    delivered = []
+
+    async def deliver(session, sub_id, event_type, book):
+        delivered.append(sub_id)
+
+    service.deliver_webhook = deliver
+    book = SimpleNamespace(id=381, book_name="B")
+
+    asyncio.run(service.broadcast_event(MagicMock(), WebhookEventType.BOOK_UPDATED, book))
+
+    assert sorted(delivered) == [1, 3]
+
+
+def test_same_url_with_other_event_filters_is_not_collapsed() -> None:
+    from app.services.webhook import WebhookService
+
+    subs = [
+        _sub(1, "https://learn.example/hook", "publisher.created"),
+        _sub(2, "https://learn.example/hook", "book.updated"),
+    ]
+
+    kept = WebhookService._one_per_url(subs, WebhookEventType.BOOK_UPDATED)
+
+    assert [s.id for s in kept] == [2]

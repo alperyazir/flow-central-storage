@@ -35,6 +35,7 @@ const report = (overrides: Partial<BookFilesUpdateReport> = {}): BookFilesUpdate
   root_folder: 'Dream_Test_Book_V_1',
   full_archive: true,
   config_book_title: 'Dream Test Book 2',
+  invalid_json: [],
   counts: {
     written: 2,
     unchanged: 10,
@@ -176,6 +177,25 @@ describe('BookFilesUpdateDialog', () => {
     renderDialog({ reviewOpId: opId });
 
     await screen.findByText(/archive's folder is 'Other'/i);
+    const applyButton = screen.getByRole('button', { name: /apply update/i });
+    expect(applyButton).toBeDisabled();
+    await user.click(screen.getByLabelText(/i checked the warnings/i));
+    expect(applyButton).toBeEnabled();
+  });
+
+  it('invalid games.json blocks apply until confirmed', async () => {
+    const user = userEvent.setup();
+    const opId = previewReadyOp();
+    getStatus.mockResolvedValue({
+      step: 'preview_ready',
+      result: report({
+        invalid_json: [{ path: 'games.json', error: 'the file is empty' }],
+        warnings: [{ code: 'invalid_json', path: 'games.json', message: 'games.json is not valid JSON (the file is empty).' }],
+      }),
+    });
+    renderDialog({ reviewOpId: opId });
+
+    await screen.findByText(/games.json is not valid json/i);
     const applyButton = screen.getByRole('button', { name: /apply update/i });
     expect(applyButton).toBeDisabled();
     await user.click(screen.getByLabelText(/i checked the warnings/i));

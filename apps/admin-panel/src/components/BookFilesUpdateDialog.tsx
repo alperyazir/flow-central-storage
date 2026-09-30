@@ -194,7 +194,8 @@ const BookFilesUpdateDialog = ({
     }
   }, [stage, opId, onUpdated]);
 
-  const needsConfirm = !!report?.warnings.some((w) => w.code === 'folder_name_mismatch');
+  // Warnings that must be acknowledged before applying.
+  const needsConfirm = !!report?.warnings.some((w) => w.code === 'folder_name_mismatch' || w.code === 'invalid_json');
 
   const startUpload = () => {
     if (!file) return;
@@ -346,7 +347,10 @@ const BookFilesUpdateDialog = ({
               </Alert>
             ) : (
               report.warnings.map((w) => (
-                <Alert key={w.code} variant={w.code === 'ai_stale' ? 'destructive' : 'default'}>
+                <Alert
+                  key={`${w.code}:${w.path ?? ''}`}
+                  variant={w.code === 'ai_stale' || w.code === 'invalid_json' ? 'destructive' : 'default'}
+                >
                   <AlertTriangle className="h-4 w-4" />
                   <AlertDescription>{w.message}</AlertDescription>
                 </Alert>
@@ -435,7 +439,7 @@ const BookFilesUpdateDialog = ({
                     <Checkbox id="uf-confirm" checked={confirmed} onCheckedChange={(v) => setConfirmed(v === true)} />
                     <Label htmlFor="uf-confirm" className="text-sm font-normal leading-5">
                       I checked the warnings above. This ZIP belongs to{' '}
-                      <span className="font-mono">{book.book_name}</span>.
+                      <span className="font-mono">{book.book_name}</span> and may be applied as it is.
                     </Label>
                   </div>
                 )}

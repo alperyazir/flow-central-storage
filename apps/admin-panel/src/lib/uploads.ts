@@ -735,6 +735,7 @@ export const uploadBulkBookArchives = async (
 export interface BookFilesUpdateWarning {
   code: string;
   message: string;
+  path?: string;
 }
 
 export interface BookFilesUpdateMetadata {
@@ -754,6 +755,7 @@ export interface BookFilesUpdateReport {
   root_folder: string | null;
   full_archive: boolean;
   config_book_title: string | null;
+  invalid_json: { path: string; error: string }[];
   counts: {
     written: number;
     unchanged: number;

@@ -1232,6 +1232,15 @@ def _update_files_warnings(result, book_name: str, book_title: str | None) -> li
             "code": "title_change",
             "message": f"The title changes from '{book_title or '—'}' to '{title}' (from config.json).",
         })
+    for bad in result.invalid_json:
+        warnings.append({
+            "code": "invalid_json",
+            "path": bad["path"],
+            "message": (
+                f"{bad['path']} is not valid JSON ({bad['error']}). It would be stored as is, "
+                "and the player cannot read it."
+            ),
+        })
     if not result.full_archive:
         warnings.append({
             "code": "partial_archive",
@@ -1510,7 +1519,7 @@ def apply_update_files_job(
 
     Progress and the final report are read from ``/books/upload-status/{job_id}``.
     """
-    from app.services.cache import get_upload_progress, set_upload_progress
+    from app.services.cache import claim_update_files_apply, get_upload_progress, set_upload_progress
 
     _require_admin(credentials, db)
     job = _update_files_job_for(book_id, job_id)
@@ -1522,6 +1531,8 @@ def apply_update_files_job(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="prune needs the full book archive, with config.json at the book root",
         )
+    if not claim_update_files_apply(job_id):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This update is already being applied")
     set_upload_progress(job_id, 65, "applying", "Queued", book_id=book_id)
     background_tasks.add_task(_run_update_files_apply, job_id, book_id, job["path"], body.model_dump())
     return {"job_id": job_id, "status": "accepted"}

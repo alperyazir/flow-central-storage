@@ -186,6 +186,32 @@ class WebhookService:
                     f"[WEBHOOK] Webhook {log.id} permanently failed after {max_retries} attempts to {subscription.url}"
                 )
 
+    @staticmethod
+    def _one_per_url(subscriptions: list, event_type: WebhookEventType) -> list:
+        """Subscriptions that want ``event_type``, at most one per URL.
+
+        Two subscriptions to the same endpoint deliver the same event twice at
+        once, and the consumer (Learn) then runs two syncs of one book side by
+        side. Filtering by event type first means a URL is only collapsed among
+        subscriptions that would all receive this event. The lowest id wins.
+        """
+
+        def wants(sub) -> bool:
+            if not sub.event_types:
+                return True
+            return event_type.value in [e.strip() for e in sub.event_types.split(",")]
+
+        seen: set[str] = set()
+        unique = []
+        for sub in sorted((s for s in subscriptions if wants(s)), key=lambda s: s.id):
+            url = (sub.url or "").strip().rstrip("/").lower()
+            if url in seen:
+                logger.warning(f"[WEBHOOK] Skipping subscription {sub.id}: same URL as an earlier one ({sub.url})")
+                continue
+            seen.add(url)
+            unique.append(sub)
+        return unique
+
     async def broadcast_event(self, session: Session, event_type: WebhookEventType, book: Book) -> None:
         """
         Broadcast a webhook event to all active subscriptions.
@@ -207,6 +233,7 @@ class WebhookService:
             )
             return
 
+        subscriptions = self._one_per_url(subscriptions, event_type)
         logger.info(
             f"[WEBHOOK] Broadcasting {event_type.value} for book {book.id} ('{book.book_name}') to {len(subscriptions)} subscriptions"
         )
@@ -360,6 +387,7 @@ class WebhookService:
             )
             return
 
+        subscriptions = self._one_per_url(subscriptions, event_type)
         logger.info(
             f"[WEBHOOK] Broadcasting {event_type.value} for publisher {publisher.id} ('{publisher.name}') to {len(subscriptions)} subscriptions"
         )

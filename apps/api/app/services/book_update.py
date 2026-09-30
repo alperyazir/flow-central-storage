@@ -66,6 +66,9 @@ class BookFilesUpdate:
     # is allowed.
     full_archive: bool = False
     config_book_title: str | None = None
+    # Book JSON files in the archive that do not parse: [{"path", "error"}].
+    # Only games.json / audio.json get here; a bad config.json is refused.
+    invalid_json: list[dict[str, str]] = field(default_factory=list)
     metadata: dict[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
@@ -92,6 +95,7 @@ class BookFilesUpdate:
             "ai_stale": self.ai_stale,
             "full_archive": self.full_archive,
             "config_book_title": self.config_book_title,
+            "invalid_json": self.invalid_json,
             "metadata": self.metadata,
         }
 
@@ -146,6 +150,36 @@ def _check_paths(entries: list[tuple[zipfile.ZipInfo, str]]) -> list[str]:
         more = f" (+{len(violations) - 20} more)" if len(violations) > 20 else ""
         raise UploadError(f"Archive has entries this update may not write: {shown}{more}")
     return paths
+
+
+# JSON files the player reads; config.json is the book itself.
+_BOOK_JSON_NAMES = ("config.json", "games.json", "audio.json")
+
+
+def _invalid_book_json(
+    archive: zipfile.ZipFile, entries: list[tuple[zipfile.ZipInfo, str]]
+) -> list[dict[str, str]]:
+    """games.json / audio.json in the archive that do not parse (empty included).
+
+    A config.json that does not parse is refused outright: the book would stop
+    opening, and every derived field comes from it.
+    """
+    invalid: list[dict[str, str]] = []
+    for entry, final_path in entries:
+        name = final_path.rsplit("/", 1)[-1].lower()
+        if name not in _BOOK_JSON_NAMES:
+            continue
+        data = archive.read(entry)
+        try:
+            if not data.strip():
+                raise ValueError("the file is empty")
+            json.loads(data.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as exc:
+            path = _normalize_filename(final_path)
+            if name == "config.json":
+                raise UploadError(f"{path} is not valid JSON ({exc}); the book would stop opening") from exc
+            invalid.append({"path": path, "error": str(exc)})
+    return invalid
 
 
 def _read_json(client: Minio, bucket: str, key: str) -> object | None:
@@ -210,7 +244,9 @@ def update_book_files(
         raise UploadError("Uploaded file is not a valid ZIP archive") from exc
     with archive:
         root = _root_to_strip(archive, stored)
-        archive_paths = _check_paths(list(iter_zip_entries(archive, strip_root=root)))
+        entries = list(iter_zip_entries(archive, strip_root=root))
+        archive_paths = _check_paths(entries)
+        invalid_json = _invalid_book_json(archive, entries)
 
     if not archive_paths:
         raise UploadError("Archive has no files to write")
@@ -249,7 +285,12 @@ def update_book_files(
     )
 
     result = BookFilesUpdate(
-        prefix=prefix, dry_run=dry_run, prune=prune, root_folder=root, full_archive="config.json" in archive_set
+        prefix=prefix,
+        dry_run=dry_run,
+        prune=prune,
+        root_folder=root,
+        full_archive="config.json" in archive_set,
+        invalid_json=invalid_json,
     )
     result.protected_kept = len(stored) - len(content)
     final_sizes = {rel: obj.size for rel, obj in content.items()}

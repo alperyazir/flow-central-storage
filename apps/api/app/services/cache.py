@@ -249,3 +249,17 @@ def delete_update_files_job(job_id: str) -> None:
         _get_sync_redis().delete(f"fcs:update-files:{job_id}")
     except Exception:
         pass
+
+
+def claim_update_files_apply(job_id: str) -> bool:
+    """Atomically claim a previewed update for applying; False if already claimed.
+
+    Two apply requests racing each other (a double click) would otherwise both
+    pass the preview_ready check and apply — and notify Learn — twice.
+    """
+    try:
+        return bool(
+            _get_sync_redis().set(f"fcs:update-files:{job_id}:apply", "1", nx=True, ex=UPDATE_FILES_TTL)
+        )
+    except Exception:
+        return False
