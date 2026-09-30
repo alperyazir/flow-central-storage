@@ -87,13 +87,15 @@ _UPLOAD_TTL = 3600  # 1 hour
 
 def set_upload_progress(
     job_id: str, progress: int, step: str, detail: str = "", book_id: int | None = None, error: str | None = None,
-    download_url: str | None = None,
+    download_url: str | None = None, result: dict | None = None,
 ) -> None:
     """Update upload progress in Redis."""
     try:
         r = _get_sync_redis()
         data = {"progress": progress, "step": step, "detail": detail, "book_id": book_id, "error": error,
                 "download_url": download_url}
+        if result is not None:
+            data["result"] = result
         r.setex(f"fcs:upload:{job_id}", _UPLOAD_TTL, json.dumps(data, default=str))
     except Exception:
         pass
@@ -218,3 +220,32 @@ def count_received_chunks(upload_id: str) -> int:
         return r.scard(f"fcs:chunked:{upload_id}:chunks")
     except Exception:
         return 0
+
+
+# ---------------------------------------------------------------------------
+# In-place book file updates: an uploaded archive kept between preview and apply
+# ---------------------------------------------------------------------------
+
+UPDATE_FILES_TTL = 3600  # 1 hour, same as the preview's upload progress
+
+
+def set_update_files_job(job_id: str, data: dict) -> None:
+    try:
+        _get_sync_redis().setex(f"fcs:update-files:{job_id}", UPDATE_FILES_TTL, json.dumps(data, default=str))
+    except Exception:
+        pass
+
+
+def get_update_files_job(job_id: str) -> dict | None:
+    try:
+        data = _get_sync_redis().get(f"fcs:update-files:{job_id}")
+        return json.loads(data) if data else None
+    except Exception:
+        return None
+
+
+def delete_update_files_job(job_id: str) -> None:
+    try:
+        _get_sync_redis().delete(f"fcs:update-files:{job_id}")
+    except Exception:
+        pass

@@ -9,6 +9,7 @@ import {
   Loader2,
   Paperclip,
   Plus,
+  RefreshCw,
   Trash2,
 } from 'lucide-react';
 
@@ -46,6 +47,7 @@ import {
 } from 'lib/books';
 import { useAuthStore } from 'stores/auth';
 import ChildBookUploadDialog from 'components/ChildBookUploadDialog';
+import BookFilesUpdateDialog from 'components/BookFilesUpdateDialog';
 import GroupBooksCard from 'components/GroupBooksCard';
 
 const formatBytes = (bytes: number | undefined): string => {
@@ -69,6 +71,7 @@ const BookDetailPage = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
+  const [filesUpdateOpen, setFilesUpdateOpen] = useState(false);
   const [pdfPending, setPdfPending] = useState<number | null>(null);
 
   const [delTarget, setDelTarget] = useState<BookRecord | null>(null);
@@ -229,6 +232,11 @@ const BookDetailPage = () => {
               <Download className="h-4 w-4" /> Open PDF
             </Button>
           )}
+          {book.book_type === 'standard' && (
+            <Button variant="outline" onClick={() => setFilesUpdateOpen(true)}>
+              <RefreshCw className="h-4 w-4" /> Update Files
+            </Button>
+          )}
           <Button
             variant="destructive"
             onClick={() => {
@@ -357,6 +365,17 @@ const BookDetailPage = () => {
           </CardContent>
         </Card>
       ) : null}
+
+      {book.book_type === 'standard' && (
+        <BookFilesUpdateDialog
+          open={filesUpdateOpen}
+          book={book}
+          token={token || ''}
+          tokenType={tt}
+          onClose={() => setFilesUpdateOpen(false)}
+          onUpdated={load}
+        />
+      )}
 
       <ChildBookUploadDialog
         open={uploadOpen}

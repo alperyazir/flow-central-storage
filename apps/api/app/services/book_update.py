@@ -62,6 +62,10 @@ class BookFilesUpdate:
     pruned: list[str] = field(default_factory=list)
     protected_kept: int = 0
     ai_stale: bool = False
+    # config.json at the book root: the archive is the whole book, so pruning
+    # is allowed.
+    full_archive: bool = False
+    config_book_title: str | None = None
     metadata: dict[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
@@ -86,6 +90,8 @@ class BookFilesUpdate:
             "prune_candidates": self.prune_candidates,
             "pruned": self.pruned,
             "ai_stale": self.ai_stale,
+            "full_archive": self.full_archive,
+            "config_book_title": self.config_book_title,
             "metadata": self.metadata,
         }
 
@@ -237,7 +243,9 @@ def update_book_files(
         capture=capture,
     )
 
-    result = BookFilesUpdate(prefix=prefix, dry_run=dry_run, prune=prune, root_folder=root)
+    result = BookFilesUpdate(
+        prefix=prefix, dry_run=dry_run, prune=prune, root_folder=root, full_archive="config.json" in archive_set
+    )
     result.protected_kept = len(stored) - len(content)
     final_sizes = {rel: obj.size for rel, obj in content.items()}
     for item in manifest:
@@ -275,6 +283,8 @@ def update_book_files(
     metadata: dict[str, object] = {"total_size": sum(final_sizes.values())}
     if isinstance(config, dict):
         metadata.update(book_metadata_from_config(config))
+        title = config.get("book_title")
+        result.config_book_title = title if isinstance(title, str) else None
     result.metadata = metadata
 
     logger.info(

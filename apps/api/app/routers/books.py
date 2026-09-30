@@ -1215,6 +1215,47 @@ async def upload_book(
 _UPDATE_FILES_FIELDS = ("activity_count", "activity_details", "book_cover", "total_size")
 
 
+def _update_files_warnings(result, book_name: str, book_title: str | None) -> list[dict[str, str]]:
+    """Things to confirm before applying — mostly "is this the right book?"."""
+    warnings: list[dict[str, str]] = []
+    if result.root_folder and normalize_book_name(result.root_folder) != book_name:
+        warnings.append({
+            "code": "folder_name_mismatch",
+            "message": (
+                f"The archive's folder is '{result.root_folder}' but this book is '{book_name}'. "
+                f"Files are written to '{book_name}' either way; make sure this is the right book."
+            ),
+        })
+    title = result.config_book_title
+    if title and book_title and title.strip() != book_title.strip():
+        warnings.append({
+            "code": "title_mismatch",
+            "message": (
+                f"config.json has the title '{title}' but the book's title is '{book_title}'. "
+                "This update does not change the title."
+            ),
+        })
+    if not result.full_archive:
+        warnings.append({
+            "code": "partial_archive",
+            "message": "No config.json at the book root: partial update. Existing files are kept; pruning is unavailable.",
+        })
+    if result.ai_stale:
+        warnings.append({
+            "code": "ai_stale",
+            "message": "raw/original.pdf changes: the AI data no longer matches the PDF and should be reprocessed.",
+        })
+    if result.replaced_same_name:
+        warnings.append({
+            "code": "replaced_same_name",
+            "message": (
+                f"{len(result.replaced_same_name)} existing file(s) get new content under the same name; "
+                "browsers and the CDN may serve the old version for up to a day."
+            ),
+        })
+    return warnings
+
+
 def run_book_files_update(
     book_id: int,
     archive_path: str,
@@ -1250,6 +1291,7 @@ def run_book_files_update(
         publisher_slug = book.publisher_rel.slug
         before = {name: getattr(book, name) for name in _UPDATE_FILES_FIELDS}
         content_version = book.content_version
+        book_title = book.book_title
 
     settings = get_settings()
     result = update_book_files(
@@ -1294,6 +1336,8 @@ def run_book_files_update(
         {
             "book_id": book_id,
             "book_name": book_name,
+            "book_title": book_title,
+            "warnings": _update_files_warnings(result, book_name, book_title),
             "metadata": {"before": before, "after": after, "changed": sorted(changes)},
             "content_version": content_version,
             "version_bumped": bump_version and not dry_run,
@@ -1356,6 +1400,144 @@ async def update_book_files_endpoint(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     finally:
         os.unlink(tmp_path)
+
+
+def _update_files_staging_dir() -> str:
+    import tempfile
+
+    path = os.path.join(tempfile.gettempdir(), "fcs-update-files")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _sweep_update_files_staging(max_age_seconds: int) -> None:
+    """Drop archives whose preview was never applied or discarded."""
+    import time
+
+    staging = _update_files_staging_dir()
+    cutoff = time.time() - max_age_seconds
+    for name in os.listdir(staging):
+        path = os.path.join(staging, name)
+        try:
+            if os.path.getmtime(path) < cutoff:
+                os.unlink(path)
+        except OSError:
+            pass
+
+
+def _run_update_files_preview(job_id: str, book_id: int, tmp_path: str, cleanup_dir: str | None = None) -> None:
+    """Dry-run an uploaded archive and keep it for a later apply."""
+    import shutil
+
+    from app.services.cache import UPDATE_FILES_TTL, set_update_files_job, set_upload_progress
+
+    _sweep_update_files_staging(2 * UPDATE_FILES_TTL)
+    staged = os.path.join(_update_files_staging_dir(), f"{job_id}.zip")
+    try:
+        shutil.move(tmp_path, staged)
+    finally:
+        if cleanup_dir:
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
+
+    set_upload_progress(job_id, 60, "previewing", "Comparing the archive with the stored book...", book_id=book_id)
+    try:
+        report = run_book_files_update(book_id, staged, dry_run=True)
+    except Exception as exc:  # noqa: BLE001 - surfaced to the UI through the job status
+        logger.warning("[UPDATE-FILES:%s] Preview failed for book %s: %s", job_id, book_id, exc, exc_info=True)
+        if os.path.exists(staged):
+            os.unlink(staged)
+        message = str(exc) if isinstance(exc, (UploadError, LookupError)) else "Preview failed"
+        set_upload_progress(job_id, 0, "error", book_id=book_id, error=message)
+        return
+    set_update_files_job(job_id, {"book_id": book_id, "path": staged})
+    set_upload_progress(job_id, 100, "preview_ready", "Review the changes, then apply", book_id=book_id, result=report)
+
+
+def _run_update_files_apply(job_id: str, book_id: int, staged: str, options: dict) -> None:
+    from app.services.cache import delete_update_files_job, set_upload_progress
+
+    set_upload_progress(job_id, 70, "applying", "Writing files...", book_id=book_id)
+    try:
+        report = run_book_files_update(book_id, staged, dry_run=False, **options)
+    except Exception as exc:  # noqa: BLE001 - surfaced to the UI through the job status
+        logger.error("[UPDATE-FILES:%s] Apply failed for book %s: %s", job_id, book_id, exc, exc_info=True)
+        message = str(exc) if isinstance(exc, (UploadError, LookupError)) else "Update failed"
+        set_upload_progress(job_id, 0, "error", book_id=book_id, error=message)
+        return
+    finally:
+        delete_update_files_job(job_id)
+        if os.path.exists(staged):
+            os.unlink(staged)
+    set_upload_progress(job_id, 100, "completed", "Book files updated", book_id=book_id, result=report)
+
+
+class UpdateFilesApply(BaseModel):
+    prune: bool = False
+    bump_version: bool = False
+    notify: bool = False
+    regenerate_bundles: bool = False
+
+
+def _update_files_job_for(book_id: int, job_id: str) -> dict:
+    from app.services.cache import get_update_files_job
+
+    job = get_update_files_job(job_id)
+    if job is None or job.get("book_id") != book_id or not os.path.exists(job.get("path", "")):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Update preview not found or expired; upload the archive again",
+        )
+    return job
+
+
+@router.post("/{book_id}/update-files/jobs/{job_id}/apply", status_code=status.HTTP_202_ACCEPTED)
+def apply_update_files_job(
+    book_id: int,
+    job_id: str,
+    body: UpdateFilesApply,
+    background_tasks: BackgroundTasks,
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+):
+    """Apply a previewed update (chunked upload with ``update_book_id``).
+
+    Progress and the final report are read from ``/books/upload-status/{job_id}``.
+    """
+    from app.services.cache import get_upload_progress, set_upload_progress
+
+    _require_admin(credentials, db)
+    job = _update_files_job_for(book_id, job_id)
+    progress = get_upload_progress(job_id) or {}
+    if progress.get("step") != "preview_ready":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This update is not waiting to be applied")
+    if body.prune and not (progress.get("result") or {}).get("full_archive"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="prune needs the full book archive, with config.json at the book root",
+        )
+    set_upload_progress(job_id, 65, "applying", "Queued", book_id=book_id)
+    background_tasks.add_task(_run_update_files_apply, job_id, book_id, job["path"], body.model_dump())
+    return {"job_id": job_id, "status": "accepted"}
+
+
+@router.delete("/{book_id}/update-files/jobs/{job_id}")
+def discard_update_files_job(
+    book_id: int,
+    job_id: str,
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+):
+    """Throw away a previewed update without applying it."""
+    from app.services.cache import delete_update_files_job, delete_upload_progress, get_upload_progress
+
+    _require_admin(credentials, db)
+    job = _update_files_job_for(book_id, job_id)
+    if (get_upload_progress(job_id) or {}).get("step") != "preview_ready":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This update is already being applied")
+    os.unlink(job["path"])
+    delete_update_files_job(job_id)
+    delete_upload_progress(job_id)
+    return {"job_id": job_id, "status": "discarded"}
 
 
 @router.post("/{book_id}/content-version/bump")
@@ -1824,6 +2006,10 @@ class ChunkedUploadInit(BaseModel):
     # set, the session uses the target book's publisher/slug/name and
     # `book_type` drives the processing path (ZIP vs raw PDF).
     target_book_id: int | None = None
+    # In-place file update of an existing standard book (see
+    # /books/{id}/update-files). The assembled ZIP is only previewed (dry
+    # run); nothing is written until the job is applied.
+    update_book_id: int | None = None
 
 
 @router.post("/chunked-upload/init")
@@ -1859,6 +2045,21 @@ async def chunked_upload_init(
             )
         target_book_id = target.id
         target_book_type = target.book_type or BookTypeEnum.STANDARD.value
+
+    update_book_id: int | None = None
+    if body.update_book_id is not None:
+        if target_book_id is not None:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, detail="Use either target_book_id or update_book_id, not both"
+            )
+        update_target = _book_repository.get_by_id(db, body.update_book_id)
+        if update_target is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"update_book_id {body.update_book_id} not found")
+        if (update_target.book_type or BookTypeEnum.STANDARD.value) != BookTypeEnum.STANDARD.value:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, detail="Only standard books can have their files updated"
+            )
+        update_book_id = update_target.id
 
     # Filename suffix check depends on target book type (if any)
     name_lower = body.filename.lower()
@@ -1899,6 +2100,7 @@ async def chunked_upload_init(
         "status": "uploading",
         "target_book_id": target_book_id,
         "target_book_type": target_book_type,
+        "update_book_id": update_book_id,
     }
     set_chunked_session(upload_id, session_data)
 
@@ -2056,7 +2258,16 @@ async def chunked_upload_complete(
     # Clean up Redis session (temp dir cleaned by processor)
     delete_chunked_session(upload_id)
 
-    if target_book_id is not None:
+    update_book_id = session_data.get("update_book_id")
+    if update_book_id is not None:
+        background_tasks.add_task(
+            _run_update_files_preview,
+            job_id=job_id,
+            book_id=update_book_id,
+            tmp_path=final_path,
+            cleanup_dir=temp_dir,
+        )
+    elif target_book_id is not None:
         background_tasks.add_task(
             _run_target_book_processing,
             job_id=job_id,

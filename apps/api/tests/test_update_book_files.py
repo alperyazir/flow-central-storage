@@ -388,6 +388,7 @@ def _db_book():
         book_type="standard",
         r2_prefix=PREFIX,
         book_name="Glory_Trio_3",
+        book_title="Glory Trio 3",
         publisher_id=7,
         publisher_rel=SimpleNamespace(slug="edulink"),
         activity_count=1,
@@ -573,3 +574,183 @@ def test_webhook_payload_carries_content_version() -> None:
         id=1, book_name="b", book_title="t", publisher="p", language="en", category="", status="published"
     )
     assert legacy.content_version is None
+
+
+# ---------------------------------------------------------------------------
+# Warnings: is this the right book?
+# ---------------------------------------------------------------------------
+
+
+def _codes(report) -> list[str]:
+    return [w["code"] for w in report["warnings"]]
+
+
+def test_differently_named_archive_still_lands_in_the_book_and_warns(orchestration) -> None:
+    from app.routers.books import run_book_files_update
+
+    config = json.dumps({"book_title": "Glory Trio 3", "pages": [{"image": "./books/Glory 3 Final/images/p1.png"}]})
+    archive = _zip(orchestration.tmp_path, {"Glory 3 Final/config.json": config, "Glory 3 Final/images/p1.png": b"p1"})
+
+    report = run_book_files_update(349, archive, dry_run=False)
+
+    # config.json is rewritten with new content, hence replaced_same_name too
+    assert _codes(report) == ["folder_name_mismatch", "replaced_same_name"]
+    stored = json.loads(orchestration.s3.objects[f"{PREFIX}config.json"])
+    assert stored["pages"][0]["image"] == "./books/Glory_Trio_3/images/p1.png"
+    assert not any("Final" in key for key in orchestration.s3.objects)
+
+
+def test_matching_folder_spelled_differently_does_not_warn(orchestration) -> None:
+    from app.routers.books import run_book_files_update
+
+    archive = _zip(orchestration.tmp_path, {"Glory Trio 3/config.json": _config()})
+
+    assert "folder_name_mismatch" not in _codes(run_book_files_update(349, archive, dry_run=True))
+
+
+def test_title_mismatch_and_partial_archive_warn(orchestration) -> None:
+    from app.routers.books import run_book_files_update
+
+    orchestration.book.book_title = "Glory Trio 4"
+    archive = _zip(orchestration.tmp_path, {"Glory_Trio_3/games.json": "{}"})
+
+    report = run_book_files_update(349, archive, dry_run=True)
+
+    assert _codes(report) == ["title_mismatch", "partial_archive"]
+    assert report["full_archive"] is False
+
+
+# ---------------------------------------------------------------------------
+# Chunked preview -> apply / discard
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def jobs(tmp_path):
+    """In-memory stand-ins for the Redis job + progress keys."""
+    progress: dict[str, dict] = {}
+    staged: dict[str, dict] = {}
+
+    def set_progress(job_id, pct, step, detail="", book_id=None, error=None, download_url=None, result=None):
+        progress[job_id] = {"progress": pct, "step": step, "error": error, "result": result, "book_id": book_id}
+
+    with (
+        patch("app.services.cache.set_upload_progress", set_progress),
+        patch("app.services.cache.get_upload_progress", lambda j: progress.get(j)),
+        patch("app.services.cache.delete_upload_progress", lambda j: progress.pop(j, None)),
+        patch("app.services.cache.set_update_files_job", lambda j, d: staged.__setitem__(j, d)),
+        patch("app.services.cache.get_update_files_job", lambda j: staged.get(j)),
+        patch("app.services.cache.delete_update_files_job", lambda j: staged.pop(j, None)),
+        patch("app.routers.books._update_files_staging_dir", return_value=str(tmp_path)),
+    ):
+        yield SimpleNamespace(progress=progress, staged=staged, dir=tmp_path)
+
+
+def test_preview_keeps_the_archive_and_publishes_the_report(jobs) -> None:
+    from app.routers.books import _run_update_files_preview
+
+    src = jobs.dir / "upload"
+    src.mkdir()
+    archive = _zip(src, {"x": "y"}, name="final.zip")
+    with patch("app.routers.books.run_book_files_update", return_value={"full_archive": True}) as run:
+        _run_update_files_preview("job1", 349, archive, cleanup_dir=str(src))
+
+    assert run.call_args.kwargs == {"dry_run": True}
+    assert jobs.progress["job1"]["step"] == "preview_ready"
+    assert jobs.progress["job1"]["result"] == {"full_archive": True}
+    assert jobs.staged["job1"]["book_id"] == 349
+    assert (jobs.dir / "job1.zip").exists()
+    assert not src.exists()
+
+
+def test_preview_error_is_reported_and_archive_dropped(jobs) -> None:
+    from app.routers.books import _run_update_files_preview
+
+    archive = _zip(jobs.dir, {"x": "y"}, name="final.zip")
+    with patch("app.routers.books.run_book_files_update", side_effect=UploadError("bad path")):
+        _run_update_files_preview("job2", 349, archive)
+
+    assert jobs.progress["job2"]["step"] == "error"
+    assert jobs.progress["job2"]["error"] == "bad path"
+    assert "job2" not in jobs.staged
+    assert not (jobs.dir / "job2.zip").exists()
+
+
+def test_apply_runs_for_real_and_cleans_up(jobs) -> None:
+    from app.routers.books import _run_update_files_apply
+
+    staged = _zip(jobs.dir, {"x": "y"}, name="job3.zip")
+    jobs.staged["job3"] = {"book_id": 349, "path": staged}
+    options = {"prune": False, "bump_version": True, "notify": True, "regenerate_bundles": False}
+    with patch("app.routers.books.run_book_files_update", return_value={"ok": 1}) as run:
+        _run_update_files_apply("job3", 349, staged, options)
+
+    assert run.call_args.kwargs == {"dry_run": False, **options}
+    assert jobs.progress["job3"]["step"] == "completed"
+    assert "job3" not in jobs.staged
+    assert not (jobs.dir / "job3.zip").exists()
+
+
+def _preview_ready(jobs, job_id: str, full_archive: bool = True) -> None:
+    path = _zip(jobs.dir, {"x": "y"}, name=f"{job_id}.zip")
+    jobs.staged[job_id] = {"book_id": 349, "path": path}
+    jobs.progress[job_id] = {"step": "preview_ready", "result": {"full_archive": full_archive}}
+
+
+@patch("app.routers.books._run_update_files_apply")
+@patch("app.routers.books._require_admin", return_value=1)
+def test_apply_endpoint(_auth, runner, jobs, fake_db) -> None:
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer x"}
+    _preview_ready(jobs, "j1")
+
+    response = client.post("/books/349/update-files/jobs/j1/apply", json={"notify": True, "bump_version": True}, headers=headers)
+
+    assert response.status_code == 202
+    job_id, book_id, _path, options = runner.call_args.args
+    assert (job_id, book_id) == ("j1", 349)
+    assert options == {"prune": False, "bump_version": True, "notify": True, "regenerate_bundles": False}
+    # Now applying: a second apply or a discard is refused.
+    assert client.post("/books/349/update-files/jobs/j1/apply", json={}, headers=headers).status_code == 409
+    assert client.delete("/books/349/update-files/jobs/j1", headers=headers).status_code == 409
+
+
+@patch("app.routers.books._require_admin", return_value=1)
+def test_apply_endpoint_guards(_auth, jobs, fake_db) -> None:
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer x"}
+    _preview_ready(jobs, "j2", full_archive=False)
+
+    # Another book's job, unknown job, prune on a partial archive
+    assert client.post("/books/350/update-files/jobs/j2/apply", json={}, headers=headers).status_code == 404
+    assert client.post("/books/349/update-files/jobs/nope/apply", json={}, headers=headers).status_code == 404
+    assert client.post("/books/349/update-files/jobs/j2/apply", json={"prune": True}, headers=headers).status_code == 400
+
+
+@patch("app.routers.books._require_admin", return_value=1)
+def test_discard_endpoint(_auth, jobs, fake_db) -> None:
+    client = TestClient(app)
+    _preview_ready(jobs, "j3")
+
+    response = client.delete("/books/349/update-files/jobs/j3", headers={"Authorization": "Bearer x"})
+
+    assert response.status_code == 200
+    assert "j3" not in jobs.staged and "j3" not in jobs.progress
+    assert not (jobs.dir / "j3.zip").exists()
+
+
+@patch("app.services.cache.set_chunked_session")
+@patch("app.routers.books._book_repository")
+@patch("app.routers.books._require_admin", return_value=1)
+def test_chunked_init_accepts_update_book_id_for_standard_books_only(_auth, repo, set_session, fake_db) -> None:
+    client = TestClient(app)
+    body = {"filename": "Glory_Trio_3.zip", "total_size": 10, "chunk_size": 10, "total_chunks": 1, "update_book_id": 349}
+
+    repo.get_by_id.return_value = _db_book()
+    assert client.post("/books/chunked-upload/init", json=body, headers={"Authorization": "Bearer x"}).status_code == 200
+    assert set_session.call_args.args[1]["update_book_id"] == 349
+
+    pdf_book = _db_book()
+    pdf_book.book_type = "pdf"
+    repo.get_by_id.return_value = pdf_book
+    assert client.post("/books/chunked-upload/init", json=body, headers={"Authorization": "Bearer x"}).status_code == 400

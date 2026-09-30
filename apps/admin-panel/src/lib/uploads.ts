@@ -727,3 +727,242 @@ export const uploadBulkBookArchives = async (
     }
   );
 };
+
+// ---------------------------------------------------------------------------
+// In-place book file updates (POST /books/{id}/update-files, chunked)
+// ---------------------------------------------------------------------------
+
+export interface BookFilesUpdateWarning {
+  code: string;
+  message: string;
+}
+
+export interface BookFilesUpdateMetadata {
+  activity_count?: number;
+  activity_details?: Record<string, number>;
+  book_cover?: string | null;
+  total_size?: number;
+}
+
+export interface BookFilesUpdateReport {
+  book_id: number;
+  book_name: string;
+  book_title: string | null;
+  dry_run: boolean;
+  prune: boolean;
+  root_folder: string | null;
+  full_archive: boolean;
+  config_book_title: string | null;
+  counts: {
+    written: number;
+    unchanged: number;
+    renamed: number;
+    replaced_same_name: number;
+    prune_candidates: number;
+    pruned: number;
+    protected_kept: number;
+  };
+  written: string[];
+  unchanged: string[];
+  renamed: { from: string; to: string }[];
+  replaced_same_name: string[];
+  prune_candidates: string[];
+  pruned: string[];
+  ai_stale: boolean;
+  warnings: BookFilesUpdateWarning[];
+  metadata: {
+    before: BookFilesUpdateMetadata;
+    after: BookFilesUpdateMetadata;
+    changed: string[];
+  };
+  content_version: number;
+  version_bumped: boolean;
+  notified: boolean;
+  bundles_regenerating: boolean;
+}
+
+export interface BookFilesUpdateProgress extends UploadProgress {
+  result?: BookFilesUpdateReport;
+}
+
+export interface BookFilesUpdateOptions {
+  prune: boolean;
+  bump_version: boolean;
+  notify: boolean;
+  regenerate_bundles: boolean;
+}
+
+const authHeaderFor = (token: string, tokenType: string) =>
+  `${tokenType === 'bearer' ? 'Bearer' : tokenType} ${token}`;
+
+const readError = async (resp: Response, fallback: string) => {
+  const text = await resp.text();
+  try {
+    const parsed = JSON.parse(text);
+    if (typeof parsed.detail === 'string') return parsed.detail;
+  } catch {
+    /* not JSON */
+  }
+  return text || fallback;
+};
+
+/** Poll /upload-status until one of `doneSteps` (resolve) or `error` (reject). */
+const pollBookFilesUpdate = (
+  jobId: string,
+  authHeader: string,
+  doneSteps: string[],
+  onProgress: (p: BookFilesUpdateProgress) => void,
+  signal: { aborted: boolean },
+  apiBaseUrl: string
+): Promise<BookFilesUpdateProgress> =>
+  new Promise((resolve, reject) => {
+    const timer = setInterval(async () => {
+      if (signal.aborted) {
+        clearInterval(timer);
+        reject(new Error('Upload aborted'));
+        return;
+      }
+      try {
+        const resp = await fetch(`${apiBaseUrl}/books/upload-status/${jobId}`, {
+          headers: { Authorization: authHeader },
+        });
+        if (!resp.ok) return;
+        const s: BookFilesUpdateProgress = await resp.json();
+        onProgress(s);
+        if (doneSteps.includes(s.step)) {
+          clearInterval(timer);
+          resolve(s);
+        } else if (s.step === 'error') {
+          clearInterval(timer);
+          reject(new Error(s.error || 'Update failed'));
+        }
+      } catch {
+        /* retry next interval */
+      }
+    }, 1000);
+  });
+
+/**
+ * Upload an archive for an in-place update of an existing book and wait for
+ * the server's dry run. Nothing is written to the book until
+ * `applyBookFilesUpdate` is called with the returned job id.
+ */
+export const previewBookFilesUpdate = (
+  file: File,
+  bookId: number,
+  token: string,
+  tokenType: string = 'Bearer',
+  onProgress: (p: BookFilesUpdateProgress) => void,
+  apiBaseUrl: string = ''
+): {
+  promise: Promise<{ jobId: string; report: BookFilesUpdateReport }>;
+  abort: () => void;
+} => {
+  const signal = { aborted: false };
+  const authHeader = authHeaderFor(token, tokenType);
+  const chunkSize = DEFAULT_CHUNK_SIZE;
+  const totalChunks = Math.ceil(file.size / chunkSize);
+
+  const promise = (async () => {
+    onProgress({ progress: 0, step: 'initializing', detail: 'Starting upload...', book_id: bookId, error: null });
+
+    const initResp = await fetch(`${apiBaseUrl}/books/chunked-upload/init`, {
+      method: 'POST',
+      headers: { Authorization: authHeader, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        filename: file.name,
+        total_size: file.size,
+        chunk_size: chunkSize,
+        total_chunks: totalChunks,
+        update_book_id: bookId,
+      }),
+    });
+    if (!initResp.ok) throw new Error(await readError(initResp, 'Failed to initialize upload'));
+    const { upload_id } = await initResp.json();
+
+    const chunkUrl = `${apiBaseUrl}/books/chunked-upload/${upload_id}/chunk`;
+    for (let i = 0; i < totalChunks; i++) {
+      if (signal.aborted) throw new Error('Upload aborted');
+      const start = i * chunkSize;
+      const blob = file.slice(start, Math.min(start + chunkSize, file.size));
+      await uploadSingleChunk(
+        chunkUrl,
+        authHeader,
+        i,
+        blob,
+        (e: ProgressEvent) => {
+          if (!e.lengthComputable || signal.aborted) return;
+          const done = (i + e.loaded / e.total) / totalChunks;
+          onProgress({
+            progress: Math.round(done * 50),
+            step: 'uploading',
+            detail: `${Math.round((start + e.loaded) / 1024 / 1024)}MB / ${Math.round(file.size / 1024 / 1024)}MB`,
+            book_id: bookId,
+            error: null,
+          });
+        },
+        signal
+      );
+    }
+    if (signal.aborted) throw new Error('Upload aborted');
+
+    onProgress({ progress: 50, step: 'assembling', detail: 'Server reassembling file...', book_id: bookId, error: null });
+    const completeResp = await fetch(`${apiBaseUrl}/books/chunked-upload/${upload_id}/complete`, {
+      method: 'POST',
+      headers: { Authorization: authHeader },
+    });
+    if (!completeResp.ok) throw new Error(await readError(completeResp, 'Failed to complete upload'));
+    const { job_id } = await completeResp.json();
+
+    const final = await pollBookFilesUpdate(job_id, authHeader, ['preview_ready'], onProgress, signal, apiBaseUrl);
+    if (!final.result) throw new Error('The server returned no preview');
+    return { jobId: job_id as string, report: final.result };
+  })();
+
+  return {
+    promise,
+    abort: () => {
+      signal.aborted = true;
+    },
+  };
+};
+
+/** Apply a previewed update and wait for the final report. */
+export const applyBookFilesUpdate = async (
+  bookId: number,
+  jobId: string,
+  options: BookFilesUpdateOptions,
+  token: string,
+  tokenType: string = 'Bearer',
+  onProgress: (p: BookFilesUpdateProgress) => void = () => {},
+  apiBaseUrl: string = ''
+): Promise<BookFilesUpdateReport> => {
+  const authHeader = authHeaderFor(token, tokenType);
+  const resp = await fetch(`${apiBaseUrl}/books/${bookId}/update-files/jobs/${jobId}/apply`, {
+    method: 'POST',
+    headers: { Authorization: authHeader, 'Content-Type': 'application/json' },
+    body: JSON.stringify(options),
+  });
+  if (!resp.ok) throw new Error(await readError(resp, 'Failed to apply the update'));
+  const final = await pollBookFilesUpdate(jobId, authHeader, ['completed'], onProgress, { aborted: false }, apiBaseUrl);
+  if (!final.result) throw new Error('The server returned no report');
+  return final.result;
+};
+
+/** Throw away a previewed update. Best-effort: the server also expires it. */
+export const discardBookFilesUpdate = async (
+  bookId: number,
+  jobId: string,
+  token: string,
+  tokenType: string = 'Bearer',
+  apiBaseUrl: string = ''
+): Promise<void> => {
+  try {
+    await fetch(`${apiBaseUrl}/books/${bookId}/update-files/jobs/${jobId}`, {
+      method: 'DELETE',
+      headers: { Authorization: authHeaderFor(token, tokenType) },
+    });
+  } catch {
+    /* expires on its own */
+  }
+};
