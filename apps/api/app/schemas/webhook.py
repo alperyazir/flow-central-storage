@@ -88,6 +88,9 @@ class WebhookEventBookData(BaseModel):
     language: str
     category: str | None
     status: str
+    # Bumped every time the book's content is rewritten; consumers can skip a
+    # re-import when it has not moved. Optional for older payloads.
+    content_version: int | None = None
 
 
 class WebhookEventPublisherData(BaseModel):

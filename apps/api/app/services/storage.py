@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import hashlib
 import io
 import logging
 import os
@@ -178,17 +179,24 @@ def _is_unwanted_raw_pdf(path: str) -> bool:
     return name.endswith(".pdf") and name not in _RAW_ALLOWED_PDFS
 
 
-def _archive_json_references(archive: zipfile.ZipFile) -> tuple[set[str], str] | None:
+def _archive_json_references(
+    archive: zipfile.ZipFile, extra_documents: Iterable[object] = ()
+) -> tuple[set[str], str] | None:
     """Every string value in the book's JSON files, for the image check.
 
     Returns (explicit book-relative paths, one lowercased blob of all strings),
     or None when a JSON cannot be read, or the archive carries none at all — in
     which case nothing is known about what is referenced and no image may be
     dropped.
+
+    ``extra_documents`` are already-parsed JSON documents that live outside the
+    archive — the stored config.json of a book whose partial update does not
+    carry one — so images only they reference are not dropped.
     """
     paths: set[str] = set()
     blob: list[str] = []
     seen_json = False
+    documents: list[object] = list(extra_documents)
     for entry in archive.infolist():
         if entry.is_dir():
             continue
@@ -200,10 +208,14 @@ def _archive_json_references(archive: zipfile.ZipFile) -> tuple[set[str], str] |
             continue
         seen_json = True
         try:
-            document = json.loads(archive.read(entry).decode("utf-8"))
+            documents.append(json.loads(archive.read(entry).decode("utf-8")))
         except (OSError, ValueError, KeyError) as exc:
             logger.warning("Upload: could not read %s, keeping every image: %s", entry.filename, exc)
             return None
+    if not seen_json:
+        # No config to check against, so every image has to be assumed used.
+        return None
+    for document in documents:
         stack = [document]
         while stack:
             node = stack.pop()
@@ -217,9 +229,6 @@ def _archive_json_references(archive: zipfile.ZipFile) -> tuple[set[str], str] |
                     remainder = node[len(_BOOKS_PREFIX) :].split("/", 1)
                     if len(remainder) == 2:
                         paths.add(remainder[1].casefold())
-    if not seen_json:
-        # No config to check against, so every image has to be assumed used.
-        return None
     return paths, "\n".join(blob).casefold()
 
 
@@ -244,7 +253,11 @@ def _is_unreferenced_image(path: str, references: tuple[set[str], str] | None) -
     return not re.search(r"(?<![a-z0-9])" + re.escape(stem) + r"(?![a-z0-9])", blob)
 
 
-def iter_zip_entries(archive: zipfile.ZipFile, strip_root: str | None = None) -> Iterable[tuple[zipfile.ZipInfo, str]]:
+def iter_zip_entries(
+    archive: zipfile.ZipFile,
+    strip_root: str | None = None,
+    extra_json_documents: Iterable[object] = (),
+) -> Iterable[tuple[zipfile.ZipInfo, str]]:
     """Yield file entries from archive with optionally stripped paths.
 
     Returns tuples of (entry, final_path) where final_path has the root folder stripped if specified.
@@ -253,7 +266,7 @@ def iter_zip_entries(archive: zipfile.ZipFile, strip_root: str | None = None) ->
     total_size = 0
     # Read once up front: the image rule needs every JSON in the archive, and
     # the entries themselves stream past only once.
-    references = _archive_json_references(archive)
+    references = _archive_json_references(archive, extra_json_documents)
     skipped_images = 0
     skipped_image_bytes = 0
 
@@ -598,6 +611,11 @@ def upload_book_archive(
     on_progress: Callable[[int, int], None] | None = None,
     book_name: str | None = None,
     local_cache_dir: str | None = None,
+    extra_known_paths: Iterable[str] = (),
+    extra_json_documents: Iterable[object] = (),
+    existing_etags: dict[str, str] | None = None,
+    dry_run: bool = False,
+    capture: dict[str, bytes | None] | None = None,
 ) -> list[dict[str, object]]:
     """Upload a ZIP archive into S3 under the given prefix.
 
@@ -606,8 +624,21 @@ def upload_book_archive(
 
     Args:
         on_progress: Optional callback(uploaded_count, total_count) called after each file.
+        extra_known_paths: Relative paths already in storage that the archive
+            does not carry. Config references to them still resolve, so a
+            partial archive does not break links to files it leaves alone.
+        extra_json_documents: Parsed JSON documents kept in storage (see
+            ``iter_zip_entries``) that still reference images.
+        existing_etags: ``{object_key: etag}`` of what is stored now. A file
+            whose final bytes hash to the stored MD5 etag is not re-sent and is
+            reported as ``unchanged``.
+        dry_run: Work out every write but perform none.
+        capture: Relative paths whose final (post-rewrite) bytes the caller
+            wants back; filled in place.
 
-    Returns a manifest of uploaded file paths and sizes.
+    Returns a manifest of file paths and sizes. Each entry also carries
+    ``action`` (``written`` / ``unchanged`` / ``would_write``), ``stored_size``
+    (bytes after JSON rewrites) and, for renamed files, ``source``.
     """
 
     try:
@@ -627,7 +658,9 @@ def upload_book_archive(
             root_to_strip = _detect_root_folder(archive)
 
         # Count total files for progress
-        entries = list(iter_zip_entries(archive, strip_root=root_to_strip))
+        entries = list(
+            iter_zip_entries(archive, strip_root=root_to_strip, extra_json_documents=extra_json_documents)
+        )
         total_files = len(entries)
 
         # Build rename map for filename normalization
@@ -638,6 +671,7 @@ def upload_book_archive(
         # Relative paths of every file actually uploaded — used to reconcile
         # config.json references against the real on-disk spelling.
         known_paths = [rename_map.get(fp, fp) for _entry, fp in entries]
+        known_paths.extend(extra_known_paths)
 
         manifest: list[dict[str, object]] = []
         for idx, (entry, final_path) in enumerate(entries):
@@ -665,24 +699,43 @@ def upload_book_archive(
                     except Exception as exc:
                         logger.warning("Failed to update %s paths: %s", os.path.basename(final_path), exc)
 
-                stream = io.BytesIO(data)
-                client.put_object(
-                    bucket,
-                    file_path,
-                    stream,
-                    length=len(data),
-                    content_type=content_type or "application/octet-stream",
-                )
+                if capture is not None and upload_path in capture:
+                    capture[upload_path] = data
+
+                stored_size = len(data)
+                stored_etag = (existing_etags or {}).get(file_path)
+                if stored_etag is not None and stored_etag == hashlib.md5(data).hexdigest():
+                    action = "unchanged"
+                elif dry_run:
+                    action = "would_write"
+                else:
+                    action = "written"
+                    stream = io.BytesIO(data)
+                    client.put_object(
+                        bucket,
+                        file_path,
+                        stream,
+                        length=len(data),
+                        content_type=content_type or "application/octet-stream",
+                    )
 
                 # Write to local cache alongside R2 upload
-                if local_cache_dir:
+                if local_cache_dir and not dry_run:
                     cache_file = os.path.join(local_cache_dir, upload_path)
                     os.makedirs(os.path.dirname(cache_file), exist_ok=True)
                     with open(cache_file, "wb") as f:
                         f.write(data)
 
                 del data
-            manifest.append({"path": file_path, "size": entry.file_size})
+            item: dict[str, object] = {
+                "path": file_path,
+                "size": entry.file_size,
+                "stored_size": stored_size,
+                "action": action,
+            }
+            if upload_path != final_path:
+                item["source"] = final_path
+            manifest.append(item)
             if on_progress:
                 on_progress(idx + 1, total_files)
     finally:

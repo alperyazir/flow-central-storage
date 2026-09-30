@@ -110,6 +110,7 @@ class WebhookService:
             language=book.language,
             category=book.category or "",
             status=book.status.value,
+            content_version=book.content_version if isinstance(book.content_version, int) else None,
         )
 
         webhook_payload = WebhookEventPayload(event=event_type, timestamp=datetime.now(timezone.utc), data=event_data)

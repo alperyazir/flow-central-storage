@@ -8,7 +8,7 @@ import json
 import logging
 import os
 import zipfile
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile, status
@@ -1208,6 +1208,179 @@ async def upload_book(
         return {"book_id": book_id, "files": manifest}
     finally:
         os.unlink(tmp_path)
+
+
+# DB fields an in-place update may recompute. status, ai_* and book_name are
+# never touched by it.
+_UPDATE_FILES_FIELDS = ("activity_count", "activity_details", "book_cover", "total_size")
+
+
+def run_book_files_update(
+    book_id: int,
+    archive_path: str,
+    *,
+    prune: bool = False,
+    dry_run: bool = True,
+    bump_version: bool = False,
+    notify: bool = False,
+    regenerate_bundles: bool = False,
+    schedule: Callable[..., None] | None = None,
+) -> dict[str, object]:
+    """Update a book's files in place and refresh what the DB derives from them.
+
+    Shared by ``POST /books/{id}/update-files`` and the
+    ``app.scripts.update_book_files`` CLI. ``schedule(fn, **kwargs)`` runs the
+    follow-ups (webhook, bundles); the endpoint hands it to BackgroundTasks,
+    the CLI runs them inline.
+    """
+    from app.services.book_update import update_book_files
+
+    run = schedule or (lambda fn, **kwargs: fn(**kwargs))
+
+    with SessionLocal() as session:
+        book = _book_repository.get_by_id(session, book_id)
+        if book is None:
+            raise LookupError(f"Book {book_id} not found")
+        book_type = book.book_type or BookTypeEnum.STANDARD.value
+        if book_type != BookTypeEnum.STANDARD.value:
+            raise UploadError(f"Book {book_id} is a {book_type} book; update-files handles standard books only")
+        prefix = book.r2_prefix
+        book_name = book.book_name
+        publisher_id = book.publisher_id
+        publisher_slug = book.publisher_rel.slug
+        before = {name: getattr(book, name) for name in _UPDATE_FILES_FIELDS}
+        content_version = book.content_version
+
+    settings = get_settings()
+    result = update_book_files(
+        client=get_minio_client(settings),
+        bucket=settings.minio_publishers_bucket,
+        prefix=prefix,
+        book_name=book_name,
+        archive_path=archive_path,
+        prune=prune,
+        dry_run=dry_run,
+    )
+
+    after = {name: result.metadata[name] for name in _UPDATE_FILES_FIELDS if name in result.metadata}
+    changes = {name: value for name, value in after.items() if before.get(name) != value}
+
+    if not dry_run:
+        if changes:
+            with SessionLocal() as session:
+                db_book = _book_repository.get_by_id(session, book_id)
+                if db_book is not None:
+                    _book_repository.update(session, db_book, data=changes)
+        if bump_version:
+            _bump_content_version(book_id)
+        _invalidate_book_cache()
+        with SessionLocal() as session:
+            db_book = _book_repository.get_by_id(session, book_id)
+            content_version = db_book.content_version if db_book is not None else content_version
+        if notify:
+            run(_trigger_webhook, book_id=book_id, event_type=WebhookEventType.BOOK_UPDATED)
+        if regenerate_bundles:
+            run(
+                _trigger_auto_bundles,
+                book_id=book_id,
+                publisher_id=publisher_id,
+                publisher_slug=publisher_slug,
+                book_name=book_name,
+                book_type=book_type,
+            )
+
+    report = result.to_dict()
+    report.update(
+        {
+            "book_id": book_id,
+            "book_name": book_name,
+            "metadata": {"before": before, "after": after, "changed": sorted(changes)},
+            "content_version": content_version,
+            "version_bumped": bump_version and not dry_run,
+            "notified": notify and not dry_run,
+            "bundles_regenerating": regenerate_bundles and not dry_run,
+        }
+    )
+    return report
+
+
+@router.post("/{book_id}/update-files")
+async def update_book_files_endpoint(
+    book_id: int,
+    file: UploadFile,
+    background_tasks: BackgroundTasks,
+    prune: bool = Query(False, description="Delete stored files the archive no longer has (needs a full book archive)"),
+    dry_run: bool = Query(True, description="Report what would change without writing anything"),
+    bump_version: bool = Query(False, description="Bump content_version after writing"),
+    notify: bool = Query(False, description="Fire book.updated after writing"),
+    regenerate_bundles: bool = Query(False, description="Rebuild the standalone app bundles"),
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+):
+    """Update a published book's files without losing its AI output.
+
+    Unlike ``/books/{id}/upload`` nothing is cleared first: the archive's files
+    are written over the book (unchanged ones skipped by etag) and
+    ``ai-data/``, ``ai-content/`` and ``additional-resources/`` are never
+    written or deleted. Defaults are safe: a dry run, no pruning, no version
+    bump, no webhook, no AI processing. ``ai_stale`` in the response says
+    whether raw/original.pdf changed, i.e. whether AI data should be redone.
+    """
+    import tempfile
+
+    _require_admin(credentials, db)
+    if _book_repository.get_by_id(db, book_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+    db.commit()  # Release the connection before the long S3 work
+
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+        tmp_path = tmp.name
+        while chunk := await file.read(1024 * 1024):
+            tmp.write(chunk)
+
+    try:
+        return await asyncio.to_thread(
+            run_book_files_update,
+            book_id,
+            tmp_path,
+            prune=prune,
+            dry_run=dry_run,
+            bump_version=bump_version,
+            notify=notify,
+            regenerate_bundles=regenerate_bundles,
+            schedule=background_tasks.add_task,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except UploadError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    finally:
+        os.unlink(tmp_path)
+
+
+@router.post("/{book_id}/content-version/bump")
+def bump_book_content_version(
+    book_id: int,
+    background_tasks: BackgroundTasks,
+    notify: bool = Query(False, description="Fire book.updated after the bump"),
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+):
+    """Bump a book's content_version (and optionally fire book.updated) on its own.
+
+    For books whose files were updated earlier without a bump, once consumers
+    are ready to pick the change up.
+    """
+    _require_admin(credentials, db)
+    if _book_repository.get_by_id(db, book_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+    _book_repository.bump_content_version(db, book_id)
+    book = _book_repository.get_by_id(db, book_id)
+    db.refresh(book)
+    _invalidate_book_cache()
+    if notify:
+        background_tasks.add_task(_trigger_webhook, book_id, WebhookEventType.BOOK_UPDATED)
+    return {"book_id": book_id, "content_version": book.content_version, "notified": notify}
 
 
 @router.get("/upload-status/{job_id}")
