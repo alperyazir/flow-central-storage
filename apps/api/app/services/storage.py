@@ -599,6 +599,42 @@ def _update_config_paths(
     return json.dumps(updated, ensure_ascii=False, indent=4).encode("utf-8")
 
 
+_MIB = 1024 * 1024
+# Part sizes tried against a multipart etag, most likely first. R2 objects
+# written by the minio client and rclone use 5 MiB parts; the rest are common
+# defaults of other S3 tools.
+_MULTIPART_PART_SIZES = tuple(n * _MIB for n in (5, 8, 16, 10, 15, 32, 64, 100, 128))
+
+
+def etag_matches(data: bytes, etag: str) -> bool:
+    """Whether ``data`` is the object whose S3 etag is ``etag``.
+
+    A single-part etag is the MD5 of the content. A multipart one
+    (``<hex>-<N>``) is the MD5 of the concatenated per-part MD5 digests; the
+    part size is not stored, so every candidate size that yields N parts is
+    tried. No match means "changed" — the safe answer.
+    """
+    etag = etag.strip('"').lower()
+    if "-" not in etag:
+        return hashlib.md5(data).hexdigest() == etag
+    digest, _, count = etag.partition("-")
+    try:
+        parts = int(count)
+    except ValueError:
+        return False
+    size = len(data)
+    view = memoryview(data)
+    for part_size in _MULTIPART_PART_SIZES:
+        if max(1, -(-size // part_size)) != parts:
+            continue
+        combined = b"".join(
+            hashlib.md5(view[i : i + part_size]).digest() for i in range(0, max(size, 1), part_size)
+        )
+        if hashlib.md5(combined).hexdigest() == digest:
+            return True
+    return False
+
+
 def upload_book_archive(
     *,
     client: Minio,
@@ -704,7 +740,7 @@ def upload_book_archive(
 
                 stored_size = len(data)
                 stored_etag = (existing_etags or {}).get(file_path)
-                if stored_etag is not None and stored_etag == hashlib.md5(data).hexdigest():
+                if stored_etag is not None and etag_matches(data, stored_etag):
                     action = "unchanged"
                 elif dry_run:
                     action = "would_write"

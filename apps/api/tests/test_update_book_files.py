@@ -50,17 +50,29 @@ class _Response:
         pass
 
 
+def _multipart_etag(data: bytes, part_size: int) -> str:
+    digests = [hashlib.md5(data[i : i + part_size]).digest() for i in range(0, len(data), part_size)]
+    return f"{hashlib.md5(b''.join(digests)).hexdigest()}-{len(digests)}"
+
+
 class FakeS3:
     """Just enough of the Minio client for the update path."""
 
-    def __init__(self, objects: dict[str, bytes]) -> None:
+    def __init__(self, objects: dict[str, bytes], multipart: dict[str, int] | None = None) -> None:
         self.objects = dict(objects)
+        # key -> part size, for objects stored by a multipart upload
+        self.multipart = dict(multipart or {})
         self.puts: list[str] = []
         self.removes: list[str] = []
 
+    def _etag(self, key: str, data: bytes) -> str:
+        if key in self.multipart:
+            return _multipart_etag(data, self.multipart[key])
+        return hashlib.md5(data).hexdigest()
+
     def list_objects(self, bucket, prefix="", recursive=False):
         return [
-            _Obj(key, f'"{hashlib.md5(data).hexdigest()}"', len(data))
+            _Obj(key, f'"{self._etag(key, data)}"', len(data))
             for key, data in sorted(self.objects.items())
             if key.startswith(prefix)
         ]
@@ -70,6 +82,7 @@ class FakeS3:
 
     def put_object(self, bucket, key, stream, length, content_type=None):
         self.objects[key] = stream.read()
+        self.multipart.pop(key, None)
         self.puts.append(key)
 
     def remove_object(self, bucket, key):
@@ -310,6 +323,58 @@ class TestAiStaleAndMetadata:
 
         content = sum(len(v) for k, v in _stored_book().items() if k not in _protected(s3))
         assert result.metadata["total_size"] == content + 2
+
+
+MIB = 1024 * 1024
+
+
+class TestMultipartEtags:
+    """Large objects on R2 carry multipart etags (5 MiB parts); identical bytes must still match."""
+
+    def test_identical_multipart_pdf_is_unchanged_and_not_stale(self, tmp_path) -> None:
+        pdf = bytes(range(256)) * (48 * 1024)  # 12 MiB -> 3 parts
+        objects = _stored_book()
+        objects[f"{PREFIX}raw/original.pdf"] = pdf
+        s3 = FakeS3(objects, multipart={f"{PREFIX}raw/original.pdf": 5 * MIB})
+        archive = _zip(tmp_path, {"Glory_Trio_3/raw/original.pdf": pdf, "Glory_Trio_3/games.json": "{}"})
+
+        result = _run(s3, archive, dry_run=False)
+
+        assert "raw/original.pdf" in result.unchanged
+        assert result.ai_stale is False
+        assert s3.puts == [f"{PREFIX}games.json"]
+
+    def test_changed_multipart_pdf_is_rewritten_and_reported(self, tmp_path) -> None:
+        pdf = b"a" * (12 * MIB)
+        objects = _stored_book()
+        objects[f"{PREFIX}raw/original.pdf"] = pdf
+        s3 = FakeS3(objects, multipart={f"{PREFIX}raw/original.pdf": 5 * MIB})
+        archive = _zip(tmp_path, {"Glory_Trio_3/raw/original.pdf": pdf[:-1] + b"b"})
+
+        result = _run(s3, archive, dry_run=True)
+
+        assert result.written == ["raw/original.pdf"]
+        assert result.replaced_same_name == ["raw/original.pdf"]
+        assert result.ai_stale is True
+
+    def test_other_part_sizes_are_recognised(self) -> None:
+        from app.services.storage import etag_matches
+
+        data = b"x" * (20 * MIB + 3)
+        assert etag_matches(data, _multipart_etag(data, 8 * MIB))
+        assert etag_matches(data, f'"{_multipart_etag(data, 5 * MIB)}"')
+        assert not etag_matches(data + b"!", _multipart_etag(data, 5 * MIB))
+        assert not etag_matches(data, "0" * 32 + "-5")
+        assert etag_matches(b"small", hashlib.md5(b"small").hexdigest())
+
+
+def test_new_files_are_not_reported_as_replaced(tmp_path) -> None:
+    s3 = FakeS3(_stored_book())
+    archive = _zip(tmp_path, {"Glory_Trio_3/games.json": "{}", "Glory_Trio_3/images/p1.png": b"p1-v2"})
+
+    result = _run(s3, archive, dry_run=True)
+
+    assert result.replaced_same_name == ["images/p1.png"]
 
 
 # ---------------------------------------------------------------------------

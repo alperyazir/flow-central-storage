@@ -55,6 +55,9 @@ class BookFilesUpdate:
     written: list[str] = field(default_factory=list)
     unchanged: list[str] = field(default_factory=list)
     renamed: list[dict[str, str]] = field(default_factory=list)
+    # Existing keys overwritten with different bytes. Media is served with
+    # a long immutable cache, so these may need a CDN purge.
+    replaced_same_name: list[str] = field(default_factory=list)
     prune_candidates: list[str] = field(default_factory=list)
     pruned: list[str] = field(default_factory=list)
     protected_kept: int = 0
@@ -71,6 +74,7 @@ class BookFilesUpdate:
                 "written": len(self.written),
                 "unchanged": len(self.unchanged),
                 "renamed": len(self.renamed),
+                "replaced_same_name": len(self.replaced_same_name),
                 "prune_candidates": len(self.prune_candidates),
                 "pruned": len(self.pruned),
                 "protected_kept": self.protected_kept,
@@ -78,6 +82,7 @@ class BookFilesUpdate:
             "written": self.written,
             "unchanged": self.unchanged,
             "renamed": self.renamed,
+            "replaced_same_name": self.replaced_same_name,
             "prune_candidates": self.prune_candidates,
             "pruned": self.pruned,
             "ai_stale": self.ai_stale,
@@ -93,10 +98,6 @@ def list_stored_objects(client: Minio, bucket: str, prefix: str) -> dict[str, St
         if not rel or rel.endswith("/"):
             continue
         etag = (obj.etag or "").strip('"') or None
-        # A multipart etag ("<md5>-<parts>") is not the MD5 of the content, so
-        # it can never match; drop it and let the file be re-sent.
-        if etag and "-" in etag:
-            etag = None
         stored[rel] = StoredObject(etag=etag, size=obj.size or 0)
     return stored
 
@@ -181,7 +182,8 @@ def update_book_files(
 
     - ``ai-data/``, ``ai-content/`` and ``additional-resources/`` are never
       written or deleted; an archive that carries them is rejected.
-    - Files whose final bytes match the stored MD5 etag are skipped.
+    - Files whose final bytes match the stored etag (single-part MD5 or
+      multipart) are skipped.
     - Stored files the archive no longer has are reported as prune
       candidates and deleted only with ``prune`` and not ``dry_run``. Pruning
       needs a full book archive (config.json at the book root).
@@ -245,6 +247,8 @@ def update_book_files(
             result.unchanged.append(rel)
         else:
             result.written.append(rel)
+            if rel in content:
+                result.replaced_same_name.append(rel)
         if "source" in item:
             result.renamed.append({"from": str(item["source"]), "to": rel})
 
@@ -274,10 +278,11 @@ def update_book_files(
     result.metadata = metadata
 
     logger.info(
-        "Update %s%s: %d written, %d unchanged, %d prune candidates, %d pruned, ai_stale=%s",
+        "Update %s%s: %d written (%d replaced same name), %d unchanged, %d prune candidates, %d pruned, ai_stale=%s",
         prefix,
         " (dry run)" if dry_run else "",
         len(result.written),
+        len(result.replaced_same_name),
         len(result.unchanged),
         len(result.prune_candidates),
         len(result.pruned),
