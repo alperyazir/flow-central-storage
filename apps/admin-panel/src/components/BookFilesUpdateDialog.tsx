@@ -17,12 +17,17 @@ import { Progress } from 'components/ui/progress';
 
 import type { BookRecord } from 'lib/books';
 import {
-  applyBookFilesUpdate,
   discardBookFilesUpdate,
-  previewBookFilesUpdate,
+  getBookFilesUpdateStatus,
   type BookFilesUpdateOptions,
   type BookFilesUpdateReport,
 } from 'lib/uploads';
+import {
+  applyBookFilesUpdateJob,
+  cancelBookFilesUpload,
+  startBookFilesUpdate,
+} from 'lib/bookFilesUpdateJobs';
+import { useOperationsStore, type Operation } from 'stores/operations';
 import { appConfig } from 'config/environment';
 
 interface BookFilesUpdateDialogProps {
@@ -32,15 +37,25 @@ interface BookFilesUpdateDialogProps {
   tokenType: string;
   onClose: () => void;
   onUpdated?: () => void;
+  /** Reopen an update already started (from the Operations panel). */
+  reviewOpId?: string | null;
 }
 
-type Stage = 'select' | 'uploading' | 'preview' | 'applying' | 'done';
+type Stage = 'select' | 'uploading' | 'preview' | 'applying' | 'done' | 'failed';
 
 const NO_OPTIONS: BookFilesUpdateOptions = {
   prune: false,
   bump_version: false,
   notify: false,
   regenerate_bundles: false,
+};
+
+const stageOf = (op: Operation | undefined): Stage => {
+  if (!op) return 'select';
+  if (op.status === 'awaiting_review') return 'preview';
+  if (op.status === 'completed') return 'done';
+  if (op.status === 'failed') return 'failed';
+  return op.phase === 'applying' ? 'applying' : 'uploading';
 };
 
 const formatBytes = (bytes: number | undefined): string => {
@@ -66,10 +81,18 @@ const PathList = ({ title, paths }: { title: string; paths: string[] }) => {
   );
 };
 
+const FIELD_LABELS: Record<string, string> = {
+  book_title: 'Title',
+  activity_count: 'Activities',
+  activity_details: 'Activity types',
+  book_cover: 'Cover',
+  total_size: 'Size',
+};
+
 const MetadataDiff = ({ report }: { report: BookFilesUpdateReport }) => {
   const { before, after, changed } = report.metadata;
   if (!changed.length) {
-    return <p className="text-sm text-muted-foreground">Book details (activities, cover, size) stay the same.</p>;
+    return <p className="text-sm text-muted-foreground">Book details (title, activities, cover, size) stay the same.</p>;
   }
   const show = (field: string, value: unknown) =>
     field === 'total_size'
@@ -79,18 +102,12 @@ const MetadataDiff = ({ report }: { report: BookFilesUpdateReport }) => {
             .map(([k, v]) => `${k}: ${v}`)
             .join(', ') || '—'
         : String(value ?? '—');
-  const labels: Record<string, string> = {
-    activity_count: 'Activities',
-    activity_details: 'Activity types',
-    book_cover: 'Cover',
-    total_size: 'Size',
-  };
   return (
     <table className="w-full text-sm">
       <tbody>
         {changed.map((field) => (
           <tr key={field} className="align-top">
-            <td className="py-1 pr-3 text-muted-foreground whitespace-nowrap">{labels[field] ?? field}</td>
+            <td className="py-1 pr-3 text-muted-foreground whitespace-nowrap">{FIELD_LABELS[field] ?? field}</td>
             <td className="py-1 break-words">
               <span className="line-through text-muted-foreground">
                 {show(field, before[field as keyof typeof before])}
@@ -107,113 +124,128 @@ const MetadataDiff = ({ report }: { report: BookFilesUpdateReport }) => {
 /**
  * Replace or add files of an existing book without touching its AI data.
  * Upload → server dry run → review → apply. Nothing is written before apply.
+ * The upload and the apply run as Operations, so the dialog can be closed at
+ * any point and reopened from there.
  */
-const BookFilesUpdateDialog = ({ open, book, token, tokenType, onClose, onUpdated }: BookFilesUpdateDialogProps) => {
-  const [stage, setStage] = useState<Stage>('select');
+const BookFilesUpdateDialog = ({
+  open,
+  book,
+  token,
+  tokenType,
+  onClose,
+  onUpdated,
+  reviewOpId,
+}: BookFilesUpdateDialogProps) => {
+  const [opId, setOpId] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
-  const [progress, setProgress] = useState(0);
-  const [detail, setDetail] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [jobId, setJobId] = useState<string | null>(null);
   const [report, setReport] = useState<BookFilesUpdateReport | null>(null);
   const [options, setOptions] = useState<BookFilesUpdateOptions>(NO_OPTIONS);
   const [confirmed, setConfirmed] = useState(false);
-  const abortRef = useRef<(() => void) | null>(null);
+  const [submitting, setSubmitting] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const notifiedDone = useRef<string | null>(null);
+
+  const op = useOperationsStore((s) => (opId ? s.operations.find((o) => o.id === opId) : undefined));
+  const removeOperation = useOperationsStore((s) => s.removeOperation);
+  const stage = stageOf(op);
 
   useEffect(() => {
-    if (!open) {
-      setStage('select');
+    if (open) {
+      setOpId(reviewOpId ?? null);
+    } else {
+      setOpId(null);
       setFile(null);
-      setProgress(0);
-      setDetail('');
       setError(null);
-      setJobId(null);
       setReport(null);
       setOptions(NO_OPTIONS);
       setConfirmed(false);
+      setSubmitting(false);
     }
-  }, [open]);
+  }, [open, reviewOpId]);
 
-  const busy = stage === 'uploading' || stage === 'applying';
-  const needsConfirm = !!report?.warnings.some((w) => w.code === 'folder_name_mismatch' || w.code === 'title_mismatch');
+  // The preview and the final report live on the server; read the one the
+  // operation is at whenever the dialog shows it.
+  const jobId = op?.jobId;
+  useEffect(() => {
+    if (!open || !jobId || (stage !== 'preview' && stage !== 'done')) return;
+    const wantDryRun = stage === 'preview';
+    if (report && report.dry_run === wantDryRun) return;
+    let cancelled = false;
+    getBookFilesUpdateStatus(jobId, token, tokenType, appConfig.apiBaseUrl)
+      .then((s) => {
+        if (cancelled) return;
+        if (s?.result && s.result.dry_run === wantDryRun) {
+          setReport(s.result);
+        } else if (wantDryRun) {
+          setError('This preview has expired. Upload the ZIP again.');
+        }
+      })
+      .catch((exc) => !cancelled && setError(exc instanceof Error ? exc.message : 'Failed to load the report'));
+    return () => {
+      cancelled = true;
+    };
+  }, [open, jobId, stage, report, token, tokenType]);
 
-  const handleClose = () => {
-    if (stage === 'applying') return;
-    abortRef.current?.();
-    if (stage === 'preview' && jobId) {
+  useEffect(() => {
+    if (stage === 'done' && opId && notifiedDone.current !== opId) {
+      notifiedDone.current = opId;
+      onUpdated?.();
+    }
+  }, [stage, opId, onUpdated]);
+
+  const needsConfirm = !!report?.warnings.some((w) => w.code === 'folder_name_mismatch');
+
+  const startUpload = () => {
+    if (!file) return;
+    setError(null);
+    setReport(null);
+    setOpId(startBookFilesUpdate(file, book, token, tokenType));
+  };
+
+  const apply = async () => {
+    if (!opId || !jobId) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await applyBookFilesUpdateJob(opId, book.id, jobId, options, token, tokenType);
+      setReport(null);
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : 'Update failed');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const discard = () => {
+    if (opId && jobId) {
       void discardBookFilesUpdate(book.id, jobId, token, tokenType, appConfig.apiBaseUrl);
+      removeOperation(opId);
     }
     onClose();
   };
 
-  const startPreview = async () => {
-    if (!file) return;
-    setStage('uploading');
+  const startOver = () => {
+    if (opId) removeOperation(opId);
+    setOpId(null);
+    setFile(null);
     setError(null);
-    const { promise, abort } = previewBookFilesUpdate(
-      file,
-      book.id,
-      token,
-      tokenType,
-      (s) => {
-        setProgress(s.progress);
-        setDetail(s.detail || s.step);
-      },
-      appConfig.apiBaseUrl
-    );
-    abortRef.current = abort;
-    try {
-      const result = await promise;
-      setJobId(result.jobId);
-      setReport(result.report);
-      setStage('preview');
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : 'Upload failed');
-      setStage('select');
-    } finally {
-      abortRef.current = null;
-    }
-  };
-
-  const apply = async () => {
-    if (!jobId) return;
-    setStage('applying');
-    setError(null);
-    setProgress(0);
-    try {
-      const final = await applyBookFilesUpdate(
-        book.id,
-        jobId,
-        options,
-        token,
-        tokenType,
-        (s) => {
-          setProgress(s.progress);
-          setDetail(s.detail || s.step);
-        },
-        appConfig.apiBaseUrl
-      );
-      setReport(final);
-      setStage('done');
-      onUpdated?.();
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : 'Update failed');
-      setStage('preview');
-    }
+    setReport(null);
   };
 
   const setOption = (key: keyof BookFilesUpdateOptions, value: boolean) =>
     setOptions((prev) => {
       const next = { ...prev, [key]: value };
-      // Learn only re-syncs when the version moves, so these go together.
+      // Learn only re-syncs activities when the version moves, so these go together.
       if (key === 'notify') next.bump_version = value;
       if (key === 'bump_version' && !value) next.notify = false;
       return next;
     });
 
+  const titleChanges = !!report?.metadata.changed.includes('book_title');
+
   return (
-    <Dialog open={open} onOpenChange={(o) => !o && handleClose()}>
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Update Book Files</DialogTitle>
@@ -262,13 +294,37 @@ const BookFilesUpdateDialog = ({ open, book, token, tokenType, onClose, onUpdate
           </div>
         )}
 
-        {busy && (
+        {(stage === 'uploading' || stage === 'applying') && (
           <div className="space-y-2 py-2">
-            <Progress value={progress} />
+            <Progress value={op?.progress ?? 0} />
             <p className="text-sm text-muted-foreground flex items-center gap-2">
-              <Loader2 className="h-4 w-4 animate-spin" /> {detail}
+              <Loader2 className="h-4 w-4 animate-spin" /> {op?.detail}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {stage === 'uploading'
+                ? 'You can close this window; the upload continues under Operations (keep this tab open). You will be able to review the changes from there.'
+                : 'You can close this window; the update runs on the server and its result shows under Operations.'}
             </p>
           </div>
+        )}
+
+        {stage === 'failed' && (
+          <Alert variant="destructive">
+            <AlertDescription>{op?.error || 'The update failed.'}</AlertDescription>
+          </Alert>
+        )}
+
+        {stage === 'done' && !report && op?.summary && (
+          <Alert>
+            <CheckCircle className="h-4 w-4" />
+            <AlertDescription>{op.summary.join(' · ')}</AlertDescription>
+          </Alert>
+        )}
+
+        {(stage === 'preview' || stage === 'done') && !report && !error && (
+          <p className="text-sm text-muted-foreground flex items-center gap-2">
+            <Loader2 className="h-4 w-4 animate-spin" /> Loading the report...
+          </p>
         )}
 
         {(stage === 'preview' || stage === 'done') && report && (
@@ -280,7 +336,11 @@ const BookFilesUpdateDialog = ({ open, book, token, tokenType, onClose, onUpdate
                   Updated: {report.counts.written} file(s) written
                   {report.counts.pruned ? `, ${report.counts.pruned} removed` : ''}.
                   {report.version_bumped ? ` Content version is now ${report.content_version}.` : ''}
-                  {report.notified ? ' Learn was notified.' : ''}
+                  {report.notified
+                    ? report.notify_reason === 'title_changed'
+                      ? ' Learn was told about the new title.'
+                      : ' Published to Learn.'
+                    : ''}
                   {report.bundles_regenerating ? ' Bundles are being rebuilt.' : ''}
                 </AlertDescription>
               </Alert>
@@ -319,7 +379,9 @@ const BookFilesUpdateDialog = ({ open, book, token, tokenType, onClose, onUpdate
               <PathList title="Existing files that get new content" paths={report.replaced_same_name} />
               <PathList title="Renamed while normalizing" paths={report.renamed.map((r) => `${r.from} → ${r.to}`)} />
               <PathList
-                title={stage === 'done' && report.pruned.length ? 'Removed' : 'Stored files not in the ZIP (kept unless pruned)'}
+                title={
+                  stage === 'done' && report.pruned.length ? 'Removed' : 'Stored files not in the ZIP (kept unless pruned)'
+                }
                 paths={stage === 'done' && report.pruned.length ? report.pruned : report.prune_candidates}
               />
             </div>
@@ -351,6 +413,11 @@ const BookFilesUpdateDialog = ({ open, book, token, tokenType, onClose, onUpdate
                   />
                   <Label htmlFor="uf-notify" className="text-sm font-normal leading-5">
                     Publish to Learn: bump the content version and notify Learn, which re-syncs the activities
+                    {titleChanges && !options.notify && (
+                      <span className="block text-xs text-muted-foreground">
+                        Unchecked, Learn is still told about the new title (no activity re-sync).
+                      </span>
+                    )}
                   </Label>
                 </div>
                 <div className="flex items-start gap-2">
@@ -380,33 +447,40 @@ const BookFilesUpdateDialog = ({ open, book, token, tokenType, onClose, onUpdate
         <DialogFooter>
           {stage === 'select' && (
             <>
-              <Button variant="outline" onClick={handleClose}>
+              <Button variant="outline" onClick={onClose}>
                 Cancel
               </Button>
-              <Button onClick={startPreview} disabled={!file}>
+              <Button onClick={startUpload} disabled={!file}>
                 Upload & preview
               </Button>
             </>
           )}
           {stage === 'uploading' && (
-            <Button variant="outline" onClick={handleClose}>
-              Cancel
-            </Button>
+            <>
+              <Button variant="outline" onClick={() => opId && cancelBookFilesUpload(opId)}>
+                Cancel upload
+              </Button>
+              <Button onClick={onClose}>Continue in background</Button>
+            </>
           )}
           {stage === 'preview' && (
             <>
-              <Button variant="outline" onClick={handleClose}>
+              <Button variant="outline" onClick={discard}>
                 Discard
               </Button>
-              <Button onClick={apply} disabled={needsConfirm && !confirmed}>
-                Apply update
+              <Button onClick={apply} disabled={!report || submitting || (needsConfirm && !confirmed)}>
+                {submitting && <Loader2 className="h-4 w-4 animate-spin" />} Apply update
               </Button>
             </>
           )}
-          {stage === 'applying' && (
-            <Button disabled>
-              <Loader2 className="h-4 w-4 animate-spin" /> Applying...
-            </Button>
+          {stage === 'applying' && <Button onClick={onClose}>Continue in background</Button>}
+          {stage === 'failed' && (
+            <>
+              <Button variant="outline" onClick={onClose}>
+                Close
+              </Button>
+              <Button onClick={startOver}>Start over</Button>
+            </>
           )}
           {stage === 'done' && <Button onClick={onClose}>Close</Button>}
         </DialogFooter>

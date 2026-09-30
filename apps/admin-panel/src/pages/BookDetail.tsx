@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft,
   BookOpen,
@@ -72,6 +72,9 @@ const BookDetailPage = () => {
   const [error, setError] = useState<string | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [filesUpdateOpen, setFilesUpdateOpen] = useState(false);
+  // ?reviewUpdate=<operation id>: opened from the Operations panel.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const reviewUpdate = searchParams.get('reviewUpdate');
   const [pdfPending, setPdfPending] = useState<number | null>(null);
 
   const [delTarget, setDelTarget] = useState<BookRecord | null>(null);
@@ -368,11 +371,15 @@ const BookDetailPage = () => {
 
       {book.book_type === 'standard' && (
         <BookFilesUpdateDialog
-          open={filesUpdateOpen}
+          open={filesUpdateOpen || !!reviewUpdate}
           book={book}
           token={token || ''}
           tokenType={tt}
-          onClose={() => setFilesUpdateOpen(false)}
+          reviewOpId={reviewUpdate}
+          onClose={() => {
+            setFilesUpdateOpen(false);
+            if (reviewUpdate) setSearchParams({}, { replace: true });
+          }}
           onUpdated={load}
         />
       )}

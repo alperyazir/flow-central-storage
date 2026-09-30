@@ -167,11 +167,16 @@ def book_metadata_from_config(config: dict) -> dict[str, object]:
     from app.routers.books import _collect_activity_details, _count_activities
 
     cover = config.get("book_cover")
-    return {
+    metadata: dict[str, object] = {
         "activity_count": _count_activities(config),
         "activity_details": _collect_activity_details(config),
         "book_cover": _normalize_filename(os.path.basename(cover)) if cover else None,
     }
+    # A config without a title keeps the stored one rather than blanking it.
+    title = config.get("book_title")
+    if isinstance(title, str) and title.strip():
+        metadata["book_title"] = title.strip()
+    return metadata
 
 
 def update_book_files(

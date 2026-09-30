@@ -1212,7 +1212,7 @@ async def upload_book(
 
 # DB fields an in-place update may recompute. status, ai_* and book_name are
 # never touched by it.
-_UPDATE_FILES_FIELDS = ("activity_count", "activity_details", "book_cover", "total_size")
+_UPDATE_FILES_FIELDS = ("book_title", "activity_count", "activity_details", "book_cover", "total_size")
 
 
 def _update_files_warnings(result, book_name: str, book_title: str | None) -> list[dict[str, str]]:
@@ -1226,14 +1226,11 @@ def _update_files_warnings(result, book_name: str, book_title: str | None) -> li
                 f"Files are written to '{book_name}' either way; make sure this is the right book."
             ),
         })
-    title = result.config_book_title
-    if title and book_title and title.strip() != book_title.strip():
+    title = (result.config_book_title or "").strip()
+    if title and title != (book_title or "").strip():
         warnings.append({
-            "code": "title_mismatch",
-            "message": (
-                f"config.json has the title '{title}' but the book's title is '{book_title}'. "
-                "This update does not change the title."
-            ),
+            "code": "title_change",
+            "message": f"The title changes from '{book_title or '—'}' to '{title}' (from config.json).",
         })
     if not result.full_archive:
         warnings.append({
@@ -1306,6 +1303,12 @@ def run_book_files_update(
 
     after = {name: result.metadata[name] for name in _UPDATE_FILES_FIELDS if name in result.metadata}
     changes = {name: value for name, value in after.items() if before.get(name) != value}
+    if notify:
+        notify_reason: str | None = "publish"
+    elif "book_title" in changes:
+        notify_reason = "title_changed"
+    else:
+        notify_reason = None
 
     if not dry_run:
         if changes:
@@ -1319,7 +1322,9 @@ def run_book_files_update(
         with SessionLocal() as session:
             db_book = _book_repository.get_by_id(session, book_id)
             content_version = db_book.content_version if db_book is not None else content_version
-        if notify:
+        # A new title alone reaches Learn without a version bump: with the
+        # version unchanged Learn skips its activity sync and only refreshes.
+        if notify_reason:
             run(_trigger_webhook, book_id=book_id, event_type=WebhookEventType.BOOK_UPDATED)
         if regenerate_bundles:
             run(
@@ -1341,7 +1346,9 @@ def run_book_files_update(
             "metadata": {"before": before, "after": after, "changed": sorted(changes)},
             "content_version": content_version,
             "version_bumped": bump_version and not dry_run,
-            "notified": notify and not dry_run,
+            "notified": notify_reason is not None and not dry_run,
+            # Why book.updated is (or, on a dry run, would be) sent.
+            "notify_reason": notify_reason,
             "bundles_regenerating": regenerate_bundles and not dry_run,
         }
     )

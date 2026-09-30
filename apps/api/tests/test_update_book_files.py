@@ -608,7 +608,7 @@ def test_matching_folder_spelled_differently_does_not_warn(orchestration) -> Non
     assert "folder_name_mismatch" not in _codes(run_book_files_update(349, archive, dry_run=True))
 
 
-def test_title_mismatch_and_partial_archive_warn(orchestration) -> None:
+def test_title_change_and_partial_archive_warn(orchestration) -> None:
     from app.routers.books import run_book_files_update
 
     orchestration.book.book_title = "Glory Trio 4"
@@ -616,8 +616,64 @@ def test_title_mismatch_and_partial_archive_warn(orchestration) -> None:
 
     report = run_book_files_update(349, archive, dry_run=True)
 
-    assert _codes(report) == ["title_mismatch", "partial_archive"]
+    assert _codes(report) == ["title_change", "partial_archive"]
     assert report["full_archive"] is False
+
+
+def test_title_is_recomputed_from_config_and_notifies_without_a_bump(orchestration) -> None:
+    from app.routers.books import _trigger_webhook, run_book_files_update
+
+    orchestration.book.book_title = "Dream Test Book 111"
+    config = _config(book_title="Dream Test Book 2")
+    archive = _zip(orchestration.tmp_path, {"Glory_Trio_3/config.json": config})
+    scheduled = []
+
+    report = run_book_files_update(349, archive, dry_run=False, schedule=lambda fn, **kw: scheduled.append(fn))
+
+    (_session, _book), kwargs = orchestration.repo.update.call_args
+    assert kwargs["data"]["book_title"] == "Dream Test Book 2"
+    assert report["metadata"]["before"]["book_title"] == "Dream Test Book 111"
+    assert report["metadata"]["after"]["book_title"] == "Dream Test Book 2"
+    orchestration.bump.assert_not_called()
+    assert scheduled == [_trigger_webhook]
+    assert report["notified"] is True and report["notify_reason"] == "title_changed"
+
+
+def test_title_change_dry_run_sends_nothing(orchestration) -> None:
+    from app.routers.books import run_book_files_update
+
+    orchestration.book.book_title = "Old"
+    archive = _zip(orchestration.tmp_path, {"Glory_Trio_3/config.json": _config(book_title="New")})
+    scheduled = []
+
+    report = run_book_files_update(349, archive, dry_run=True, schedule=lambda fn, **kw: scheduled.append(fn))
+
+    assert scheduled == []
+    assert "book_title" in report["metadata"]["changed"]
+    assert report["notified"] is False and report["notify_reason"] == "title_changed"
+
+
+def test_a_config_without_title_keeps_the_stored_one(orchestration) -> None:
+    from app.routers.books import run_book_files_update
+
+    config = json.dumps({"pages": [{"activity": {"type": "quiz"}}]})
+    archive = _zip(orchestration.tmp_path, {"Glory_Trio_3/config.json": config})
+
+    report = run_book_files_update(349, archive, dry_run=True)
+
+    assert "book_title" not in report["metadata"]["changed"]
+
+
+def test_status_ai_fields_and_name_are_never_written(orchestration) -> None:
+    from app.routers.books import run_book_files_update
+
+    orchestration.book.book_title = "Old"
+    archive = _zip(orchestration.tmp_path, {"Glory_Trio_3/config.json": _config(book_title="New", status="draft")})
+
+    run_book_files_update(349, archive, dry_run=False)
+
+    (_session, _book), kwargs = orchestration.repo.update.call_args
+    assert set(kwargs["data"]) <= {"book_title", "activity_count", "activity_details", "book_cover", "total_size"}
 
 
 # ---------------------------------------------------------------------------

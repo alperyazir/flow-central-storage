@@ -1,10 +1,11 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 
-export type OperationType = 'upload' | 'delete';
+export type OperationType = 'upload' | 'delete' | 'update';
 export type OperationStatus =
   | 'pending'
   | 'in_progress'
+  | 'awaiting_review'
   | 'completed'
   | 'failed';
 
@@ -17,7 +18,16 @@ export interface Operation {
   timestamp: string; // ISO string for serialization
   detail?: string;
   error?: string;
+  // In-place book file updates ('update'): the server job behind the
+  // operation, so it can be reviewed or re-polled after the dialog closes
+  // or the page reloads.
+  bookId?: number;
+  jobId?: string;
+  phase?: 'uploading' | 'applying';
+  summary?: string[];
 }
+
+type OperationFields = 'status' | 'progress' | 'detail' | 'error' | 'jobId' | 'phase' | 'summary';
 
 const MAX_OPERATIONS = 10;
 
@@ -25,12 +35,9 @@ interface OperationsState {
   operations: Operation[];
   isExpanded: boolean;
   addOperation: (
-    op: Pick<Operation, 'id' | 'type' | 'bookName'>
+    op: Pick<Operation, 'id' | 'type' | 'bookName'> & Partial<Pick<Operation, 'bookId' | 'phase'>>
   ) => void;
-  updateOperation: (
-    id: string,
-    updates: Partial<Pick<Operation, 'status' | 'progress' | 'detail' | 'error'>>
-  ) => void;
+  updateOperation: (id: string, updates: Partial<Pick<Operation, OperationFields>>) => void;
   removeOperation: (id: string) => void;
   clearCompleted: () => void;
   toggleExpanded: () => void;
@@ -70,7 +77,10 @@ export const useOperationsStore = create<OperationsState>()(
       clearCompleted: () =>
         set((state) => ({
           operations: state.operations.filter(
-            (op) => op.status === 'pending' || op.status === 'in_progress'
+            (op) =>
+              op.status === 'pending' ||
+              op.status === 'in_progress' ||
+              op.status === 'awaiting_review'
           ),
         })),
 
@@ -85,9 +95,11 @@ export const useOperationsStore = create<OperationsState>()(
       merge: (persisted, current) => {
         const state = persisted as Partial<OperationsState> | undefined;
         if (!state?.operations) return current;
-        // Mark any in_progress/pending ops as failed (interrupted by refresh)
+        // Mark any in_progress/pending ops as failed (interrupted by refresh).
+        // An update being applied runs on the server and is re-polled instead.
         const fixedOps = state.operations.map((op) =>
-          op.status === 'pending' || op.status === 'in_progress'
+          (op.status === 'pending' || op.status === 'in_progress') &&
+          !(op.type === 'update' && op.phase === 'applying' && op.jobId)
             ? { ...op, status: 'failed' as OperationStatus, error: 'Interrupted' }
             : op
         );

@@ -738,6 +738,7 @@ export interface BookFilesUpdateWarning {
 }
 
 export interface BookFilesUpdateMetadata {
+  book_title?: string | null;
   activity_count?: number;
   activity_details?: Record<string, number>;
   book_cover?: string | null;
@@ -778,6 +779,7 @@ export interface BookFilesUpdateReport {
   content_version: number;
   version_bumped: boolean;
   notified: boolean;
+  notify_reason: 'publish' | 'title_changed' | null;
   bundles_regenerating: boolean;
 }
 
@@ -807,7 +809,7 @@ const readError = async (resp: Response, fallback: string) => {
 };
 
 /** Poll /upload-status until one of `doneSteps` (resolve) or `error` (reject). */
-const pollBookFilesUpdate = (
+export const pollBookFilesUpdate = (
   jobId: string,
   authHeader: string,
   doneSteps: string[],
@@ -927,27 +929,39 @@ export const previewBookFilesUpdate = (
   };
 };
 
-/** Apply a previewed update and wait for the final report. */
-export const applyBookFilesUpdate = async (
+/** Start applying a previewed update; the server runs it as a background job. */
+export const requestApplyBookFilesUpdate = async (
   bookId: number,
   jobId: string,
   options: BookFilesUpdateOptions,
   token: string,
   tokenType: string = 'Bearer',
-  onProgress: (p: BookFilesUpdateProgress) => void = () => {},
   apiBaseUrl: string = ''
-): Promise<BookFilesUpdateReport> => {
-  const authHeader = authHeaderFor(token, tokenType);
+): Promise<void> => {
   const resp = await fetch(`${apiBaseUrl}/books/${bookId}/update-files/jobs/${jobId}/apply`, {
     method: 'POST',
-    headers: { Authorization: authHeader, 'Content-Type': 'application/json' },
+    headers: { Authorization: authHeaderFor(token, tokenType), 'Content-Type': 'application/json' },
     body: JSON.stringify(options),
   });
   if (!resp.ok) throw new Error(await readError(resp, 'Failed to apply the update'));
-  const final = await pollBookFilesUpdate(jobId, authHeader, ['completed'], onProgress, { aborted: false }, apiBaseUrl);
-  if (!final.result) throw new Error('The server returned no report');
-  return final.result;
 };
+
+/** Current state of an update job (preview report or final report in `result`). */
+export const getBookFilesUpdateStatus = async (
+  jobId: string,
+  token: string,
+  tokenType: string = 'Bearer',
+  apiBaseUrl: string = ''
+): Promise<BookFilesUpdateProgress | null> => {
+  const resp = await fetch(`${apiBaseUrl}/books/upload-status/${jobId}`, {
+    headers: { Authorization: authHeaderFor(token, tokenType) },
+  });
+  if (resp.status === 404) return null;
+  if (!resp.ok) throw new Error(await readError(resp, 'Failed to read the update status'));
+  return resp.json();
+};
+
+export { authHeaderFor };
 
 /** Throw away a previewed update. Best-effort: the server also expires it. */
 export const discardBookFilesUpdate = async (
