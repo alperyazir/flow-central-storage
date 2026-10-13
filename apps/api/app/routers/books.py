@@ -3121,18 +3121,61 @@ def _run_book_download(job_id: str, book_prefix: str, book_name: str) -> None:
         set_upload_progress(job_id, 0, "error", error=str(exc))
 
 
+def _pdf_content_disposition(filename: str, disposition: str = "attachment") -> str:
+    """``attachment``/``inline`` header carrying a display name that may be non-ASCII.
+
+    ``filename`` is the ASCII fallback for old clients; ``filename*`` keeps
+    the Turkish/German letters for everyone else.
+    """
+    from urllib.parse import quote
+
+    from app.services.storage import _normalize_part
+
+    stem = filename[:-4] if filename.lower().endswith(".pdf") else filename
+    ascii_name = (_normalize_part(stem) or "document") + ".pdf"
+    return f"{disposition}; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(stem + '.pdf')}"
+
+
+def _clean_display_name(raw: str | None) -> str | None:
+    """Caller-supplied download name, stripped of anything a header or a
+    filesystem would trip on. ``None`` when nothing usable is left."""
+    if not raw:
+        return None
+    cleaned = "".join(ch for ch in raw if ch.isprintable() and ch not in '"\\/\r\n:*?<>|')
+    cleaned = cleaned.strip()[:150]
+    return cleaned or None
+
+
 @router.get("/{book_id}/pdf-url")
 def get_pdf_download_url(
     book_id: int,
+    variant: str | None = Query(
+        None,
+        pattern="^(original|answered)$",
+        description="Additional-resource flowbooks only: which raw PDF to sign.",
+    ),
+    filename: str | None = Query(None, max_length=200, description="Name the browser saves the file as."),
+    disposition: str = Query(
+        "attachment",
+        pattern="^(attachment|inline)$",
+        description="``inline`` opens the PDF in the browser's viewer instead of saving it.",
+    ),
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
     db: Session = Depends(get_db),
 ):
-    """Return a presigned URL for a PDF book's raw file.
+    """Return a presigned URL for a book's raw PDF.
 
-    Only valid for books where ``book_type == 'pdf'``. Returns 400 for
-    standard books (use ``POST /books/{id}/download`` instead).
+    - ``book_type == 'pdf'``: the single PDF under ``raw/`` (``variant`` is
+      ignored — there is only one).
+    - Standard (flowbook) books that are **additional resources** (have a
+      parent): ``raw/original.pdf`` (no answers) or ``raw/answered.pdf``,
+      chosen by ``variant`` (default ``original``). A top-level flowbook's
+      source PDF is the publisher's product itself and is not handed out
+      here — 400, use ``POST /books/{id}/download``.
     """
     from datetime import timedelta
+
+    from minio.error import S3Error
 
     from app.services import get_minio_client_external
 
@@ -3140,37 +3183,66 @@ def get_pdf_download_url(
     book = _book_repository.get_by_id(db, book_id)
     if book is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
-    if (book.book_type or BookTypeEnum.STANDARD.value) != BookTypeEnum.PDF.value:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Book is not a PDF book; use the standard download endpoint",
-        )
 
     settings = get_settings()
     internal_client = get_minio_client(settings)
     bucket = settings.minio_publishers_bucket
     # PDF lives under the book's R2 prefix (nested for children) in raw/
     prefix = f"{book.r2_prefix}raw/"
-    objects = [
-        obj for obj in internal_client.list_objects(bucket, prefix=prefix, recursive=True)
-        if not obj.is_dir
-    ]
-    if not objects:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="PDF not uploaded yet")
 
-    object_name = objects[0].object_name
+    if (book.book_type or BookTypeEnum.STANDARD.value) == BookTypeEnum.PDF.value:
+        objects = [
+            obj for obj in internal_client.list_objects(bucket, prefix=prefix, recursive=True)
+            if not obj.is_dir
+        ]
+        if not objects:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="PDF not uploaded yet")
+        object_name = objects[0].object_name
+    else:
+        if book.parent_book_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Book is not a PDF book; use the standard download endpoint",
+            )
+        # The two names the upload keeps under raw/ (storage._RAW_ALLOWED_PDFS).
+        object_name = f"{prefix}{variant or 'original'}.pdf"
+        try:
+            internal_client.stat_object(bucket, object_name)
+        except S3Error as exc:
+            if exc.code in {"NoSuchKey", "NoSuchObject"}:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="PDF not uploaded yet"
+                ) from exc
+            logger.error("Failed to stat PDF %s for book %s: %s", object_name, book_id, exc)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY, detail="Could not generate download URL"
+            ) from exc
+
+    display_name = _clean_display_name(filename)
+    # R2 stores these as application/octet-stream; say what they are.
+    response_headers = {"response-content-type": "application/pdf"}
+    if display_name:
+        response_headers["response-content-disposition"] = _pdf_content_disposition(
+            display_name, disposition
+        )
+    elif disposition == "inline":
+        response_headers["response-content-disposition"] = "inline"
     external = get_minio_client_external(settings)
     expires = timedelta(hours=6)
     try:
-        url = external.presigned_get_object(bucket, object_name, expires=expires)
+        url = external.presigned_get_object(
+            bucket, object_name, expires=expires, response_headers=response_headers
+        )
     except Exception as exc:
         logger.error("Failed to presign PDF url for book %s: %s", book_id, exc)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail="Could not generate download URL"
         ) from exc
 
-    filename = object_name.rsplit("/", 1)[-1]
-    return {"download_url": url, "filename": filename, "expires_in_seconds": int(expires.total_seconds())}
+    saved_as = f"{display_name}.pdf" if display_name else object_name.rsplit("/", 1)[-1]
+    if saved_as.lower().endswith(".pdf.pdf"):
+        saved_as = saved_as[:-4]
+    return {"download_url": url, "filename": saved_as, "expires_in_seconds": int(expires.total_seconds())}
 
 
 @router.post("/{book_id}/download", status_code=status.HTTP_202_ACCEPTED)
